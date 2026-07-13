@@ -1142,7 +1142,8 @@ export function InfiniteCanvas() {
     [],
   )
 
-  // Tauri/WebView2: OS file drops come via native drag-drop events, not HTML5 FileList
+  // Optional native path listener (no-op when dragDropEnabled:false — HTML5 handles all).
+  // Kept as a safety net if a platform still emits Tauri drag events.
   useEffect(() => {
     if (!isDesktop()) return
     let disposed = false
@@ -1158,7 +1159,6 @@ export function InfiniteCanvas() {
         setDropActive(false)
         return
       }
-      // drop — position is logical px relative to webview top-left
       setDropActive(false)
       if (!ev.paths.length) return
       const store = useCanvasStore.getState()
@@ -1183,16 +1183,25 @@ export function InfiniteCanvas() {
   }, [placeMediaAt])
 
   const onDragOver = useCallback((e: React.DragEvent) => {
+    // Required so the browser/WebView treats the canvas as a valid drop target
     e.preventDefault()
     e.stopPropagation()
-    e.dataTransfer.dropEffect = 'copy'
+    try {
+      e.dataTransfer.dropEffect = 'copy'
+    } catch {
+      /* some webviews throw if types not set */
+    }
     setDropActive(true)
   }, [])
 
   const onDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    e.dataTransfer.dropEffect = 'copy'
+    try {
+      e.dataTransfer.dropEffect = 'copy'
+    } catch {
+      /* ignore */
+    }
     setDropActive(true)
   }, [])
 
@@ -1210,8 +1219,8 @@ export function InfiniteCanvas() {
       const local = getLocalPoint(e)
       const world = screenToWorld(local.x, local.y, store.viewport)
 
-      // Browser / HTML5 drop: URLs → bookmarks, media → images/videos, text → notes
-      // (also handles file FileList when the webview provides it)
+      // Unified HTML5 path (browser + desktop with dragDropEnabled:false):
+      // files, local paths, remote media URLs, page links, plain text
       const imported = await importDropAt(world.x, world.y, e.dataTransfer)
       if (imported) return
 

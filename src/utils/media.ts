@@ -1,10 +1,13 @@
 import type { MediaItem } from '../types/canvas'
-import { localPathToSrc } from './desktop'
+import { isDesktop, localPathToSrc, readBinaryFile } from './desktop'
 import { uid } from './id'
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg', 'avif', 'ico', 'heic'])
 const GIF_EXT = new Set(['gif'])
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'ogv', 'm4v'])
+
+/** Max bytes to load into a blob for image/gif parity with browser File drops */
+const MAX_BLOB_EMBED_BYTES = 40 * 1024 * 1024
 
 export function getExtension(name: string): string {
   const i = name.lastIndexOf('.')
@@ -22,6 +25,94 @@ export function classifyMedia(fileName: string, mime?: string): 'image' | 'gif' 
 
 export function pathToFileUrl(filePath: string): string {
   return localPathToSrc(filePath)
+}
+
+function mimeFromFileName(fileName: string, kind: 'image' | 'gif' | 'video'): string {
+  const ext = getExtension(fileName)
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
+    avif: 'image/avif',
+    ico: 'image/x-icon',
+    heic: 'image/heic',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo',
+    m4v: 'video/mp4',
+    ogv: 'video/ogg',
+  }
+  if (map[ext]) return map[ext]
+  if (kind === 'video') return 'video/mp4'
+  if (kind === 'gif') return 'image/gif'
+  return 'image/png'
+}
+
+/**
+ * Decode file:// URLs (and Windows path variants) to a filesystem path.
+ * Used when HTML5 DnD / uri-list exposes local paths instead of File blobs.
+ */
+export function fileUrlToPath(urlOrPath: string): string | null {
+  const raw = urlOrPath.trim()
+  if (!raw) return null
+
+  // Already a filesystem path
+  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('\\\\')) {
+    return raw.replace(/\//g, '\\')
+  }
+  if (raw.startsWith('/') && !raw.startsWith('//')) {
+    return raw
+  }
+
+  if (!/^file:/i.test(raw)) return null
+
+  try {
+    // Prefer URL parser for correct decoding
+    const u = new URL(raw)
+    let path = decodeURIComponent(u.pathname)
+
+    // Windows: file:///C:/Users/... → /C:/Users/... → C:\Users\...
+    if (/^\/[a-zA-Z]:/.test(path)) {
+      path = path.slice(1)
+    }
+    // file://localhost/C:/... hostname may be localhost
+    if (u.hostname && u.hostname !== 'localhost' && u.hostname.length === 1) {
+      path = `${u.hostname}:${path}`
+    }
+
+    if (/^[a-zA-Z]:/.test(path) || path.startsWith('\\\\')) {
+      return path.replace(/\//g, '\\')
+    }
+    if (path.startsWith('/')) return path
+  } catch {
+    /* fall through */
+  }
+
+  // Manual fallback for odd encodings
+  let path = decodeURIComponent(raw.replace(/^file:\/\//i, ''))
+  path = path.replace(/^\/+/, '')
+  if (/^[a-zA-Z]:/.test(path)) return path.replace(/\//g, '\\')
+  if (path.startsWith('localhost/')) {
+    path = path.slice('localhost/'.length)
+    if (/^[a-zA-Z]:/.test(path)) return path.replace(/\//g, '\\')
+  }
+  return null
+}
+
+/** Chromium/WebView sometimes exposes a non-standard absolute path on File */
+export function fileSystemPathFromFile(file: File): string | null {
+  const anyFile = file as File & { path?: string; mozFullPath?: string }
+  const p = anyFile.path || anyFile.mozFullPath
+  if (p && typeof p === 'string' && p.length > 0) {
+    return fileUrlToPath(p) || p
+  }
+  return null
 }
 
 function loadImageSize(src: string): Promise<{ width: number; height: number }> {
@@ -94,9 +185,30 @@ export async function createMediaFromFile(
   zIndex: number,
 ): Promise<MediaItem | null> {
   const kind = classifyMedia(file.name, file.type)
-  if (!kind) return null
-  const src = URL.createObjectURL(file)
-  return createMediaItemFromSrc(src, file.name, kind, x, y, zIndex)
+  if (!kind) {
+    // WebView2 can yield empty type + size-0 File stubs; fall back to path
+    const path = fileSystemPathFromFile(file)
+    if (path) return createMediaFromPath(path, x, y, zIndex)
+    return null
+  }
+
+  // Prefer blob when content is present (browser parity)
+  if (file.size > 0) {
+    const src = URL.createObjectURL(file)
+    return createMediaItemFromSrc(src, file.name || 'media', kind, x, y, zIndex)
+  }
+
+  // Empty FileList stubs: use native path when available
+  const path = fileSystemPathFromFile(file)
+  if (path) return createMediaFromPath(path, x, y, zIndex)
+
+  // Last resort: try blob anyway (some webviews fill content lazily)
+  try {
+    const src = URL.createObjectURL(file)
+    return createMediaItemFromSrc(src, file.name || 'media', kind, x, y, zIndex)
+  } catch {
+    return null
+  }
 }
 
 export async function createMediaFromPath(
@@ -105,9 +217,29 @@ export async function createMediaFromPath(
   y: number,
   zIndex: number,
 ): Promise<MediaItem | null> {
-  const fileName = filePath.split(/[/\\]/).pop() || 'media'
+  const normalized = fileUrlToPath(filePath) || filePath
+  const fileName = normalized.split(/[/\\]/).pop() || 'media'
   const kind = classifyMedia(fileName)
   if (!kind) return null
-  const src = pathToFileUrl(filePath)
+
+  // Images/gifs: read bytes → blob URL (same display path as browser File drops).
+  // Videos: prefer asset protocol so large files are not fully buffered.
+  if (isDesktop() && kind !== 'video') {
+    try {
+      const bytes = await readBinaryFile(normalized)
+      if (bytes?.length && bytes.length <= MAX_BLOB_EMBED_BYTES) {
+        // Copy into a plain ArrayBuffer-backed Uint8Array for BlobPart typing
+        const copy = new Uint8Array(bytes.byteLength)
+        copy.set(bytes)
+        const blob = new Blob([copy], { type: mimeFromFileName(fileName, kind) })
+        const src = URL.createObjectURL(blob)
+        return createMediaItemFromSrc(src, fileName, kind, x, y, zIndex)
+      }
+    } catch (e) {
+      console.warn('createMediaFromPath readBinaryFile failed, using asset URL', normalized, e)
+    }
+  }
+
+  const src = pathToFileUrl(normalized)
   return createMediaItemFromSrc(src, fileName, kind, x, y, zIndex)
 }

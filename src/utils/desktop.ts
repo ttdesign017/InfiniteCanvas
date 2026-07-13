@@ -232,7 +232,14 @@ export function windowMoveEnd(): void {
   }
 }
 
-/** Native OS file drop (HTML5 dataTransfer.files is empty under Tauri/WebView2). */
+/**
+ * Native OS file drop events from Tauri.
+ *
+ * Note: Windows WebView2 only delivers these when `dragDropEnabled` is true,
+ * which blocks HTML5 DnD (links, web images, text). This app sets
+ * `dragDropEnabled: false` so the browser-like HTML5 path is primary; this
+ * listener is a no-op safety net if a platform still emits events.
+ */
 export type NativeDropEvent =
   | { type: 'enter' | 'over'; x: number; y: number; paths: string[] }
   | { type: 'drop'; x: number; y: number; paths: string[] }

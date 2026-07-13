@@ -290,20 +290,13 @@ export function LinkCardView({ item, selected }: Props) {
                   return
                 }
 
-                // Browser: re-route twimg through wsrv.nl once
-                if (!isDesktop() && /^https?:\/\//i.test(src)) {
-                  const proxied = proxiedImageUrl(src)
-                  if (proxied !== src) {
-                    updateItem(item.id, { image: proxied })
-                    setImgBroken(false)
-                    return
-                  }
+                if (!/^https?:\/\//i.test(src)) {
                   setImgBroken(true)
                   return
                 }
 
-                // Desktop: native download → data URL
-                if (isDesktop() && /^https?:\/\//i.test(src)) {
+                // Desktop: native download → data URL, then public proxy
+                if (isDesktop()) {
                   void proxyImageToDataUrl(src, '')
                     .then((data) => {
                       if (data?.startsWith('data:')) return data
@@ -313,10 +306,24 @@ export function LinkCardView({ item, selected }: Props) {
                       if (data?.startsWith('data:')) {
                         updateItem(item.id, { image: data })
                         setImgBroken(false)
-                      } else {
-                        setImgBroken(true)
+                        return
                       }
+                      const proxied = proxiedImageUrl(src)
+                      if (proxied !== src) {
+                        updateItem(item.id, { image: proxied })
+                        setImgBroken(false)
+                        return
+                      }
+                      setImgBroken(true)
                     })
+                  return
+                }
+
+                // Browser: re-route blocked CDNs through wsrv.nl once
+                const proxied = proxiedImageUrl(src)
+                if (proxied !== src) {
+                  updateItem(item.id, { image: proxied })
+                  setImgBroken(false)
                   return
                 }
                 setImgBroken(true)

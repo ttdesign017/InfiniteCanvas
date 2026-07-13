@@ -418,15 +418,21 @@ export function normalizeTwimgUrl(url: string): string {
 }
 
 /**
- * Browser fallback when pbs.twimg.com is blocked / hotlink-restricted:
- * route through wsrv.nl image proxy (CORS-friendly).
+ * Public image proxy fallback when CDNs block hotlinks / WebView referrers.
+ * Used in browser and as desktop fallback when native proxy fails.
  */
 export function proxiedImageUrl(url: string): string {
   if (!url || url.startsWith('data:') || url.startsWith('blob:')) return url
   if (url.includes('wsrv.nl') || url.includes('images.weserv.nl')) return url
   try {
     const host = new URL(url).hostname
-    if (!/twimg\.com$|twitter\.com$/i.test(host)) return url
+    if (
+      !/twimg\.com$|twitter\.com$|ytimg\.com$|ggpht\.com$|fbcdn\.net$|cdninstagram\.com$/i.test(
+        host,
+      )
+    ) {
+      return url
+    }
     return `https://wsrv.nl/?url=${encodeURIComponent(url)}&n=-1`
   } catch {
     return url
@@ -640,8 +646,30 @@ async function ensureDisplayableImage(
 
     const proxied = await proxyImageToDataUrl(image, pageUrl)
     if (proxied?.startsWith('data:')) return proxied
+
+    // Same public proxy the browser uses when native download fails
+    const publicProxy = proxiedImageUrl(image)
+    if (publicProxy !== image) {
+      try {
+        const res = await fetch(publicProxy, { mode: 'cors' })
+        if (res.ok) {
+          const blob = await res.blob()
+          if (blob.size > 0) return URL.createObjectURL(blob)
+        }
+      } catch {
+        /* ignore */
+      }
+      // Return proxied URL so <img> can still attempt load with no-referrer
+      return publicProxy
+    }
+
     // Do not throw away a valid OG URL merely because native proxying failed.
     return image
+  }
+
+  // Browser: pre-route known hotlink-blocked CDNs
+  if (!isDesktop() && /^https?:\/\//i.test(image)) {
+    return proxiedImageUrl(image)
   }
 
   return image

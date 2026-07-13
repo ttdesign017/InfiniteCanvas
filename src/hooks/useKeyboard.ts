@@ -2,13 +2,14 @@ import { useEffect } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { toggleVideos } from '../utils/videoRegistry'
 import { normalizeUrl } from '../utils/linkMeta'
-import { looksLikeUrl } from '../utils/dropImport'
-import { screenToWorld } from '../utils/layout'
+import { looksLikeMediaFilePath, looksLikeUrl } from '../utils/dropImport'
+import { placeItemsTight, screenToWorld } from '../utils/layout'
 import {
   collectClipboardMedia,
   openMediaDialog,
   pasteMediaFiles,
 } from '../utils/openMedia'
+import { createMediaFromPath, fileUrlToPath } from '../utils/media'
 import * as desktop from '../utils/desktop'
 
 /** Only real text editing — NOT color/range/checkbox inputs */
@@ -288,6 +289,30 @@ export function useKeyboard() {
         window.innerHeight / 2 - 60,
         store.viewport,
       )
+
+      // Explorer "Copy path" / file:// paste → import media like a drop
+      const pathLines = text
+        .split(/\r?\n/)
+        .map((l) => l.trim().replace(/^["']|["']$/g, ''))
+        .filter((l) => looksLikeMediaFilePath(l))
+      if (pathLines.length > 0) {
+        void (async () => {
+          let z = store.nextZ
+          const rawItems = []
+          for (const line of pathLines) {
+            const path = fileUrlToPath(line) || line
+            const item = await createMediaFromPath(path, world.x, world.y, z++)
+            if (item) rawItems.push(item)
+          }
+          if (rawItems.length) {
+            useCanvasStore
+              .getState()
+              .addItems(placeItemsTight(rawItems, world.x, world.y, 4))
+          }
+        })()
+        return true
+      }
+
       if (looksLikeUrl(text)) {
         store.addLinkCard(world, normalizeUrl(text))
       } else {

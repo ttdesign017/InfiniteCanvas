@@ -1,6 +1,9 @@
 /**
- * HTML5 drag-and-drop import (browser → canvas).
+ * HTML5 drag-and-drop import (browser → canvas / Tauri WebView).
  * PureRef-style: media files/URLs become media; page URLs become bookmarks; text becomes notes.
+ *
+ * On Tauri Windows, `dragDropEnabled` is false so this path receives the same
+ * DataTransfer content as Chrome (FileList, uri-list, HTML, plain text).
  */
 
 import { invoke } from '@tauri-apps/api/core'
@@ -11,7 +14,10 @@ import { placeItemsTight } from './layout'
 import {
   classifyMedia,
   createMediaFromFile,
+  createMediaFromPath,
   createMediaItemFromSrc,
+  fileSystemPathFromFile,
+  fileUrlToPath,
   getExtension,
 } from './media'
 import { normalizeUrl } from './linkMeta'
@@ -24,7 +30,18 @@ export function looksLikeUrl(text: string): boolean {
   const t = text.trim()
   if (!t || t.includes(' ') || t.length > 2048) return false
   if (/^https?:\/\//i.test(t)) return true
+  if (/^file:/i.test(t)) return true
   if (/^[\w.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(t)) return true
+  return false
+}
+
+/** Windows / POSIX absolute path that points at a media file */
+export function looksLikeMediaFilePath(text: string): boolean {
+  const t = text.trim().replace(/^["']|["']$/g, '')
+  if (!t || t.length > 1024) return false
+  if (!MEDIA_EXT_RE.test(t)) return false
+  if (/^[a-zA-Z]:[\\/]/.test(t) || t.startsWith('\\\\') || t.startsWith('/')) return true
+  if (/^file:/i.test(t)) return true
   return false
 }
 
@@ -158,6 +175,7 @@ function fileNameFromUrl(url: string): string {
 
 export type DropImportPayload =
   | { type: 'media-files'; files: File[] }
+  | { type: 'media-paths'; paths: string[] }
   | {
       type: 'media-urls'
       urls: Array<{ url: string; kind: 'image' | 'gif' | 'video'; name?: string }>
@@ -166,15 +184,64 @@ export type DropImportPayload =
   | { type: 'text'; text: string }
   | { type: 'empty' }
 
+function collectLocalMediaPaths(dt: DataTransfer): string[] {
+  const paths: string[] = []
+  const seen = new Set<string>()
+
+  const add = (raw: string | null | undefined) => {
+    if (!raw) return
+    const path = fileUrlToPath(raw) || (looksLikeMediaFilePath(raw) ? raw.trim().replace(/^["']|["']$/g, '') : null)
+    if (!path || !classifyMedia(path)) return
+    const key = path.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    paths.push(path)
+  }
+
+  // FileList stubs (size 0) may still expose a path on Chromium/WebView
+  try {
+    for (const f of Array.from(dt.files || [])) {
+      add(fileSystemPathFromFile(f))
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const uriList = getDataSafe(dt, 'text/uri-list')
+  if (uriList) {
+    for (const u of parseUriList(uriList)) add(u)
+  }
+
+  const plain = (getDataSafe(dt, 'text/plain') || getDataSafe(dt, 'text')).trim()
+  if (plain) {
+    // Explorer multi-select sometimes joins paths with newlines
+    for (const line of plain.split(/\r?\n/)) add(line)
+  }
+
+  return paths
+}
+
 /**
  * Inspect DataTransfer and decide what to place on the canvas.
- * Priority: real media files → media URLs (img/video) → page link → plain text.
+ * Priority: real media files → local paths → media URLs (img/video) → page link → plain text.
  */
 export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
-  // 1) Real files (local FS / some browser image drags)
+  // 1) Real files with content (browser / HTML5 after dragDropEnabled:false)
   const files = collectClipboardMedia(dt).filter((f) => f.size > 0)
   if (files.length > 0) {
     return { type: 'media-files', files }
+  }
+
+  // 1b) Local filesystem paths (WebView2 empty File stubs / file:// uri-list)
+  const localPaths = collectLocalMediaPaths(dt)
+  if (localPaths.length > 0) {
+    return { type: 'media-paths', paths: localPaths }
+  }
+
+  // 1c) Files with size 0 but classified by name — still try File path (createMediaFromFile handles path)
+  const namedFiles = collectClipboardMedia(dt)
+  if (namedFiles.length > 0) {
+    return { type: 'media-files', files: namedFiles }
   }
 
   const html = getDataSafe(dt, 'text/html')
@@ -199,6 +266,8 @@ export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
   const uris = uriList ? parseUriList(uriList) : []
   const mediaFromUris = uris
     .map((u) => {
+      // Skip file:// — already handled as media-paths
+      if (/^file:/i.test(u)) return null
       const kind = mediaKindFromUrl(u)
       if (!kind) return null
       return { url: u, kind, name: fileNameFromUrl(u) }
@@ -218,9 +287,14 @@ export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
 
   // 2) Single page / link URL → bookmark card
   const linkCandidate =
-    uris.find((u) => looksLikeUrl(u) && !mediaKindFromUrl(u)) ||
+    uris.find((u) => /^https?:/i.test(u) && looksLikeUrl(u) && !mediaKindFromUrl(u)) ||
     (html ? parseHtmlDrop(html).hrefs[0] : undefined) ||
-    (plain && looksLikeUrl(plain) && !mediaKindFromUrl(plain) ? plain : undefined)
+    (plain &&
+    looksLikeUrl(plain) &&
+    !mediaKindFromUrl(plain) &&
+    !looksLikeMediaFilePath(plain)
+      ? plain
+      : undefined)
 
   if (linkCandidate) {
     return { type: 'link', url: normalizeUrl(linkCandidate) }
@@ -235,7 +309,9 @@ export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
         urls: [{ url: normalizeUrl(plain), kind, name: fileNameFromUrl(plain) }],
       }
     }
-    return { type: 'link', url: normalizeUrl(plain) }
+    if (!looksLikeMediaFilePath(plain)) {
+      return { type: 'link', url: normalizeUrl(plain) }
+    }
   }
 
   // 3) Selected text → note card
@@ -291,6 +367,16 @@ async function resolveRemoteMediaSrc(
     } catch {
       /* fall through */
     }
+    // Retry with page-like referer for hotlink-protected hosts
+    try {
+      const data = await invoke<string>('proxy_image_data_url', {
+        url,
+        referer: url,
+      })
+      if (data?.startsWith('data:')) return data
+    } catch {
+      /* fall through */
+    }
   }
 
   // Browser / fallback: fetch → blob URL
@@ -299,6 +385,21 @@ async function resolveRemoteMediaSrc(
     if (res.ok) {
       const blob = await res.blob()
       if (blob.size > 0) return URL.createObjectURL(blob)
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Public image proxy fallback (same idea as link card thumbs in browser)
+  try {
+    const host = new URL(url).hostname
+    if (/twimg\.com$|twitter\.com$|ytimg\.com$|ggpht\.com$/i.test(host)) {
+      const proxied = `https://wsrv.nl/?url=${encodeURIComponent(url)}&n=-1`
+      const res = await fetch(proxied, { mode: 'cors' })
+      if (res.ok) {
+        const blob = await res.blob()
+        if (blob.size > 0) return URL.createObjectURL(blob)
+      }
     }
   } catch {
     /* ignore */
@@ -325,6 +426,18 @@ export async function importDropAt(
     const raw: CanvasItem[] = []
     for (const file of payload.files) {
       const item = await createMediaFromFile(file, worldX, worldY, z++)
+      if (item) raw.push(item)
+    }
+    if (!raw.length) return false
+    store.addItems(placeItemsTight(raw, worldX, worldY, 4))
+    return true
+  }
+
+  if (payload.type === 'media-paths') {
+    let z = store.nextZ
+    const raw: CanvasItem[] = []
+    for (const path of payload.paths) {
+      const item = await createMediaFromPath(path, worldX, worldY, z++)
       if (item) raw.push(item)
     }
     if (!raw.length) return false

@@ -71,7 +71,7 @@ export async function pasteMediaFiles(files: File[]) {
   )
 }
 
-/** Collect media files from a paste event (files + clipboard image items). */
+/** Collect media files from a paste / drop event (files + clipboard image items). */
 export function collectClipboardMedia(data: DataTransfer | null): File[] {
   if (!data) return []
   const out: File[] = []
@@ -79,12 +79,16 @@ export function collectClipboardMedia(data: DataTransfer | null): File[] {
 
   const add = (f: File | null) => {
     if (!f) return
+    const anyFile = f as File & { path?: string }
     const isMedia =
       f.type.startsWith('image/') ||
       f.type.startsWith('video/') ||
-      /\.(png|jpe?g|webp|gif|bmp|svg|avif|mp4|webm|mov|mkv|avi|m4v)$/i.test(f.name)
+      /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|m4v|ogv)$/i.test(
+        f.name || anyFile.path || '',
+      )
     if (!isMedia) return
-    const key = `${f.type}|${f.size}|${f.name || 'blob'}`
+    // Include size-0 stubs: desktop WebView may only expose path/name
+    const key = `${f.type}|${f.size}|${f.name || anyFile.path || 'blob'}`
     if (seen.has(key)) return
     seen.add(key)
     out.push(f)
