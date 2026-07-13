@@ -14,7 +14,12 @@ export function useWindowDrag() {
     const onDown = (e: PointerEvent) => {
       if (e.button !== 2) return
       const t = e.target as HTMLElement
-      if (t.closest('input, textarea, select, button, a, [contenteditable="true"]')) {
+      // Skip window-drag on form controls, bookmark cards (own context menu), and UI menus
+      if (
+        t.closest(
+          'input, textarea, select, button, a, [contenteditable="true"], [data-bookmark-card], .bookmark-context-menu',
+        )
+      ) {
         return
       }
       e.preventDefault()
@@ -41,9 +46,15 @@ export function useWindowDrag() {
     }
 
     const onContextMenu = (e: MouseEvent) => {
-      // Allow native menu only on editable fields
+      // Allow native / custom menus on editable fields and bookmark cards
       const t = e.target as HTMLElement
-      if (t.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (
+        t.closest(
+          'input, textarea, select, [contenteditable="true"], [data-bookmark-card], .bookmark-context-menu',
+        )
+      ) {
+        return
+      }
       e.preventDefault()
     }
 

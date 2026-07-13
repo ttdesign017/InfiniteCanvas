@@ -704,34 +704,141 @@ kbd {
   cursor: grab;
 }
 
+/*
+ * Top-left name tab — always UNDER folder body and UNDER stacked cards.
+ * Compact (no name): original small tab.
+ * Expanded (has name / editing): taller, width follows text.
+ */
 .stack-folder-tab {
   position: absolute;
   left: 12px;
   top: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, #f0f4f8 0%, #e4e9ef 100%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: none;
+  box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  pointer-events: auto;
+  transition:
+    height 0.15s ease,
+    width 0.15s ease,
+    min-width 0.15s ease,
+    padding 0.15s ease;
+}
+
+/* Empty name — original small tab */
+.stack-folder-tab.is-compact {
   width: 28%;
   min-width: 48px;
   max-width: 110px;
   height: 14px;
-  background: linear-gradient(180deg, #f0f4f8 0%, #e4e9ef 100%);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-bottom: none;
+  padding: 0;
   border-radius: 8px 8px 0 0;
-  box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.04);
+  cursor: grab;
+}
+
+/* Has name or editing — full name tab */
+.stack-folder-tab.is-expanded {
+  width: auto;
+  min-width: 56px;
+  max-width: min(72%, 320px);
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 9px 9px 0 0;
+  display: inline-grid;
+  align-items: center;
+  grid-template-columns: minmax(36px, max-content);
+  cursor: text;
+}
+
+.stack-folder-tab.is-editing {
+  background: linear-gradient(180deg, #ffffff 0%, #eef3f8 100%);
+}
+
+/* Invisible sizer shares the grid cell with label/input → drives width */
+.stack-folder-tab-sizer {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  white-space: pre;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  letter-spacing: 0.01em;
+  line-height: 1;
+  pointer-events: none;
+  min-width: 36px;
+}
+
+.stack-folder-tab-label {
+  grid-area: 1 / 1;
+  display: block;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
+}
+
+.stack-folder-name-input {
+  grid-area: 1 / 1;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  color: var(--text);
+  letter-spacing: 0.01em;
+  line-height: 1;
+  caret-color: var(--accent);
+}
+
+.stack-folder-name-input::placeholder {
+  color: var(--text-faint);
+  font-weight: 500;
 }
 
 .stack-folder-body {
   position: absolute;
   left: 0;
   right: 0;
-  top: 12px;
   bottom: 0;
+  z-index: 1;
   background: linear-gradient(165deg, #f7f8fa 0%, #eef1f5 55%, #e8ecf1 100%);
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 12px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.8) inset,
     0 10px 28px rgba(0, 0, 0, 0.08);
-  transition: box-shadow 0.45s ease, border-color 0.45s ease;
+  transition:
+    box-shadow 0.45s ease,
+    border-color 0.45s ease,
+    top 0.15s ease;
+}
+
+/* Compact tab → body closer to top (original geometry) */
+.stack-folder.is-compact .stack-folder-body {
+  top: 12px;
+}
+
+/* Expanded name tab → body tucks 2px over the taller tab */
+.stack-folder.has-name .stack-folder-body,
+.stack-folder.is-naming .stack-folder-body {
+  top: 22px;
 }
 
 .stack-folder.is-selected .stack-folder-body {
@@ -760,33 +867,35 @@ kbd {
   z-index: 100000 !important;
 }
 
-/* Corner handles (visible) — high z so they sit above media/card fill */
+/* Corner handles — above item content, own pointer path (not parent move) */
 .resize-handle {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   background: #ffffff;
   border: 1.5px solid var(--accent);
   border-radius: 1px;
-  z-index: 20;
+  z-index: 50;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-  pointer-events: auto;
+  pointer-events: auto !important;
   touch-action: none;
 }
 
-.resize-handle.nw { left: -4px; top: -4px; cursor: nwse-resize; }
-.resize-handle.ne { right: -4px; top: -4px; cursor: nesw-resize; }
-.resize-handle.sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
-.resize-handle.se { right: -4px; bottom: -4px; cursor: nwse-resize; }
+.resize-handle.nw { left: -5px; top: -5px; cursor: nwse-resize; }
+.resize-handle.ne { right: -5px; top: -5px; cursor: nesw-resize; }
+.resize-handle.sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.resize-handle.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
 
-/* Edge hit zones — invisible, above content */
+/* Edge hit zones */
 .resize-edge {
   position: absolute;
-  z-index: 15;
+  z-index: 45;
   background: transparent;
-  pointer-events: auto;
+  pointer-events: auto !important;
   touch-action: none;
 }
+
+
 
 .resize-edge.n {
   left: 12px;
@@ -1121,6 +1230,246 @@ kbd {
   align-items: flex-start;
   min-height: 0;
   flex: 1;
+}
+
+/* ── Notion-style bookmark card ─────────────────────────── */
+
+.bookmark-card {
+  position: relative;
+  padding: 0;
+  gap: 0;
+  background: #fff;
+  border-color: rgba(15, 15, 15, 0.1);
+}
+
+.bookmark-card .bookmark-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.bookmark-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px 14px;
+  justify-content: center;
+}
+
+.bookmark-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.bookmark-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.bookmark-desc-loading {
+  color: var(--text-faint);
+  font-style: italic;
+  -webkit-line-clamp: 1;
+}
+
+.bookmark-footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 6px;
+  min-width: 0;
+}
+
+.bookmark-favicon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #f4f4f4;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.bookmark-favicon img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.bookmark-favicon-fallback {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+/* Full URL (not just domain) */
+.bookmark-url {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.bookmark-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(15, 15, 15, 0.12);
+  border-top-color: var(--accent);
+  animation: bookmark-spin 0.7s linear infinite;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+@keyframes bookmark-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Thumb spans full card height (no action bar) */
+.bookmark-thumb {
+  width: 36%;
+  max-width: 200px;
+  min-width: 120px;
+  flex-shrink: 0;
+  align-self: stretch;
+  height: 100%;
+  background: #f0f0f0;
+  border-left: 1px solid rgba(15, 15, 15, 0.08);
+  overflow: hidden;
+}
+
+.bookmark-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.bookmark-thumb-skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e6e6e6 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: bookmark-shimmer 1.2s ease-in-out infinite;
+}
+
+.bookmark-thumb-empty {
+  display: grid;
+  place-items: center;
+  color: rgba(15, 15, 15, 0.22);
+  font-size: 28px;
+  background: linear-gradient(160deg, #f7f7f7, #efefef);
+}
+
+@keyframes bookmark-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+/* Inline edit overlay (opened from context menu) */
+.bookmark-edit-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(6px);
+}
+
+.bookmark-edit-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.bookmark-edit-overlay input {
+  width: 100%;
+  background: #f5f5f5;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 13px;
+  outline: none;
+}
+
+.bookmark-edit-overlay input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(13, 153, 255, 0.15);
+}
+
+/* Right-click menu for Open / Edit */
+.bookmark-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 148px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 15, 15, 0.1);
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgba(15, 15, 15, 0.02),
+    0 8px 28px rgba(15, 15, 15, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-ui);
+}
+
+.bookmark-menu-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.3;
+}
+
+.bookmark-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.bookmark-menu-item:active {
+  filter: brightness(0.97);
 }
 
 .link-favicon {

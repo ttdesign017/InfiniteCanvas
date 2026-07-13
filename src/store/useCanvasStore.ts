@@ -64,6 +64,8 @@ interface CanvasState {
   animating: boolean
   /** Item currently in inline edit mode (text / textcard) */
   editingId: string | null
+  /** Stack folder tab name being edited (stackGroupId) */
+  editingStackGroupId: string | null
   /** Snap selection edges to nearby item edges while moving */
   snapEnabled: boolean
   history: HistoryEntry[]
@@ -71,6 +73,9 @@ interface CanvasState {
 
   setTool: (tool: Tool) => void
   setEditingId: (id: string | null) => void
+  setEditingStackGroupId: (groupId: string | null) => void
+  /** Rename a stack folder tab (writes stackName onto all members) */
+  commitStackName: (groupId: string, name: string) => void
   setViewport: (viewport: Partial<Viewport>) => void
   panBy: (dx: number, dy: number) => void
   zoomAt: (screenX: number, screenY: number, factor: number) => void
@@ -189,12 +194,40 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   boardName: 'Untitled Board',
   animating: false,
   editingId: null,
+  editingStackGroupId: null,
   snapEnabled: true,
   history: [],
   future: [],
 
-  setTool: (tool) => set({ tool, editingId: null }),
-  setEditingId: (id) => set({ editingId: id }),
+  setTool: (tool) => set({ tool, editingId: null, editingStackGroupId: null }),
+  setEditingId: (id) => set({ editingId: id, editingStackGroupId: null }),
+  setEditingStackGroupId: (groupId) =>
+    set({ editingStackGroupId: groupId, editingId: null }),
+  commitStackName: (groupId, name) => {
+    const trimmed = name.trim()
+    const members = get().items.filter(
+      (i) => i.stacked && i.stackGroupId === groupId,
+    )
+    if (members.length === 0) {
+      set({ editingStackGroupId: null })
+      return
+    }
+    const prev = (members[0].stackName || '').trim()
+    if (prev === trimmed) {
+      set({ editingStackGroupId: null })
+      return
+    }
+    get().pushHistory()
+    set((s) => ({
+      editingStackGroupId: null,
+      items: s.items.map((item) => {
+        if (!(item.stacked && item.stackGroupId === groupId)) return item
+        if (trimmed) return { ...item, stackName: trimmed }
+        const { stackName: _n, ...rest } = item
+        return rest as CanvasItem
+      }),
+    }))
+  },
   setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
 
@@ -428,13 +461,25 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     })),
 
   deleteSelected: () => {
-    const { selectedIds } = get()
+    const { selectedIds, editingStackGroupId, items } = get()
     if (selectedIds.length === 0) return
     get().pushHistory()
     const idSet = new Set(selectedIds)
+    // Drop name editor if the edited stack is fully removed
+    let clearNameEdit = false
+    if (editingStackGroupId) {
+      const remaining = items.some(
+        (i) =>
+          !idSet.has(i.id) &&
+          i.stacked &&
+          i.stackGroupId === editingStackGroupId,
+      )
+      clearNameEdit = !remaining
+    }
     set((s) => ({
       items: s.items.filter((i) => !idSet.has(i.id)),
       selectedIds: [],
+      editingStackGroupId: clearNameEdit ? null : s.editingStackGroupId,
     }))
   },
 
@@ -683,13 +728,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     get().pushHistory()
     const z = get().nextZ
     const normalized = url ? normalizeUrl(url) : ''
+    // Notion-style bookmark: width ~1.4× original 340, fixed height 160
     const item: LinkCardItem = {
       id: uid('link'),
       type: 'link',
       x: world.x,
       y: world.y,
-      width: 280,
-      height: 120,
+      width: 476,
+      height: 160,
       rotation: 0,
       zIndex: z,
       url: normalized,
@@ -914,7 +960,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         items: s.items.map((item) => {
           if (!targetIds.has(item.id)) return item
           if (options.unstack) {
-            const { stackGroupId: _g, ...rest } = item
+            const { stackGroupId: _g, stackName: _n, ...rest } = item
             return { ...rest, stacked: false } as CanvasItem
           }
           return {
@@ -927,10 +973,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       }))
     }
 
-    set({ animating: true, editingId: null })
+    set({
+      animating: true,
+      editingId: null,
+      // Keep stack-name editor open when creating a stack; clear on unstack
+      editingStackGroupId: options?.stackGroupId
+        ? options.stackGroupId
+        : options?.unstack
+          ? null
+          : get().editingStackGroupId,
+    })
     const t0 = performance.now()
 
     const tick = (now: number) => {
+      // Aborted by user interaction (e.g. started dragging)
+      if (!get().animating) return
+
       const t = Math.min(1, (now - t0) / durationMs)
       const e = easeOutCubic(t)
 
@@ -963,9 +1021,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         if (options?.unstack) {
           set((s) => ({
             animating: false,
+            editingStackGroupId: null,
             items: s.items.map((item) => {
               if (!targetIds.has(item.id)) return item
-              const { stackGroupId: _g, ...rest } = item
+              const { stackGroupId: _g, stackName: _n, ...rest } = item
               return { ...rest, stacked: false, rotation: 0 } as CanvasItem
             }),
           }))
@@ -985,6 +1044,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // Fan + paint order both follow current z-order (last-raised / highest z on top)
     const ordered = [...items].sort((a, b) => a.zIndex - b.zIndex)
     get().animateToLayout(computeQuickStack(ordered), 560, { stackGroupId: groupId })
+    // Enter name edit after layout starts; do not block the first drag
+    set({ editingStackGroupId: groupId, editingId: null })
   },
 
   smoothLayout: () => {
@@ -1031,6 +1092,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       nextZ: board.nextZ,
       boardName: board.name || 'Untitled Board',
       selectedIds: [],
+      editingId: null,
+      editingStackGroupId: null,
     })
   },
 }))

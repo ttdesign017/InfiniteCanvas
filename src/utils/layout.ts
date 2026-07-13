@@ -69,11 +69,20 @@ export function expandStackSelection(
   return [...out]
 }
 
-/** Axis-aligned bounds for a stack group (approx, ignores rotation spread) */
-export function stackGroupBounds(
-  members: CanvasItem[],
-  pad = 18,
-): { x: number; y: number; width: number; height: number } | null {
+/**
+ * Outer padding around stacked items for folder chrome.
+ * Top pad must clear the name tab (~24px) so the tab sits above the cards.
+ * Used only for drawing the folder — NOT for align / snap.
+ */
+export const STACK_FOLDER_PAD = 28
+
+export type BoundsRect = { x: number; y: number; width: number; height: number }
+
+/**
+ * Axis-aligned bounds of stack *cards only* (rotation-aware).
+ * No folder chrome / name-tab padding — use for align & snap edges.
+ */
+export function stackCardBounds(members: CanvasItem[]): BoundsRect | null {
   if (members.length === 0) return null
   // Inflate for rotation around bottom-left
   let minX = Infinity
@@ -103,10 +112,53 @@ export function stackGroupBounds(
     }
   }
   return {
-    x: minX - pad,
-    y: minY - pad,
-    width: maxX - minX + pad * 2,
-    height: maxY - minY + pad * 2,
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
+}
+
+/** Folder chrome outer bounds (cards + pad, including room for name tab) */
+export function stackGroupBounds(
+  members: CanvasItem[],
+  pad = STACK_FOLDER_PAD,
+): BoundsRect | null {
+  const cards = stackCardBounds(members)
+  if (!cards) return null
+  return {
+    x: cards.x - pad,
+    y: cards.y - pad,
+    width: cards.width + pad * 2,
+    height: cards.height + pad * 2,
+  }
+}
+
+/**
+ * Must match CSS `.stack-folder-body` top offset:
+ * - compact (no name): 12px
+ * - has name / naming: 22px
+ * This is the top of the large rounded rect — NOT the name tab.
+ */
+export const STACK_FOLDER_BODY_TOP_COMPACT = 12
+export const STACK_FOLDER_BODY_TOP_NAMED = 22
+
+/**
+ * Snap/align bounds for a stack = the large rounded folder body only.
+ * Excludes the top-left name tab so top-edge snap is the body top edge.
+ */
+export function stackFolderBodyBounds(members: CanvasItem[]): BoundsRect | null {
+  const outer = stackGroupBounds(members)
+  if (!outer) return null
+  const hasName = members.some((m) => (m.stackName || '').trim().length > 0)
+  const bodyTop = hasName
+    ? STACK_FOLDER_BODY_TOP_NAMED
+    : STACK_FOLDER_BODY_TOP_COMPACT
+  return {
+    x: outer.x,
+    y: outer.y + bodyTop,
+    width: outer.width,
+    height: Math.max(1, outer.height - bodyTop),
   }
 }
 
@@ -250,7 +302,7 @@ export function allContentBounds(items: CanvasItem[]): {
       const members = items.filter(
         (i) => i.stackGroupId === item.stackGroupId && i.stacked,
       )
-      const b = stackGroupBounds(members, 20)
+      const b = stackGroupBounds(members)
       if (!b) continue
       minX = Math.min(minX, b.x)
       minY = Math.min(minY, b.y)

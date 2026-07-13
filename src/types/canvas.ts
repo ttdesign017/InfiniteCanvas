@@ -51,6 +51,8 @@ export interface BaseItem {
   stackGroupId?: string
   /** Visual: rounded media + folder chrome after Quick Stack */
   stacked?: boolean
+  /** Display name on the folder tab (shared by all members of a stack) */
+  stackName?: string
 }
 
 export interface MediaItem extends BaseItem {
@@ -95,6 +97,9 @@ export interface LinkCardItem extends BaseItem {
   title: string
   description: string
   favicon?: string
+  /** Open Graph / Twitter card preview image */
+  image?: string
+  siteName?: string
 }
 
 export interface ScribbleItem extends BaseItem {

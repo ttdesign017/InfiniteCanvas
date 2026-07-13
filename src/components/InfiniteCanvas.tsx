@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
+import { StackFolder } from './StackFolder'
 import type { CanvasItem, MediaItem } from '../types/canvas'
 import {
   expandStackSelection,
@@ -11,7 +12,12 @@ import {
 } from '../utils/layout'
 import { createMediaFromFile, createMediaFromPath } from '../utils/media'
 import { computeResize, isEdgeResizeType } from '../utils/resize'
-import { computeSnapDelta, snapResizeRect, type SnapGuide } from '../utils/snap'
+import {
+  computeSnapDelta,
+  guidesEqual,
+  snapResizeRect,
+  type SnapGuide,
+} from '../utils/snap'
 import { isDesktop, onNativeFileDrop } from '../utils/desktop'
 import {
   clearTextScalePreview,
@@ -21,9 +27,28 @@ import {
   setTextScalePreview,
 } from '../utils/textScalePreview'
 
+/** Screen px before a press becomes a real drag (preserves double-click edit) */
+const DRAG_THRESHOLD_PX = 5
+
 type DragMode =
   | null
   | { kind: 'pan'; lastX: number; lastY: number }
+  | {
+      /** Click vs drag: not yet moved past threshold — no history / no position write */
+      kind: 'pending-move'
+      itemId: string
+      isStacked: boolean
+      stackGroupId?: string
+      canEditText: boolean
+      startClientX: number
+      startClientY: number
+      lastX: number
+      lastY: number
+      ids: string[]
+      origins: Record<string, { x: number; y: number }>
+      duplicated: boolean
+      altHeld: boolean
+    }
   | {
       kind: 'move'
       ids: string[]
@@ -121,9 +146,17 @@ function resolveCropTarget(
 export function InfiniteCanvas() {
   const surfaceRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragMode>(null)
-  /** Window-level listeners while resizing (survives re-render / capture loss) */
-  const resizeWinCleanup = useRef<(() => void) | null>(null)
   const eraseHistoryPushed = useRef(false)
+  /** Coalesce store writes during drag/resize to one per animation frame */
+  const dragRafRef = useRef(0)
+  const pendingDragWriteRef = useRef<(() => void) | null>(null)
+  /** Double-click detector (works even when first press was a pending-move) */
+  const lastItemClickRef = useRef<{
+    id: string
+    t: number
+    x: number
+    y: number
+  } | null>(null)
   const [marquee, setMarquee] = useState<{
     x: number
     y: number
@@ -147,9 +180,41 @@ export function InfiniteCanvas() {
   const cHeld = useCanvasStore((s) => s.cHeld)
   const isPanning = useCanvasStore((s) => s.isPanning)
 
-  const sortedItems = [...items].sort((a, b) => a.zIndex - b.zIndex)
-  const selectedSet = new Set(selectedIds)
+  const sortedItems = useMemo(
+    () => [...items].sort((a, b) => a.zIndex - b.zIndex),
+    [items],
+  )
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const effectiveTool = spaceHeld ? 'pan' : cHeld ? 'crop' : tool
+
+  const stackFolders = useMemo(() => {
+    const groups = new Map<string, CanvasItem[]>()
+    for (const it of items) {
+      if (!it.stackGroupId || !it.stacked) continue
+      const list = groups.get(it.stackGroupId) || []
+      list.push(it)
+      groups.set(it.stackGroupId, list)
+    }
+    return [...groups.entries()].map(([gid, members]) => {
+      const b = stackGroupBounds(members)
+      if (!b) return null
+      return {
+        gid,
+        members,
+        bounds: b,
+        selected: members.some((m) => selectedSet.has(m.id)),
+        z: Math.min(...members.map((m) => m.zIndex)) - 1,
+        proxy: members[0],
+      }
+    }).filter(Boolean) as Array<{
+      gid: string
+      members: CanvasItem[]
+      bounds: { x: number; y: number; width: number; height: number }
+      selected: boolean
+      z: number
+      proxy: CanvasItem
+    }>
+  }, [items, selectedSet])
 
   const getLocalPoint = useCallback((e: { clientX: number; clientY: number }) => {
     const rect = surfaceRef.current?.getBoundingClientRect()
@@ -157,6 +222,28 @@ export function InfiniteCanvas() {
       x: e.clientX - (rect?.left ?? 0),
       y: e.clientY - (rect?.top ?? 0),
     }
+  }, [])
+
+  /** One store write per frame while dragging — cuts jank from multi-event frames */
+  const scheduleDragWrite = useCallback((fn: () => void) => {
+    pendingDragWriteRef.current = fn
+    if (dragRafRef.current) return
+    dragRafRef.current = requestAnimationFrame(() => {
+      dragRafRef.current = 0
+      const run = pendingDragWriteRef.current
+      pendingDragWriteRef.current = null
+      run?.()
+    })
+  }, [])
+
+  const flushDragWrite = useCallback(() => {
+    if (dragRafRef.current) {
+      cancelAnimationFrame(dragRafRef.current)
+      dragRafRef.current = 0
+    }
+    const run = pendingDragWriteRef.current
+    pendingDragWriteRef.current = null
+    run?.()
   }, [])
 
   useEffect(() => {
@@ -201,16 +288,122 @@ export function InfiniteCanvas() {
     }
   }
 
-  const onItemPointerDown = useCallback(
-    (e: React.PointerEvent, item: CanvasItem) => {
+  /** End layout animation so it cannot overwrite manual moves */
+  const cancelLayoutAnimation = () => {
+    if (useCanvasStore.getState().animating) {
+      useCanvasStore.setState({ animating: false })
+    }
+  }
+
+  const dismissStackNameEdit = () => {
+    const store = useCanvasStore.getState()
+    if (!store.editingStackGroupId) return
+    const ae = document.activeElement as HTMLInputElement | null
+    if (ae?.classList?.contains('stack-folder-name-input')) {
+      store.commitStackName(store.editingStackGroupId, ae.value)
+    } else {
+      useCanvasStore.setState({ editingStackGroupId: null })
+    }
+  }
+
+  /**
+   * Resize starts ONLY from handle onPointerDown (CanvasItemView).
+   * Isolated from move path so handle clicks never become a pan/move.
+   */
+  const onResizePointerDown = useCallback(
+    (e: React.PointerEvent, item: CanvasItem, handle: string) => {
       if (e.button !== 0) return
       const store = useCanvasStore.getState()
+      if (item.stacked && item.stackGroupId) return
+
+      dismissStackNameEdit()
       blurChrome()
+      cancelLayoutAnimation()
+      flushDragWrite()
 
       if (store.spaceHeld || store.tool === 'pan') return
       if (store.tool === 'scribble' || store.tool === 'erase') return
 
-      // Crop mode (hold C): never move/deselect; surface + item both start crop
+      const live = store.items.find((i) => i.id === item.id) ?? item
+      const h = (handle || 'se').toLowerCase()
+      const edgeMode: 'scale' | 'edge' = isEdgeResizeType(live.type)
+        ? 'edge'
+        : 'scale'
+      const isMediaItem =
+        live.type === 'image' || live.type === 'gif' || live.type === 'video'
+      const isText = live.type === 'text'
+
+      if (!store.selectedIds.includes(live.id)) {
+        store.select([live.id])
+      }
+      store.pushHistory()
+      clearTextScalePreview()
+
+      dragRef.current = {
+        kind: 'resize',
+        id: live.id,
+        handle: h,
+        startX: e.clientX,
+        startY: e.clientY,
+        orig: {
+          x: live.x,
+          y: live.y,
+          width: live.width,
+          height: live.height,
+        },
+        edgeMode,
+        isMedia: isMediaItem,
+        isText,
+        origFontSize: isText && live.type === 'text' ? live.fontSize : undefined,
+      }
+
+      surfaceRef.current?.setPointerCapture(e.pointerId)
+    },
+    [flushDragWrite],
+  )
+
+  /** Enter note/text edit without select() wiping editingId */
+  const enterTextEdit = (itemId: string) => {
+    const store = useCanvasStore.getState()
+    if (!store.selectedIds.includes(itemId)) {
+      store.select([itemId])
+    }
+    // select() clears editingId — set edit after
+    useCanvasStore.setState({ editingId: itemId, editingStackGroupId: null })
+  }
+
+  const enterStackRename = (groupId: string, itemId: string) => {
+    const store = useCanvasStore.getState()
+    const expanded = expandStackSelection([itemId], store.items)
+    store.select(expanded)
+    useCanvasStore.setState({
+      editingStackGroupId: groupId,
+      editingId: null,
+    })
+  }
+
+  const onItemPointerDown = useCallback(
+    (e: React.PointerEvent, item: CanvasItem) => {
+      if (e.button !== 0) return
+      // Handles have their own handler with stopPropagation — if we get here,
+      // this is a body click (move), not a resize handle.
+      if ((e.target as HTMLElement).closest?.('[data-handle]')) return
+
+      const store = useCanvasStore.getState()
+
+      dismissStackNameEdit()
+      blurChrome()
+      cancelLayoutAnimation()
+      flushDragWrite()
+
+      if (store.spaceHeld || store.tool === 'pan') return
+      if (store.tool === 'scribble' || store.tool === 'erase') return
+
+      const isStacked = !!(item.stacked && item.stackGroupId)
+      const canEditText =
+        !isStacked && (item.type === 'text' || item.type === 'textcard')
+
+      // Crop mode (hold C)
       if (store.cHeld) {
         e.stopPropagation()
         e.preventDefault()
@@ -218,7 +411,6 @@ export function InfiniteCanvas() {
         const world = screenToWorld(local.x, local.y, store.viewport)
         const target = resolveCropTarget(world, store.items, store.selectedIds)
         if (!target) return
-        // Keep existing multi-selection if target already selected; otherwise select target only
         if (!store.selectedIds.includes(target.id)) {
           store.select([target.id])
         }
@@ -228,251 +420,32 @@ export function InfiniteCanvas() {
           startWorld: { ...world },
           currentWorld: { ...world },
         }
-        // Capture on surface so move/up always reach crop handlers
-          surfaceRef.current?.setPointerCapture(e.pointerId)
+        surfaceRef.current?.setPointerCapture(e.pointerId)
         setCropOverlay({ x: local.x, y: local.y, w: 0, h: 0 })
         return
       }
 
-      const handle = (e.target as HTMLElement).closest('[data-handle]') as HTMLElement | null
-
       e.stopPropagation()
-      // Do not preventDefault — it blocks double-click edit on text/note cards
 
-      // Stacked items are frozen as a group — no edit / resize / per-item UI
-      const isStacked = !!(item.stacked && item.stackGroupId)
-
-      // Second click of a double-click: enter edit, don't start a drag
-      if (
-        !isStacked &&
-        e.detail >= 2 &&
-        (item.type === 'text' || item.type === 'textcard')
-      ) {
-        store.select([item.id])
-        store.setEditingId(item.id)
-        return
+      // Double-click (detail>=2): enter edit immediately — never start a drag
+      if (e.detail >= 2) {
+        if (canEditText) {
+          enterTextEdit(item.id)
+          return
+        }
+        if (isStacked && item.stackGroupId) {
+          enterStackRename(item.stackGroupId, item.id)
+          return
+        }
       }
 
-      // While editing this item, clicks inside stay for text selection
+      // While editing this item, clicks stay for text selection
       if (
-        !isStacked &&
-        store.editingId === item.id &&
-        (item.type === 'text' || item.type === 'textcard')
+        canEditText &&
+        store.editingId === item.id
       ) {
         return
       }
-
-      if (handle && !isStacked) {
-        e.preventDefault()
-        e.stopPropagation()
-        const h = (handle.dataset.handle || 'se').toLowerCase()
-        // Text / note / link: edge handles move one side only
-        // Media: edges scale uniformly
-        const edgeMode: 'scale' | 'edge' = isEdgeResizeType(item.type)
-          ? 'edge'
-          : 'scale'
-        const isMedia =
-          item.type === 'image' || item.type === 'gif' || item.type === 'video'
-        const isText = item.type === 'text'
-        const live = store.items.find((i) => i.id === item.id) ?? item
-        dragRef.current = {
-          kind: 'resize',
-          id: live.id,
-          handle: h,
-          startX: e.clientX,
-          startY: e.clientY,
-          orig: {
-            x: live.x,
-            y: live.y,
-            width: live.width,
-            height: live.height,
-          },
-          edgeMode,
-          isMedia,
-          isText,
-          origFontSize:
-            isText && live.type === 'text' ? live.fontSize : undefined,
-        }
-
-        if (!store.selectedIds.includes(live.id)) {
-          store.select([live.id])
-        }
-        store.pushHistory()
-
-        // Window capture path — single owner of resize
-        resizeWinCleanup.current?.()
-        clearTextScalePreview()
-
-        /** Commit text CSS-scale preview into store (idempotent). */
-        const commitTextScaleAndEnd = () => {
-          const drag = dragRef.current
-          if (!drag || drag.kind !== 'resize') {
-            clearTextScalePreview()
-            return
-          }
-
-          if (drag.isText && drag.origFontSize && drag.orig.width > 1) {
-            const p = getTextScalePreview()
-            const scale =
-              p && p.id === drag.id
-                ? p.scale
-                : drag.textScaleActive && drag.lastTextScale
-                  ? drag.lastTextScale
-                  : null
-
-            if (scale != null && Math.abs(scale - 1) > 0.001) {
-              const origin = originFromHandle(drag.handle)
-              const box = scaledBoxFromPreview({
-                id: drag.id,
-                scale,
-                origin,
-                baseX: drag.orig.x,
-                baseY: drag.orig.y,
-                baseW: drag.orig.width,
-                baseH: drag.orig.height,
-                baseFont: drag.origFontSize,
-              })
-              // One atomic write so hit-box + font match the visual
-              useCanvasStore.getState().updateItem(drag.id, {
-                x: box.x,
-                y: box.y,
-                width: Math.max(24, box.width),
-                height: Math.max(24, box.height),
-                fontSize: Math.max(8, Math.min(200, Math.round(box.fontSize))),
-              })
-            }
-          }
-
-          clearTextScalePreview()
-          // Detach listeners first so we don't re-enter
-          const cleanup = resizeWinCleanup.current
-          resizeWinCleanup.current = null
-          cleanup?.()
-          if (dragRef.current?.kind === 'resize') {
-            dragRef.current = null
-          }
-          setSnapGuides([])
-        }
-
-        const onWinMove = (ev: PointerEvent) => {
-          const drag = dragRef.current
-          if (!drag || drag.kind !== 'resize') return
-          const st = useCanvasStore.getState()
-          const zoom = Math.max(0.01, st.viewport.zoom)
-          const dx = (ev.clientX - drag.startX) / zoom
-          const dy = (ev.clientY - drag.startY) / zoom
-          if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-
-          const isCorner = drag.handle.length === 2
-          const shift = ev.shiftKey
-
-          /**
-           * Exclusive paths:
-           * - Text corner + no Shift → free box (no font change)
-           * - Text corner + Shift     → CSS transform scale preview (no reflow);
-           *                              commit font+box on pointerup
-           * - Media edge / corner     → proportional (Shift frees corner)
-           * - Note/link               → edge = one side; corner = free box
-           */
-          let keepAspect = false
-          let resizeMode: 'scale' | 'edge' = drag.edgeMode
-          let textLiveScale = false
-
-          if (drag.isText && isCorner) {
-            if (shift) {
-              keepAspect = true
-              resizeMode = 'scale'
-              textLiveScale = true
-            } else {
-              keepAspect = false
-              resizeMode = 'scale'
-              textLiveScale = false
-              drag.textScaleActive = false
-              clearTextScalePreview()
-            }
-          } else if (drag.isMedia) {
-            keepAspect = !isCorner || !shift
-            resizeMode = 'scale'
-            drag.textScaleActive = false
-            clearTextScalePreview()
-          } else {
-            keepAspect = false
-            resizeMode = drag.edgeMode
-            drag.textScaleActive = false
-            clearTextScalePreview()
-          }
-
-          let next = computeResize(
-            drag.handle,
-            drag.orig,
-            dx,
-            dy,
-            keepAspect,
-            resizeMode,
-          )
-          if (
-            !next ||
-            !Number.isFinite(next.width) ||
-            !Number.isFinite(next.height)
-          ) {
-            return
-          }
-
-          const aspect = drag.orig.width / Math.max(1e-6, drag.orig.height)
-          if (st.snapEnabled) {
-            const snapped = snapResizeRect(
-              next,
-              drag.handle,
-              drag.id,
-              st.items,
-              10,
-              keepAspect ? aspect : undefined,
-            )
-            next = snapped.rect
-            setSnapGuides(snapped.guides)
-          } else {
-            setSnapGuides([])
-          }
-
-          const w = Math.max(24, next.width)
-          const h = Math.max(24, next.height)
-
-          if (textLiveScale && drag.origFontSize && drag.orig.width > 1) {
-            // Smooth path: only CSS transform — zero fontSize writes mid-drag
-            const scale = Math.max(0.05, w / drag.orig.width)
-            drag.lastTextScale = scale
-            drag.textScaleActive = true
-            setTextScalePreview({
-              id: drag.id,
-              scale,
-              origin: originFromHandle(drag.handle),
-              baseX: drag.orig.x,
-              baseY: drag.orig.y,
-              baseW: drag.orig.width,
-              baseH: drag.orig.height,
-              baseFont: drag.origFontSize,
-            })
-            return
-          }
-
-          st.resizeItem(drag.id, w, h, next.x, next.y)
-        }
-
-        const onWinUp = () => {
-          commitTextScaleAndEnd()
-        }
-        window.addEventListener('pointermove', onWinMove, true)
-        window.addEventListener('pointerup', onWinUp, true)
-        window.addEventListener('pointercancel', onWinUp, true)
-        resizeWinCleanup.current = () => {
-          window.removeEventListener('pointermove', onWinMove, true)
-          window.removeEventListener('pointerup', onWinUp, true)
-          window.removeEventListener('pointercancel', onWinUp, true)
-        }
-        return
-      }
-
-      ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
 
       const additive = e.shiftKey || e.ctrlKey || e.metaKey
       let ids = store.selectedIds
@@ -480,22 +453,23 @@ export function InfiniteCanvas() {
         store.select([item.id], true)
         ids = useCanvasStore.getState().selectedIds
       } else if (!store.selectedIds.includes(item.id)) {
-        // Selecting one member of a stack selects the whole stack
         const expanded = expandStackSelection([item.id], store.items)
         store.select(expanded)
         ids = expanded
       } else {
-        // Keep selection; clear edit if switching to move
-        if (store.editingId) store.setEditingId(null)
+        // Already selected: keep selection. Do NOT clear editing here on
+        // first half of a double-click — that raced with enter-edit.
         ids = expandStackSelection(store.selectedIds, store.items)
         if (ids.length !== store.selectedIds.length) store.select(ids)
       }
 
-      store.pushHistory()
-      // Always move entire stack groups together
       let moveIds = expandStackSelection(ids, useCanvasStore.getState().items)
+      if (moveIds.length === 0) return
+
       let duplicated = false
       if (e.altKey) {
+        // Alt-drag duplicate: promote immediately (user intent is drag)
+        store.pushHistory()
         moveIds = store.duplicateItems(moveIds)
         duplicated = true
       }
@@ -505,20 +479,28 @@ export function InfiniteCanvas() {
         const it = live.find((i) => i.id === id)
         if (it) origins[id] = { x: it.x, y: it.y }
       }
+      if (Object.keys(origins).length === 0) return
+
+      // Pending until movement exceeds threshold — preserves double-click edit
       dragRef.current = {
-        kind: 'move',
-        ids: moveIds,
+        kind: 'pending-move',
+        itemId: item.id,
+        isStacked,
+        stackGroupId: item.stackGroupId,
+        canEditText,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
         lastX: e.clientX,
         lastY: e.clientY,
-        moved: false,
+        ids: moveIds,
+        origins,
         duplicated,
         altHeld: e.altKey,
-        origins,
-        accDx: 0,
-        accDy: 0,
       }
+
+      surfaceRef.current?.setPointerCapture(e.pointerId)
     },
-    [getLocalPoint],
+    [flushDragWrite, getLocalPoint],
   )
 
   const onPointerDown = useCallback(
@@ -648,8 +630,41 @@ export function InfiniteCanvas() {
         return
       }
 
+      // Promote click → drag after threshold (keeps double-click available)
+      if (drag.kind === 'pending-move') {
+        const dist = Math.hypot(
+          e.clientX - drag.startClientX,
+          e.clientY - drag.startClientY,
+        )
+        if (dist < DRAG_THRESHOLD_PX) {
+          drag.lastX = e.clientX
+          drag.lastY = e.clientY
+          return
+        }
+        // Real drag: push history once, then switch to move mode
+        store.pushHistory()
+        // Leave text edit if any
+        if (store.editingId) {
+          useCanvasStore.setState({ editingId: null })
+        }
+        dragRef.current = {
+          kind: 'move',
+          ids: drag.ids,
+          lastX: e.clientX,
+          lastY: e.clientY,
+          moved: true,
+          duplicated: drag.duplicated,
+          altHeld: drag.altHeld,
+          origins: drag.origins,
+          accDx: 0,
+          accDy: 0,
+        }
+        lastItemClickRef.current = null
+        // fall through into move handling with zero delta this frame
+        return
+      }
+
       if (drag.kind === 'move') {
-        // Late Alt press while dragging (before first move) also duplicates
         if (e.altKey && !drag.duplicated && !drag.moved) {
           const newIds = store.duplicateItems(drag.ids)
           drag.ids = newIds
@@ -664,23 +679,33 @@ export function InfiniteCanvas() {
           drag.accDx = 0
           drag.accDy = 0
         }
-        const zoom = store.viewport.zoom
+        const zoom = Math.max(0.01, store.viewport.zoom || 1)
         const dx = (e.clientX - drag.lastX) / zoom
         const dy = (e.clientY - drag.lastY) / zoom
-        if (dx !== 0 || dy !== 0) {
-          drag.accDx += dx
-          drag.accDy += dy
-          drag.moved = true
+        drag.lastX = e.clientX
+        drag.lastY = e.clientY
+        if (dx === 0 && dy === 0) return
 
-          // Free target from drag-start origins.
-          // Keep stacked / stackGroupId so snap uses folder bounds as one unit.
-          const freeTargets = drag.ids.map((id) => {
-            const o = drag.origins[id]
-            const it = store.items.find((i) => i.id === id)
+        drag.accDx += dx
+        drag.accDy += dy
+        drag.moved = true
+
+        // Snapshot for rAF write (refs must not be read late with stale values)
+        const ids = drag.ids
+        const origins = drag.origins
+        const accDx = drag.accDx
+        const accDy = drag.accDy
+        const snapOn = store.snapEnabled
+
+        scheduleDragWrite(() => {
+          const st = useCanvasStore.getState()
+          const freeTargets = ids.map((id) => {
+            const o = origins[id]
+            const it = st.items.find((i) => i.id === id)
             return {
               id,
-              x: (o?.x ?? it?.x ?? 0) + drag.accDx,
-              y: (o?.y ?? it?.y ?? 0) + drag.accDy,
+              x: (o?.x ?? it?.x ?? 0) + accDx,
+              y: (o?.y ?? it?.y ?? 0) + accDy,
               width: it?.width ?? 0,
               height: it?.height ?? 0,
               type: it?.type ?? 'text',
@@ -691,21 +716,20 @@ export function InfiniteCanvas() {
             } as CanvasItem
           })
 
-          let finalDx = drag.accDx
-          let finalDy = drag.accDy
-          if (store.snapEnabled) {
-            const { dx: sx, dy: sy, guides } = computeSnapDelta(freeTargets, store.items)
-            finalDx += sx
-            finalDy += sy
-            setSnapGuides(guides)
-          } else {
-            setSnapGuides([])
+          let finalDx = accDx
+          let finalDy = accDy
+          let guides: SnapGuide[] = []
+          if (snapOn) {
+            const threshold = 10 / Math.max(0.01, st.viewport.zoom || 1)
+            const snap = computeSnapDelta(freeTargets, st.items, threshold)
+            finalDx += snap.dx
+            finalDy += snap.dy
+            guides = snap.guides
           }
 
-          // Set absolute positions from origins + snapped free delta
-          store.updateItems(
-            drag.ids.map((id) => {
-              const o = drag.origins[id]
+          st.updateItems(
+            ids.map((id) => {
+              const o = origins[id]
               return {
                 id,
                 patch: {
@@ -715,14 +739,109 @@ export function InfiniteCanvas() {
               }
             }),
           )
-        }
-        drag.lastX = e.clientX
-        drag.lastY = e.clientY
+          setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
+        })
         return
       }
 
-      // Resize is owned only by window listeners — avoid double-apply flicker
       if (drag.kind === 'resize') {
+        const zoom = Math.max(0.01, store.viewport.zoom || 1)
+        const dx = (e.clientX - drag.startX) / zoom
+        const dy = (e.clientY - drag.startY) / zoom
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
+
+        const isCorner = drag.handle.length === 2
+        const shift = e.shiftKey
+
+        let keepAspect = false
+        let resizeMode: 'scale' | 'edge' = drag.edgeMode
+        let textLiveScale = false
+
+        if (drag.isText && isCorner) {
+          if (shift) {
+            keepAspect = true
+            resizeMode = 'scale'
+            textLiveScale = true
+          } else {
+            keepAspect = false
+            resizeMode = 'scale'
+            textLiveScale = false
+            drag.textScaleActive = false
+            clearTextScalePreview()
+          }
+        } else if (drag.isMedia) {
+          keepAspect = !isCorner || !shift
+          resizeMode = 'scale'
+          drag.textScaleActive = false
+          clearTextScalePreview()
+        } else {
+          keepAspect = false
+          resizeMode = drag.edgeMode
+          drag.textScaleActive = false
+          clearTextScalePreview()
+        }
+
+        let next = computeResize(
+          drag.handle,
+          drag.orig,
+          dx,
+          dy,
+          keepAspect,
+          resizeMode,
+        )
+        if (
+          !next ||
+          !Number.isFinite(next.width) ||
+          !Number.isFinite(next.height)
+        ) {
+          return
+        }
+
+        const aspect = drag.orig.width / Math.max(1e-6, drag.orig.height)
+        let guides: SnapGuide[] = []
+        if (store.snapEnabled) {
+          // ~12 screen px snap distance (world units)
+          const threshold = 12 / zoom
+          const snapped = snapResizeRect(
+            next,
+            drag.handle,
+            drag.id,
+            store.items,
+            threshold,
+            keepAspect ? aspect : undefined,
+          )
+          next = snapped.rect
+          guides = snapped.guides
+        }
+
+        const w = Math.max(24, next.width)
+        const h = Math.max(24, next.height)
+        const nx = next.x
+        const ny = next.y
+        const id = drag.id
+
+        if (textLiveScale && drag.origFontSize && drag.orig.width > 1) {
+          // CSS transform preview path (no per-frame font write)
+          const scale = Math.max(0.05, w / drag.orig.width)
+          drag.lastTextScale = scale
+          drag.textScaleActive = true
+          setTextScalePreview({
+            id: drag.id,
+            scale,
+            origin: originFromHandle(drag.handle),
+            baseX: nx,
+            baseY: ny,
+            baseW: w,
+            baseH: h,
+            baseFont: drag.origFontSize,
+          })
+          setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
+          return
+        }
+
+        // Apply immediately so geometry matches guides (rAF made snap feel missing)
+        store.resizeItem(id, w, h, nx, ny)
+        setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
         return
       }
 
@@ -792,16 +911,59 @@ export function InfiniteCanvas() {
         setMarquee({ x, y, w, h })
       }
     },
-    [getLocalPoint],
+    [getLocalPoint, scheduleDragWrite],
   )
 
   const onPointerUp = useCallback(() => {
+    // Apply any coalesced drag write before ending
+    flushDragWrite()
+
     const drag = dragRef.current
     const store = useCanvasStore.getState()
 
-    // Resize: commit text scale if window listener lost the race, then end
+    // Pure click (no drag past threshold): detect double-click → edit
+    if (drag?.kind === 'pending-move') {
+      const now = performance.now()
+      const distFromStart = Math.hypot(
+        drag.lastX - drag.startClientX,
+        drag.lastY - drag.startClientY,
+      )
+      const stillClick = distFromStart < DRAG_THRESHOLD_PX
+
+      if (stillClick) {
+        const prev = lastItemClickRef.current
+        const isDbl =
+          !!prev &&
+          prev.id === drag.itemId &&
+          now - prev.t < 450 &&
+          Math.hypot(drag.lastX - prev.x, drag.lastY - prev.y) < 12
+
+        if (isDbl) {
+          if (drag.canEditText) {
+            enterTextEdit(drag.itemId)
+          } else if (drag.isStacked && drag.stackGroupId) {
+            enterStackRename(drag.stackGroupId, drag.itemId)
+          }
+          lastItemClickRef.current = null
+        } else {
+          lastItemClickRef.current = {
+            id: drag.itemId,
+            t: now,
+            x: drag.lastX,
+            y: drag.lastY,
+          }
+        }
+      } else {
+        lastItemClickRef.current = null
+      }
+
+      dragRef.current = null
+      eraseHistoryPushed.current = false
+      return
+    }
+
+    // Resize: commit text CSS-scale preview if used
     if (drag?.kind === 'resize') {
-      // Same commit path as window pointerup (idempotent)
       if (drag.isText && drag.origFontSize && drag.orig.width > 1) {
         const p = getTextScalePreview()
         const scale =
@@ -831,9 +993,6 @@ export function InfiniteCanvas() {
         }
       }
       clearTextScalePreview()
-      const cleanup = resizeWinCleanup.current
-      resizeWinCleanup.current = null
-      cleanup?.()
       dragRef.current = null
       setSnapGuides([])
       eraseHistoryPushed.current = false
@@ -912,7 +1071,7 @@ export function InfiniteCanvas() {
 
     dragRef.current = null
     eraseHistoryPushed.current = false
-  }, [])
+  }, [flushDragWrite])
 
   const placeMediaAt = useCallback(
     async (
@@ -1043,50 +1202,27 @@ export function InfiniteCanvas() {
       >
         <div className="canvas-grid" />
         {/* Folder chrome behind each stack group */}
-        {(() => {
-          const groups = new Map<string, typeof items>()
-          for (const it of items) {
-            if (!it.stackGroupId || !it.stacked) continue
-            const list = groups.get(it.stackGroupId) || []
-            list.push(it)
-            groups.set(it.stackGroupId, list)
-          }
-          return [...groups.entries()].map(([gid, members]) => {
-            const b = stackGroupBounds(members, 20)
-            if (!b) return null
-            const selected = members.some((m) => selectedSet.has(m.id))
-            // Folder sits under members but catches clicks on chrome/padding
-            const z = Math.min(...members.map((m) => m.zIndex)) - 1
-            const proxy = members[0]
-            return (
-              <div
-                key={`folder-${gid}`}
-                className={`stack-folder ${selected ? 'is-selected' : ''}`}
-                style={{
-                  transform: `translate(${b.x}px, ${b.y}px)`,
-                  width: b.width,
-                  height: b.height,
-                  zIndex: z,
-                }}
-                onPointerDown={(e) => {
-                  if (!proxy) return
-                  // Treat folder chrome as selecting the whole stack (frozen unit)
-                  onItemPointerDown(e, proxy)
-                }}
-              >
-                <div className="stack-folder-tab" />
-                <div className="stack-folder-body" />
-                <span className="stack-folder-label">{members.length}</span>
-              </div>
-            )
-          })
-        })()}
+        {stackFolders.map((f) => (
+          <StackFolder
+            key={`folder-${f.gid}`}
+            groupId={f.gid}
+            members={f.members}
+            bounds={f.bounds}
+            selected={f.selected}
+            zIndex={f.z}
+            onPointerDown={(e) => {
+              if (!f.proxy) return
+              onItemPointerDown(e, f.proxy)
+            }}
+          />
+        ))}
         {sortedItems.map((item) => (
           <CanvasItemView
             key={item.id}
             item={item}
             selected={selectedSet.has(item.id)}
             onPointerDown={onItemPointerDown}
+            onResizePointerDown={onResizePointerDown}
           />
         ))}
       </div>

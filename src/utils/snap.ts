@@ -1,5 +1,5 @@
 import type { CanvasItem } from '../types/canvas'
-import { stackGroupBounds } from './layout'
+import { stackFolderBodyBounds } from './layout'
 
 export interface SnapGuide {
   orientation: 'v' | 'h'
@@ -20,12 +20,13 @@ export interface RectLike {
   height: number
 }
 
+/** Default snap distance in world units (callers pass screen-scaled values) */
 const DEFAULT_THRESHOLD = 10
 
 /**
- * Build snap target bodies:
- * - Unstacked items → themselves
- * - Stacked groups → outer folder bounds only (not inner cards)
+ * Snap targets:
+ * - Free items → own rect
+ * - Stacks → large rounded folder body (not name tab, not card fan)
  */
 export function collectSnapBodies(
   allItems: CanvasItem[],
@@ -44,10 +45,10 @@ export function collectSnapBodies(
       const members = allItems.filter(
         (i) => i.stackGroupId === item.stackGroupId && i.stacked,
       )
-      // If any member is being moved, skip as target (whole group moves together)
+      // Whole stack is moving together → skip as target
       if (members.some((m) => excludeIds.has(m.id))) continue
 
-      const b = stackGroupBounds(members, 20)
+      const b = stackFolderBodyBounds(members)
       if (b) bodies.push(b)
       continue
     }
@@ -65,8 +66,7 @@ export function collectSnapBodies(
 
 /**
  * Bounds of the moving set for snap.
- * Each stack is treated as one rigid body (folder outer bounds).
- * Free items keep their own rects. Multi-stack moves use the union of folder bounds.
+ * Stacks use folder body edges (rounded rect), not the name tab.
  */
 export function movingSnapBounds(moving: CanvasItem[]): RectLike | null {
   if (moving.length === 0) return null
@@ -86,7 +86,7 @@ export function movingSnapBounds(moving: CanvasItem[]): RectLike | null {
 
   const rects: RectLike[] = []
   for (const members of groups.values()) {
-    const b = stackGroupBounds(members, 20)
+    const b = stackFolderBodyBounds(members)
     if (b) rects.push(b)
   }
   for (const f of free) {
@@ -119,6 +119,15 @@ function edgesFromBodies(bodies: RectLike[]) {
   return { targetsV, targetsH }
 }
 
+export function guidesEqual(a: SnapGuide[], b: SnapGuide[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].orientation !== b[i].orientation || a[i].pos !== b[i].pos) return false
+  }
+  return true
+}
+
 /**
  * Snap a selection as a group to other bodies' edges and centers.
  */
@@ -134,6 +143,8 @@ export function computeSnapDelta(
   if (!bounds) return { dx: 0, dy: 0, guides: [] }
 
   const bodies = collectSnapBodies(allItems, moveIds)
+  if (bodies.length === 0) return { dx: 0, dy: 0, guides: [] }
+
   const { targetsV, targetsH } = edgesFromBodies(bodies)
 
   const selV = [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width]
@@ -182,10 +193,6 @@ export function computeSnapDelta(
   }
 }
 
-/**
- * After free-edge snap, re-lock aspect ratio from the fixed corner of `handle`.
- * Call this when keepAspect was true so snap cannot break proportions.
- */
 export function enforceAspectFromHandle(
   rect: RectLike,
   aspect: number,
@@ -194,25 +201,21 @@ export function enforceAspectFromHandle(
 ): RectLike {
   const h = (handle || 'se').toLowerCase()
   const a = Math.max(1e-6, aspect)
-  // Fixed corner = opposite of the free handle
-  const fixL = h.includes('e') // free right → left fixed
-  const fixT = h.includes('s') // free bottom → top fixed
+  const fixL = h.includes('e')
+  const fixT = h.includes('s')
   const fixR = h.includes('w')
   const fixB = h.includes('n')
 
-  // Drive from the dimension that better matches current snap result
   const byW = Math.max(minSize, rect.width)
   const hFromW = Math.max(minSize, byW / a)
   const byH = Math.max(minSize, rect.height)
   const wFromH = Math.max(minSize, byH * a)
 
-  // Prefer the scale closer to the pre-enforce rect (less jump)
   const errW = Math.abs(hFromW - rect.height) + Math.abs(byW - rect.width)
   const errH = Math.abs(wFromH - rect.width) + Math.abs(byH - rect.height)
   let width = errW <= errH ? byW : wFromH
   let height = errW <= errH ? hFromW : byH
 
-  // Re-anchor to fixed corner(s)
   let x = rect.x
   let y = rect.y
   if (fixR) x = rect.x + rect.width - width
@@ -220,7 +223,6 @@ export function enforceAspectFromHandle(
   if (fixB) y = rect.y + rect.height - height
   else if (fixT) y = rect.y
 
-  // Mid-edge free handles (e/w/n/s with uniform scale): keep center on fixed axis
   if (h === 'e' || h === 'w') {
     y = rect.y + rect.height / 2 - height / 2
     if (h === 'w') x = rect.x + rect.width - width
@@ -236,8 +238,16 @@ export function enforceAspectFromHandle(
 }
 
 /**
- * Snap free edges of a resized rect to nearby bodies (stack folder outer edges).
- * When `aspect` is provided, snap is applied then proportion is re-locked.
+ * Snap free edges of a resized rect to nearby bodies.
+ *
+ * Root cause of "guides but no snap": aspect re-lock ran AFTER snap and
+ * moved free edges off the guide while guides still pointed at the snap line.
+ *
+ * Strategy when aspect is locked:
+ * 1) Find the best free-edge snap candidate (by distance)
+ * 2) Apply that snap
+ * 3) Re-derive the other free dimension from aspect (fixed corner stays put)
+ * Guides always match the applied geometry.
  */
 export function snapResizeRect(
   rect: RectLike,
@@ -245,11 +255,9 @@ export function snapResizeRect(
   selfId: string,
   allItems: CanvasItem[],
   threshold = DEFAULT_THRESHOLD,
-  /** If set, aspect (width/height) is forced after snap */
   aspect?: number,
 ): { rect: RectLike; guides: SnapGuide[] } {
   const exclude = new Set<string>([selfId])
-  // If self is in a stack, exclude whole stack as targets
   const self = allItems.find((i) => i.id === selfId)
   if (self?.stackGroupId) {
     for (const i of allItems) {
@@ -261,81 +269,147 @@ export function snapResizeRect(
   if (bodies.length === 0) return { rect, guides: [] }
 
   const { targetsV, targetsH } = edgesFromBodies(bodies)
-
   const h = (handle || '').toLowerCase()
-  let { x, y, width, height } = rect
-  const guides: SnapGuide[] = []
   const minSize = 24
-
-  const nearest = (v: number, targets: number[]) => {
-    let best = v
-    let bestA = threshold + 1
-    let hit: number | null = null
-    for (const t of targets) {
-      const a = Math.abs(t - v)
-      if (a <= threshold && a < bestA) {
-        bestA = a
-        best = t
-        hit = t
-      }
-    }
-    return { v: best, hit }
-  }
 
   const freeL = h === 'w' || h === 'nw' || h === 'sw'
   const freeR = h === 'e' || h === 'ne' || h === 'se'
   const freeT = h === 'n' || h === 'nw' || h === 'ne'
   const freeB = h === 's' || h === 'sw' || h === 'se'
 
-  if (freeL) {
-    const { v, hit } = nearest(x, targetsV)
-    if (hit !== null) {
-      const newW = x + width - v
-      if (newW >= minSize) {
-        width = newW
-        x = v
-        guides.push({ orientation: 'v', pos: hit })
+  type Cand = {
+    axis: 'v' | 'h'
+    /** Which free edge */
+    edge: 'l' | 'r' | 't' | 'b'
+    target: number
+    dist: number
+  }
+
+  const nearest = (v: number, targets: number[]): { target: number; dist: number } | null => {
+    let bestT = 0
+    let bestD = threshold + 1
+    let found = false
+    for (const t of targets) {
+      const d = Math.abs(t - v)
+      if (d <= threshold && d < bestD) {
+        bestD = d
+        bestT = t
+        found = true
       }
     }
+    return found ? { target: bestT, dist: bestD } : null
+  }
+
+  const cands: Cand[] = []
+  if (freeL) {
+    const n = nearest(rect.x, targetsV)
+    if (n) cands.push({ axis: 'v', edge: 'l', target: n.target, dist: n.dist })
   }
   if (freeR) {
-    const right = x + width
-    const { v, hit } = nearest(right, targetsV)
-    if (hit !== null) {
-      const newW = v - x
-      if (newW >= minSize) {
-        width = newW
-        guides.push({ orientation: 'v', pos: hit })
-      }
-    }
+    const n = nearest(rect.x + rect.width, targetsV)
+    if (n) cands.push({ axis: 'v', edge: 'r', target: n.target, dist: n.dist })
   }
   if (freeT) {
-    const { v, hit } = nearest(y, targetsH)
-    if (hit !== null) {
-      const newH = y + height - v
-      if (newH >= minSize) {
-        height = newH
-        y = v
-        guides.push({ orientation: 'h', pos: hit })
-      }
-    }
+    const n = nearest(rect.y, targetsH)
+    if (n) cands.push({ axis: 'h', edge: 't', target: n.target, dist: n.dist })
   }
   if (freeB) {
-    const bottom = y + height
-    const { v, hit } = nearest(bottom, targetsH)
-    if (hit !== null) {
-      const newH = v - y
+    const n = nearest(rect.y + rect.height, targetsH)
+    if (n) cands.push({ axis: 'h', edge: 'b', target: n.target, dist: n.dist })
+  }
+
+  if (cands.length === 0) return { rect, guides: [] }
+
+  // Closest free-edge wins (stable sticky snap)
+  cands.sort((a, b) => a.dist - b.dist)
+  const best = cands[0]
+
+  let { x, y, width, height } = rect
+  const guides: SnapGuide[] = []
+
+  const applyEdge = (edge: Cand['edge'], target: number) => {
+    if (edge === 'l') {
+      const newW = x + width - target
+      if (newW >= minSize) {
+        width = newW
+        x = target
+        guides.push({ orientation: 'v', pos: target })
+        return true
+      }
+    } else if (edge === 'r') {
+      const newW = target - x
+      if (newW >= minSize) {
+        width = newW
+        guides.push({ orientation: 'v', pos: target })
+        return true
+      }
+    } else if (edge === 't') {
+      const newH = y + height - target
       if (newH >= minSize) {
         height = newH
-        guides.push({ orientation: 'h', pos: hit })
+        y = target
+        guides.push({ orientation: 'h', pos: target })
+        return true
       }
+    } else if (edge === 'b') {
+      const newH = target - y
+      if (newH >= minSize) {
+        height = newH
+        guides.push({ orientation: 'h', pos: target })
+        return true
+      }
+    }
+    return false
+  }
+
+  if (!applyEdge(best.edge, best.target)) {
+    return { rect, guides: [] }
+  }
+
+  // Keep aspect from fixed corner AFTER snap so free edge stays on the guide
+  // for the snapped axis; the other free dim follows aspect.
+  if (aspect != null && aspect > 0) {
+    const a = Math.max(1e-6, aspect)
+    // Fixed corner opposite the free handle
+    const fixR = freeL && !freeR
+    const fixB = freeT && !freeB
+    const fixL = freeR && !freeL
+    const fixT = freeB && !freeT
+    // Corners free both axes: fixed is opposite corner
+    const corner = h.length === 2
+
+    if (best.axis === 'v') {
+      // Width is authoritative (snapped); height from aspect
+      height = Math.max(minSize, width / a)
+      if (corner) {
+        if (h.includes('n')) y = rect.y + rect.height - height
+        // se/sw: top fixed (y unchanged)
+      } else if (h === 'e' || h === 'w') {
+        // mid-edge: keep vertical center
+        y = rect.y + rect.height / 2 - height / 2
+      }
+    } else {
+      // Height authoritative; width from aspect
+      width = Math.max(minSize, height * a)
+      if (corner) {
+        if (h.includes('w')) x = rect.x + rect.width - width
+      } else if (h === 'n' || h === 's') {
+        x = rect.x + rect.width / 2 - width / 2
+      }
+    }
+
+    // Suppress unused fixed flags for lint — kept for clarity of intent
+    void fixR
+    void fixB
+    void fixL
+    void fixT
+  } else {
+    // No aspect: also try the second-closest free edge on the other axis
+    const second = cands.find((c) => c.axis !== best.axis)
+    if (second) {
+      applyEdge(second.edge, second.target)
     }
   }
 
-  let out: RectLike = { x, y, width, height }
-  // Proportional resize: snap may break ratio — re-lock from fixed corner
-  if (aspect != null && aspect > 0) {
-    out = enforceAspectFromHandle(out, aspect, h, minSize)
-  }
-  return { rect: out, guides }
+  return { rect: { x, y, width, height }, guides }
 }

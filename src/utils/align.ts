@@ -1,5 +1,5 @@
 import type { CanvasItem } from '../types/canvas'
-import { stackGroupBounds } from './layout'
+import { stackFolderBodyBounds } from './layout'
 
 /** Gap between touching edges when packing under "gravity" */
 const PACK_MARGIN = 5
@@ -25,7 +25,7 @@ export interface AlignBody {
 
 /**
  * Build align bodies from selection.
- * Stacked members sharing stackGroupId → one folder-bound body.
+ * Stacked members → large rounded folder body (not name tab).
  */
 export function collectAlignBodies(
   selectedIds: string[],
@@ -46,7 +46,7 @@ export function collectAlignBodies(
         (i) => i.stackGroupId === gid && i.stacked,
       )
       for (const m of members) seen.add(m.id)
-      const b = stackGroupBounds(members, 20)
+      const b = stackFolderBodyBounds(members)
       if (!b) continue
       bodies.push({
         ids: members.map((m) => m.id),

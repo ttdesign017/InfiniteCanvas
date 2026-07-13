@@ -1,10 +1,11 @@
-import { useSyncExternalStore } from 'react'
+import { memo, useSyncExternalStore } from 'react'
 import type { CanvasItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import {
   getTextScalePreview,
   subscribeTextScalePreview,
 } from '../../utils/textScalePreview'
+import { expandStackSelection } from '../../utils/layout'
 import { MediaItemView } from './MediaItemView'
 import { TextCardView } from './TextCardView'
 import { LinkCardView } from './LinkCardView'
@@ -15,10 +16,20 @@ interface Props {
   item: CanvasItem
   selected: boolean
   onPointerDown: (e: React.PointerEvent, item: CanvasItem) => void
+  /** Dedicated resize entry — must not go through move path */
+  onResizePointerDown: (
+    e: React.PointerEvent,
+    item: CanvasItem,
+    handle: string,
+  ) => void
 }
 
-export function CanvasItemView({ item, selected, onPointerDown }: Props) {
-  const setEditingId = useCanvasStore((s) => s.setEditingId)
+function CanvasItemViewInner({
+  item,
+  selected,
+  onPointerDown,
+  onResizePointerDown,
+}: Props) {
   const select = useCanvasStore((s) => s.select)
   const editingId = useCanvasStore((s) => s.editingId)
   const preview = useSyncExternalStore(
@@ -38,8 +49,6 @@ export function CanvasItemView({ item, selected, onPointerDown }: Props) {
   const isTextPreview =
     item.type === 'text' && preview && preview.id === item.id
 
-  // Stack fan rotates around bottom-left; free items keep top-left
-  // Text scale preview: origin follows fixed corner of the drag handle
   const origin = isTextPreview
     ? preview.origin
     : stacked
@@ -53,11 +62,23 @@ export function CanvasItemView({ item, selected, onPointerDown }: Props) {
   const scale = isTextPreview ? preview.scale : 1
   const rot = item.rotation || 0
 
-  // During transform scale preview, font stays at base — no reflow mid-drag
   const displayItem =
     isTextPreview && item.type === 'text'
       ? { ...item, fontSize: preview.baseFont, width: preview.baseW, height: preview.baseH }
       : item
+
+  const edgeClass =
+    item.type === 'textcard' || item.type === 'link' || item.type === 'text'
+      ? 'card-edge'
+      : ''
+
+  const startResize =
+    (handle: string) => (e: React.PointerEvent) => {
+      // Critical: stop before parent move handler
+      e.stopPropagation()
+      e.preventDefault()
+      onResizePointerDown(e, item, handle)
+    }
 
   return (
     <div
@@ -72,15 +93,26 @@ export function CanvasItemView({ item, selected, onPointerDown }: Props) {
       }}
       onPointerDown={(e) => onPointerDown(e, item)}
       onDoubleClick={(e) => {
-        if (!editable) {
-          e.stopPropagation()
-          e.preventDefault()
-          return
-        }
+        // Backup if browser fires dblclick (primary path: pending-move / detail>=2)
         e.stopPropagation()
         e.preventDefault()
-        select([item.id])
-        setEditingId(item.id)
+        if (stacked && item.stackGroupId) {
+          const items = useCanvasStore.getState().items
+          const expanded = expandStackSelection([item.id], items)
+          select(expanded)
+          useCanvasStore.setState({
+            editingStackGroupId: item.stackGroupId,
+            editingId: null,
+          })
+          return
+        }
+        if (!editable) return
+        if (!selected) select([item.id])
+        // select() clears editingId — must set after
+        useCanvasStore.setState({
+          editingId: item.id,
+          editingStackGroupId: null,
+        })
       }}
     >
       {item.type === 'image' || item.type === 'gif' || item.type === 'video' ? (
@@ -98,43 +130,57 @@ export function CanvasItemView({ item, selected, onPointerDown }: Props) {
       {showResize && (
         <>
           <span
-            className={`resize-edge n ${
-              item.type === 'textcard' || item.type === 'link' || item.type === 'text'
-                ? 'card-edge'
-                : ''
-            }`}
+            className={`resize-edge n ${edgeClass}`}
             data-handle="n"
+            onPointerDown={startResize('n')}
           />
           <span
-            className={`resize-edge e ${
-              item.type === 'textcard' || item.type === 'link' || item.type === 'text'
-                ? 'card-edge'
-                : ''
-            }`}
+            className={`resize-edge e ${edgeClass}`}
             data-handle="e"
+            onPointerDown={startResize('e')}
           />
           <span
-            className={`resize-edge s ${
-              item.type === 'textcard' || item.type === 'link' || item.type === 'text'
-                ? 'card-edge'
-                : ''
-            }`}
+            className={`resize-edge s ${edgeClass}`}
             data-handle="s"
+            onPointerDown={startResize('s')}
           />
           <span
-            className={`resize-edge w ${
-              item.type === 'textcard' || item.type === 'link' || item.type === 'text'
-                ? 'card-edge'
-                : ''
-            }`}
+            className={`resize-edge w ${edgeClass}`}
             data-handle="w"
+            onPointerDown={startResize('w')}
           />
-          <span className="resize-handle nw" data-handle="nw" />
-          <span className="resize-handle ne" data-handle="ne" />
-          <span className="resize-handle se" data-handle="se" />
-          <span className="resize-handle sw" data-handle="sw" />
+          <span
+            className="resize-handle nw"
+            data-handle="nw"
+            onPointerDown={startResize('nw')}
+          />
+          <span
+            className="resize-handle ne"
+            data-handle="ne"
+            onPointerDown={startResize('ne')}
+          />
+          <span
+            className="resize-handle se"
+            data-handle="se"
+            onPointerDown={startResize('se')}
+          />
+          <span
+            className="resize-handle sw"
+            data-handle="sw"
+            onPointerDown={startResize('sw')}
+          />
         </>
       )}
     </div>
   )
 }
+
+/** Skip re-render when this item's data/selection is unchanged (big win while dragging peers). */
+export const CanvasItemView = memo(
+  CanvasItemViewInner,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.selected === next.selected &&
+    prev.onPointerDown === next.onPointerDown &&
+    prev.onResizePointerDown === next.onResizePointerDown,
+)

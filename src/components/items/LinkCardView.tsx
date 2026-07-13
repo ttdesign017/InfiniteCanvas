@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { LinkCardItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import {
   extractDomain,
-  faviconFor,
-  guessTitleFromUrl,
+  fetchLinkPreview,
+  mergePreview,
   normalizeUrl,
+  placeholderPreview,
 } from '../../utils/linkMeta'
 import { openExternal } from '../../utils/desktop'
 
@@ -14,58 +16,224 @@ interface Props {
   selected: boolean
 }
 
+type MenuState = { x: number; y: number } | null
+
 export function LinkCardView({ item, selected }: Props) {
   const updateItem = useCanvasStore((s) => s.updateItem)
+  const select = useCanvasStore((s) => s.select)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(item.url)
+  const [loading, setLoading] = useState(false)
+  const [imgBroken, setImgBroken] = useState(false)
+  const [menu, setMenu] = useState<MenuState>(null)
+  const fetchGen = useRef(0)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setDraft(item.url)
+  }, [item.url])
+
+  useEffect(() => {
+    setImgBroken(false)
+  }, [item.image, item.url])
+
+  // Fetch OG metadata whenever the URL changes
+  useEffect(() => {
+    const url = item.url?.trim()
+    if (!url || !/^https?:\/\//i.test(url)) {
+      setLoading(false)
+      return
+    }
+
+    const gen = ++fetchGen.current
+    let cancelled = false
+    setLoading(true)
+
+    void (async () => {
+      const preview = await fetchLinkPreview(url)
+      if (cancelled || gen !== fetchGen.current) return
+
+      const merged = mergePreview(url, preview)
+      const current = useCanvasStore.getState().items.find((i) => i.id === item.id)
+      if (!current || current.type !== 'link' || current.url !== url) {
+        setLoading(false)
+        return
+      }
+
+      const same =
+        current.title === merged.title &&
+        current.description === merged.description &&
+        (current.favicon || '') === (merged.favicon || '') &&
+        (current.image || '') === (merged.image || '') &&
+        (current.siteName || '') === (merged.siteName || '')
+
+      if (!same) {
+        updateItem(item.id, {
+          title: merged.title,
+          description: merged.description,
+          favicon: merged.favicon,
+          image: merged.image,
+          siteName: merged.siteName,
+        })
+      }
+      setLoading(false)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [item.id, item.url, updateItem])
+
+  // Dismiss context menu on outside click / scroll / Escape
+  useEffect(() => {
+    if (!menu) return
+
+    const close = () => setMenu(null)
+    const onPointerDown = (e: PointerEvent) => {
+      if (menuRef.current?.contains(e.target as Node)) return
+      close()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('wheel', close, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('wheel', close, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [menu])
 
   const openLink = async () => {
+    setMenu(null)
     if (!item.url) {
       setEditing(true)
+      setDraft(item.url)
       return
     }
     await openExternal(item.url)
   }
 
+  const startEdit = () => {
+    setMenu(null)
+    select([item.id])
+    setDraft(item.url)
+    setEditing(true)
+  }
+
   const commit = () => {
     const url = normalizeUrl(draft)
+    const place = placeholderPreview(url)
     updateItem(item.id, {
       url,
-      title: url ? guessTitleFromUrl(url) : 'Untitled link',
-      description: url ? extractDomain(url) : 'Add a URL',
-      favicon: url ? faviconFor(url) : undefined,
+      title: place.title,
+      description: place.description,
+      favicon: place.favicon,
+      image: undefined,
+      siteName: undefined,
     })
     setEditing(false)
   }
 
+  const domain = item.url ? extractDomain(item.url) : ''
+  const displayUrl = item.url?.trim() || ''
+  const showImage = Boolean(item.image) && !imgBroken
+  const subtitle =
+    item.description && item.description !== domain && item.description !== item.siteName
+      ? item.description
+      : item.siteName && item.siteName !== domain
+        ? item.siteName
+        : ''
+
   return (
-    <div className={`notion-card link-card ${selected ? 'is-selected' : ''}`}>
-      <div className="notion-card-label">
-        <span className="notion-card-icon" aria-hidden>
-          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M6.5 9.5a3 3 0 004.2 0l1.2-1.2a3 3 0 00-4.2-4.2L7 4.8" strokeLinecap="round" />
-            <path d="M9.5 6.5a3 3 0 00-4.2 0L4.1 7.7a3 3 0 004.2 4.2L9 11.2" strokeLinecap="round" />
-          </svg>
-        </span>
-        Link
+    <div
+      className={`notion-card link-card bookmark-card ${selected ? 'is-selected' : ''} ${
+        showImage ? 'has-preview' : ''
+      } ${loading ? 'is-loading' : ''} ${editing ? 'is-editing' : ''}`}
+      data-bookmark-card
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        select([item.id])
+        // Keep menu inside viewport
+        const pad = 8
+        const mw = 148
+        const mh = 84
+        const x = Math.min(e.clientX, window.innerWidth - mw - pad)
+        const y = Math.min(e.clientY, window.innerHeight - mh - pad)
+        setMenu({ x: Math.max(pad, x), y: Math.max(pad, y) })
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        e.preventDefault()
+        void openLink()
+      }}
+    >
+      <div className="bookmark-body">
+        <div className="bookmark-text">
+          <div className="bookmark-title" title={item.title}>
+            {item.title || 'Untitled link'}
+          </div>
+          {subtitle ? (
+            <div className="bookmark-desc" title={subtitle}>
+              {subtitle}
+            </div>
+          ) : loading ? (
+            <div className="bookmark-desc bookmark-desc-loading">Fetching preview…</div>
+          ) : null}
+          <div className="bookmark-footer">
+            <span className="bookmark-favicon" aria-hidden>
+              {item.favicon ? (
+                <img
+                  src={item.favicon}
+                  alt=""
+                  draggable={false}
+                  onError={(e) => {
+                    ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+                  }}
+                />
+              ) : (
+                <span className="bookmark-favicon-fallback">↗</span>
+              )}
+            </span>
+            <span className="bookmark-url" title={displayUrl || 'No URL'}>
+              {displayUrl || 'No URL'}
+            </span>
+            {loading && <span className="bookmark-spinner" aria-label="Loading" />}
+          </div>
+        </div>
+
+        {showImage ? (
+          <div className="bookmark-thumb">
+            <img
+              src={item.image}
+              alt=""
+              draggable={false}
+              onError={() => setImgBroken(true)}
+            />
+          </div>
+        ) : loading ? (
+          <div className="bookmark-thumb bookmark-thumb-skeleton" aria-hidden />
+        ) : (
+          <div className="bookmark-thumb bookmark-thumb-empty" aria-hidden>
+            <span>↗</span>
+          </div>
+        )}
       </div>
 
-      <div className="link-card-main">
-        <div className="link-favicon">
-          {item.favicon ? (
-            <img src={item.favicon} alt="" draggable={false} />
-          ) : (
-            <span className="link-favicon-fallback">↗</span>
-          )}
-        </div>
-        <div className="link-meta">
-          <div className="link-title">{item.title}</div>
-          <div className="link-desc">{item.description}</div>
-        </div>
-      </div>
-
-      {editing ? (
-        <div className="link-edit" onPointerDown={(e) => e.stopPropagation()}>
+      {editing && (
+        <div
+          className="bookmark-edit-overlay"
+          onPointerDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+        >
+          <label className="bookmark-edit-label">URL</label>
           <input
             autoFocus
             value={draft}
@@ -74,38 +242,38 @@ export function LinkCardView({ item, selected }: Props) {
             onKeyDown={(e) => {
               e.stopPropagation()
               if (e.key === 'Enter') commit()
-              if (e.key === 'Escape') setEditing(false)
+              if (e.key === 'Escape') {
+                setDraft(item.url)
+                setEditing(false)
+              }
             }}
             onBlur={commit}
           />
         </div>
-      ) : (
-        <div className="notion-card-actions">
-          <button
-            type="button"
-            className="notion-card-btn primary"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              void openLink()
-            }}
-          >
-            Open
-          </button>
-          <button
-            type="button"
-            className="notion-card-btn"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              setDraft(item.url)
-              setEditing(true)
-            }}
-          >
-            Edit
-          </button>
-        </div>
       )}
+
+      {menu &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="bookmark-context-menu"
+            style={{ left: menu.x, top: menu.y }}
+            role="menu"
+            onPointerDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+          >
+            <button type="button" role="menuitem" className="bookmark-menu-item" onClick={() => void openLink()}>
+              Open
+            </button>
+            <button type="button" role="menuitem" className="bookmark-menu-item" onClick={startEdit}>
+              Edit URL
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

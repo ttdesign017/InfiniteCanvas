@@ -1,0 +1,151 @@
+import { useEffect, useRef, useState } from 'react'
+import type { CanvasItem } from '../types/canvas'
+import { useCanvasStore } from '../store/useCanvasStore'
+
+interface Props {
+  groupId: string
+  members: CanvasItem[]
+  bounds: { x: number; y: number; width: number; height: number }
+  selected: boolean
+  zIndex: number
+  onPointerDown: (e: React.PointerEvent) => void
+}
+
+export function StackFolder({
+  groupId,
+  members,
+  bounds,
+  selected,
+  zIndex,
+  onPointerDown,
+}: Props) {
+  const editingStackGroupId = useCanvasStore((s) => s.editingStackGroupId)
+  const setEditingStackGroupId = useCanvasStore((s) => s.setEditingStackGroupId)
+  const commitStackName = useCanvasStore((s) => s.commitStackName)
+
+  const stackName = members.find((m) => m.stackName)?.stackName ?? ''
+  const editing = editingStackGroupId === groupId
+  /** Expanded tab only when named or actively typing a name */
+  const expanded = editing || stackName.trim().length > 0
+
+  const [draft, setDraft] = useState(stackName)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const openedAt = useRef(0)
+
+  useEffect(() => {
+    if (editing) setDraft(stackName)
+  }, [editing, groupId, stackName])
+
+  // Focus once when entering edit — single delayed focus, no retry loop
+  useEffect(() => {
+    if (!editing) return
+    openedAt.current = performance.now()
+    const t = window.setTimeout(() => {
+      // User may have already started dragging (clears editingStackGroupId)
+      if (useCanvasStore.getState().editingStackGroupId !== groupId) return
+      const el = inputRef.current
+      if (!el) return
+      el.focus({ preventScroll: true })
+      el.select()
+    }, 50)
+    return () => window.clearTimeout(t)
+  }, [editing, groupId])
+
+  const commit = () => {
+    if (!editing) return
+    // Ignore blur within the open click window
+    if (performance.now() - openedAt.current < 200) return
+    commitStackName(groupId, draft)
+  }
+
+  const cancel = () => {
+    setDraft(stackName)
+    setEditingStackGroupId(null)
+  }
+
+  const sizerText = editing ? draft || 'Name' : stackName
+
+  return (
+    <div
+      className={`stack-folder ${selected ? 'is-selected' : ''} ${
+        editing ? 'is-naming' : ''
+      } ${expanded ? 'has-name' : 'is-compact'}`}
+      style={{
+        transform: `translate(${bounds.x}px, ${bounds.y}px)`,
+        width: bounds.width,
+        height: bounds.height,
+        zIndex,
+      }}
+      onPointerDown={(e) => {
+        const t = e.target as HTMLElement
+        if (t.closest('input.stack-folder-name-input')) {
+          e.stopPropagation()
+          return
+        }
+        // Double-click tab → rename (before folder drag)
+        if (e.detail >= 2 && t.closest('.stack-folder-tab')) {
+          e.stopPropagation()
+          e.preventDefault()
+          setEditingStackGroupId(groupId)
+          return
+        }
+        onPointerDown(e)
+      }}
+    >
+      <div
+        className={`stack-folder-tab ${editing ? 'is-editing' : ''} ${
+          expanded ? 'is-expanded' : 'is-compact'
+        }`}
+        onPointerDown={(e) => {
+          // Second press of double-click: rename without starting stack drag
+          if (e.detail >= 2) {
+            e.stopPropagation()
+            e.preventDefault()
+            setEditingStackGroupId(groupId)
+          }
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation()
+          e.preventDefault()
+          setEditingStackGroupId(groupId)
+        }}
+      >
+        {expanded && (
+          <span className="stack-folder-tab-sizer" aria-hidden>
+            {sizerText || 'Name'}
+          </span>
+        )}
+
+        {editing ? (
+          <input
+            ref={inputRef}
+            className="stack-folder-name-input"
+            value={draft}
+            placeholder="Name"
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setDraft(e.target.value)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                openedAt.current = 0
+                commitStackName(groupId, draft)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                cancel()
+              }
+            }}
+            onBlur={() => commit()}
+          />
+        ) : expanded ? (
+          <span className="stack-folder-tab-label">{stackName}</span>
+        ) : null}
+      </div>
+
+      <div className="stack-folder-body" />
+      <span className="stack-folder-label">{members.length}</span>
+    </div>
+  )
+}
