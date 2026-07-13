@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { toggleVideos } from '../utils/videoRegistry'
 import { normalizeUrl } from '../utils/linkMeta'
+import { looksLikeUrl } from '../utils/dropImport'
 import { screenToWorld } from '../utils/layout'
 import {
   collectClipboardMedia,
@@ -9,14 +10,6 @@ import {
   pasteMediaFiles,
 } from '../utils/openMedia'
 import * as desktop from '../utils/desktop'
-
-function looksLikeUrl(text: string): boolean {
-  const t = text.trim()
-  if (!t || t.includes(' ') || t.length > 2048) return false
-  if (/^https?:\/\//i.test(t)) return true
-  if (/^[\w.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(t)) return true
-  return false
-}
 
 /** Only real text editing — NOT color/range/checkbox inputs */
 function isTextEditingTarget(target: EventTarget | null): boolean {

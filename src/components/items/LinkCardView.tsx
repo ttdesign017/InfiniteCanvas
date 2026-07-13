@@ -8,6 +8,7 @@ import {
   mergePreview,
   normalizeUrl,
   placeholderPreview,
+  proxiedImageUrl,
   proxyImageToDataUrl,
 } from '../../utils/linkMeta'
 import { openExternal, isDesktop } from '../../utils/desktop'
@@ -18,6 +19,26 @@ interface Props {
 }
 
 type MenuState = { x: number; y: number } | null
+
+/** One automatic re-fetch when a card finished without a thumb (X/YT recovery). */
+const missingImageRetried = new Set<string>()
+
+function isPreviewSpecialHost(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase()
+    return (
+      h === 'x.com' ||
+      h.endsWith('.x.com') ||
+      h === 'twitter.com' ||
+      h.endsWith('.twitter.com') ||
+      h === 'youtu.be' ||
+      h === 'youtube.com' ||
+      h.endsWith('.youtube.com')
+    )
+  } catch {
+    return false
+  }
+}
 
 export function LinkCardView({ item, selected }: Props) {
   const updateItem = useCanvasStore((s) => s.updateItem)
@@ -57,9 +78,30 @@ export function LinkCardView({ item, selected }: Props) {
           Boolean(item.siteName) ||
           item.title !== placeholder.title ||
           item.description !== placeholder.description))
-    if (hasStoredPreview) {
+
+    // Cards that resolved before Article/media parsing: one retry so X Article
+    // covers (and empty thumbs) can recover without infinite re-fetch loops.
+    const img = item.image || ''
+    const hasRealXMedia =
+      /twimg\.com\/media|twimg\.com%2Fmedia|pbs\.twimg\.com\/media/i.test(img) ||
+      /ytimg\.com|img\.youtube\.com/i.test(img) ||
+      img.startsWith('data:image/')
+    const imageLooksWeak =
+      !img ||
+      /profile_images|profile_banners/.test(img) ||
+      (isPreviewSpecialHost(url) && !hasRealXMedia)
+    const canRetryMissingImage =
+      item.previewStatus === 'complete' &&
+      imageLooksWeak &&
+      isPreviewSpecialHost(url) &&
+      !missingImageRetried.has(item.id)
+
+    if (hasStoredPreview && !canRetryMissingImage) {
       setLoading(false)
       return
+    }
+    if (canRetryMissingImage) {
+      missingImageRetried.add(item.id)
     }
 
     const gen = ++fetchGen.current
@@ -217,6 +259,7 @@ export function LinkCardView({ item, selected }: Props) {
                   src={item.favicon}
                   alt=""
                   draggable={false}
+                  referrerPolicy="no-referrer"
                   onError={(e) => {
                     ;(e.currentTarget as HTMLImageElement).style.display = 'none'
                   }}
@@ -238,23 +281,42 @@ export function LinkCardView({ item, selected }: Props) {
               src={item.image}
               alt=""
               draggable={false}
+              // YT / X CDNs often block hotlinks that send a page Referer
+              referrerPolicy="no-referrer"
               onError={() => {
-                // Last resort: proxy remote image once for packaged WebView
                 const src = item.image
-                if (
-                  isDesktop() &&
-                  src &&
-                  !src.startsWith('data:') &&
-                  /^https?:\/\//i.test(src)
-                ) {
-                  void proxyImageToDataUrl(src, item.url).then((data) => {
-                    if (data?.startsWith('data:')) {
-                      updateItem(item.id, { image: data })
-                      setImgBroken(false)
-                    } else {
-                      setImgBroken(true)
-                    }
-                  })
+                if (!src || src.startsWith('data:')) {
+                  setImgBroken(true)
+                  return
+                }
+
+                // Browser: re-route twimg through wsrv.nl once
+                if (!isDesktop() && /^https?:\/\//i.test(src)) {
+                  const proxied = proxiedImageUrl(src)
+                  if (proxied !== src) {
+                    updateItem(item.id, { image: proxied })
+                    setImgBroken(false)
+                    return
+                  }
+                  setImgBroken(true)
+                  return
+                }
+
+                // Desktop: native download → data URL
+                if (isDesktop() && /^https?:\/\//i.test(src)) {
+                  void proxyImageToDataUrl(src, '')
+                    .then((data) => {
+                      if (data?.startsWith('data:')) return data
+                      return proxyImageToDataUrl(src, item.url)
+                    })
+                    .then((data) => {
+                      if (data?.startsWith('data:')) {
+                        updateItem(item.id, { image: data })
+                        setImgBroken(false)
+                      } else {
+                        setImgBroken(true)
+                      }
+                    })
                   return
                 }
                 setImgBroken(true)

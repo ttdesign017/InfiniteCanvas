@@ -12,6 +12,7 @@ import {
   stackGroupBounds,
 } from '../utils/layout'
 import { createMediaFromFile, createMediaFromPath } from '../utils/media'
+import { importDropAt } from '../utils/dropImport'
 import { computeResize, isEdgeResizeType } from '../utils/resize'
 import {
   computeSnapDelta,
@@ -1183,21 +1184,39 @@ export function InfiniteCanvas() {
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     e.dataTransfer.dropEffect = 'copy'
     setDropActive(true)
   }, [])
 
-  const onDragLeave = useCallback(() => setDropActive(false), [])
+  const onDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'copy'
+    setDropActive(true)
+  }, [])
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear overlay when leaving the canvas surface itself
+    if (e.currentTarget === e.target) setDropActive(false)
+  }, [])
 
   const onDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault()
+      e.stopPropagation()
       setDropActive(false)
       const store = useCanvasStore.getState()
       const local = getLocalPoint(e)
       const world = screenToWorld(local.x, local.y, store.viewport)
+
+      // Browser / HTML5 drop: URLs → bookmarks, media → images/videos, text → notes
+      // (also handles file FileList when the webview provides it)
+      const imported = await importDropAt(world.x, world.y, e.dataTransfer)
+      if (imported) return
+
+      // Fallback: raw FileList (in case collectClipboardMedia skipped something)
       const files = [...e.dataTransfer.files]
-      // Under Tauri, files is usually empty — native handler above covers that path
       if (!files.length) return
       await placeMediaAt(
         world.x,
@@ -1233,6 +1252,7 @@ export function InfiniteCanvas() {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -1307,7 +1327,9 @@ export function InfiniteCanvas() {
         return <div key={`sg-${i}`} className="snap-guide h" style={{ top: sy }} />
       })}
 
-      {dropActive && <div className="drop-overlay">Drop media to place</div>}
+      {dropActive && (
+        <div className="drop-overlay">Drop media, URL, or text</div>
+      )}
     </div>
   )
 }

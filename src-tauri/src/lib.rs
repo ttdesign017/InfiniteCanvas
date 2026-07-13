@@ -331,16 +331,390 @@ fn fill_missing_preview(target: &mut LinkPreview, fallback: LinkPreview) {
 }
 
 fn is_x_status_url(url: &Url) -> bool {
+    extract_x_status_id(url).is_some()
+}
+
+fn is_x_host(host: &str) -> bool {
+    matches!(
+        host,
+        "x.com"
+            | "www.x.com"
+            | "mobile.x.com"
+            | "twitter.com"
+            | "www.twitter.com"
+            | "mobile.twitter.com"
+            | "t.co"
+    )
+}
+
+fn extract_x_status_id(url: &Url) -> Option<String> {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    let is_x_host = matches!(
-        host.as_str(),
-        "x.com" | "www.x.com" | "mobile.x.com" | "twitter.com" | "www.twitter.com"
+    if !is_x_host(&host) {
+        return None;
+    }
+    static RE_STATUS: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)/status(?:es)?/(\d{5,25})").unwrap());
+    RE_STATUS
+        .captures(url.path())
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn is_youtube_host(host: &str) -> bool {
+    matches!(
+        host,
+        "youtube.com"
+            | "www.youtube.com"
+            | "m.youtube.com"
+            | "music.youtube.com"
+            | "youtu.be"
+            | "www.youtu.be"
+            | "youtube-nocookie.com"
+            | "www.youtube-nocookie.com"
+    ) || host.ends_with(".youtube.com")
+}
+
+fn extract_youtube_video_id(url: &Url) -> Option<String> {
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if !is_youtube_host(&host) {
+        return None;
+    }
+
+    let valid = |id: &str| {
+        id.len() >= 6
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+
+    if host == "youtu.be" || host == "www.youtu.be" {
+        if let Some(id) = url.path_segments().and_then(|mut s| s.next()) {
+            if valid(id) {
+                return Some(id.to_string());
+            }
+        }
+        return None;
+    }
+
+    if let Some(v) = url
+        .query_pairs()
+        .find(|(k, _)| k == "v")
+        .map(|(_, v)| v.into_owned())
+    {
+        if valid(&v) {
+            return Some(v);
+        }
+    }
+
+    let segs: Vec<&str> = url
+        .path_segments()
+        .map(|s| s.collect())
+        .unwrap_or_default();
+    if segs.len() >= 2 {
+        let kind = segs[0].to_ascii_lowercase();
+        if matches!(kind.as_str(), "shorts" | "embed" | "live" | "v") && valid(segs[1]) {
+            return Some(segs[1].to_string());
+        }
+    }
+    None
+}
+
+/// YouTube oEmbed + CDN thumbnail — does not rely on fragile HTML OG scrape.
+async fn fetch_youtube_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPreview> {
+    let video_id = extract_youtube_video_id(url)?;
+    let watch = format!("https://www.youtube.com/watch?v={video_id}");
+    let oembed = format!(
+        "https://www.youtube.com/oembed?url={}&format=json",
+        urlencoding_encode(&watch)
     );
-    is_x_host
-        && url
-            .path_segments()
-            .map(|segments| segments.collect::<Vec<_>>().windows(2).any(|pair| pair[0] == "status"))
-            .unwrap_or(false)
+
+    let mut title = None;
+    let mut author = None;
+    if let Ok(resp) = client.get(&oembed).send().await {
+        if resp.status().is_success() {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                title = json
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                author = json
+                    .get("author_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+            }
+        }
+    }
+
+    // Prefer highest-res thumbnail that downloads successfully
+    let thumb_candidates = [
+        format!("https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"),
+        format!("https://i.ytimg.com/vi/{video_id}/sddefault.jpg"),
+        format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+        format!("https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+    ];
+    let mut image = None;
+    for candidate in &thumb_candidates {
+        if let Ok(resp) = client.get(candidate).send().await {
+            if resp.status().is_success() {
+                if let Ok(bytes) = resp.bytes().await {
+                    // maxresdefault sometimes returns a tiny grey 120×90 placeholder
+                    if bytes.len() > 8_000 {
+                        image = Some(candidate.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if image.is_none() {
+        image = Some(thumb_candidates[2].clone());
+    }
+
+    let description = author
+        .as_ref()
+        .map(|a| format!("{a} · YouTube"))
+        .or_else(|| Some("YouTube".into()));
+
+    Some(LinkPreview {
+        title: title.or_else(|| Some(format!("YouTube · {video_id}"))),
+        description,
+        image,
+        favicon: Some("https://www.youtube.com/s/desktop/favicon.ico".into()),
+        site_name: Some("YouTube".into()),
+    })
+}
+
+/// Minimal URL-encode for query values (oEmbed).
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// FxTwitter / VxTwitter — X blocks direct HTML scrapers and Microlink often
+/// returns success with no post image.
+async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPreview> {
+    let status_id = extract_x_status_id(url)?;
+    let endpoints = [
+        format!("https://api.fxtwitter.com/status/{status_id}"),
+        format!("https://api.vxtwitter.com/Twitter/status/{status_id}"),
+    ];
+
+    for endpoint in endpoints {
+        let Ok(resp) = client.get(&endpoint).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(json) = resp.json::<serde_json::Value>().await else {
+            continue;
+        };
+
+        let tweet = json
+            .get("tweet")
+            .cloned()
+            .unwrap_or_else(|| json.clone());
+
+        let text = tweet
+            .get("text")
+            .or_else(|| tweet.get("full_text"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let author = tweet
+            .get("author")
+            .or_else(|| tweet.get("user"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        let screen_name = author
+            .get("screen_name")
+            .or_else(|| author.get("screenName"))
+            .or_else(|| tweet.get("user_screen_name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('@')
+            .to_string();
+
+        let display_name = author
+            .get("name")
+            .or_else(|| tweet.get("user_name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(screen_name.as_str())
+            .trim()
+            .to_string();
+
+        let mut avatar = author
+            .get("avatar_url")
+            .or_else(|| author.get("profile_image_url_https"))
+            .or_else(|| tweet.get("user_profile_image_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(ref a) = avatar {
+            // Prefer higher-res avatar for the card thumb fallback
+            let upgraded = a
+                .replace("_normal.", "_400x400.")
+                .replace("_bigger.", "_400x400.")
+                .replace("_mini.", "_400x400.")
+                .replace("_200x200.", "_400x400.");
+            avatar = Some(upgraded);
+        }
+
+        let banner = author
+            .get("banner_url")
+            .or_else(|| tweet.get("user_banner_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let mut image: Option<String> = None;
+        if let Some(media) = tweet.get("media") {
+            if let Some(photos) = media.get("photos").and_then(|v| v.as_array()) {
+                if let Some(url) = photos
+                    .first()
+                    .and_then(|p| p.get("url"))
+                    .and_then(|v| v.as_str())
+                {
+                    image = Some(url.to_string());
+                }
+            }
+            if image.is_none() {
+                if let Some(videos) = media.get("videos").and_then(|v| v.as_array()) {
+                    if let Some(url) = videos
+                        .first()
+                        .and_then(|p| p.get("thumbnail_url").or_else(|| p.get("url")))
+                        .and_then(|v| v.as_str())
+                    {
+                        image = Some(url.to_string());
+                    }
+                }
+            }
+            if image.is_none() {
+                if let Some(all) = media.get("all").and_then(|v| v.as_array()) {
+                    for item in all {
+                        if let Some(url) = item
+                            .get("thumbnail_url")
+                            .or_else(|| item.get("url"))
+                            .and_then(|v| v.as_str())
+                        {
+                            image = Some(url.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if image.is_none() {
+            if let Some(urls) = tweet.get("mediaURLs").and_then(|v| v.as_array()) {
+                if let Some(url) = urls.first().and_then(|v| v.as_str()) {
+                    image = Some(url.to_string());
+                }
+            }
+        }
+        if image.is_none() {
+            if let Some(ext) = tweet.get("media_extended").and_then(|v| v.as_array()) {
+                for item in ext {
+                    if let Some(url) = item
+                        .get("thumbnail_url")
+                        .or_else(|| item.get("url"))
+                        .and_then(|v| v.as_str())
+                    {
+                        image = Some(url.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // X Articles put the cover under `article`, while `media` stays null.
+        // e.g. https://x.com/LexnLin/status/2076422557180608888
+        let mut article_title: Option<String> = None;
+        let mut article_desc: Option<String> = None;
+        if let Some(article) = tweet.get("article") {
+            article_title = article
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            article_desc = article
+                .get("preview_text")
+                .or_else(|| article.get("description"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            if image.is_none() {
+                // vxtwitter: article.image
+                if let Some(url) = article.get("image").and_then(|v| v.as_str()) {
+                    image = Some(url.to_string());
+                }
+            }
+            if image.is_none() {
+                // fxtwitter: article.cover_media.media_info.original_img_url
+                if let Some(url) = article
+                    .get("cover_media")
+                    .and_then(|c| c.get("media_info"))
+                    .and_then(|m| {
+                        m.get("original_img_url")
+                            .or_else(|| m.get("original_img_url_https"))
+                    })
+                    .and_then(|v| v.as_str())
+                {
+                    image = Some(url.to_string());
+                }
+            }
+        }
+
+        // Text-only posts: still show author banner/avatar so the card isn't blank
+        if image.is_none() {
+            image = banner.or(avatar.clone());
+        }
+
+        let author_label = if !display_name.is_empty() && !screen_name.is_empty() {
+            format!("{display_name} (@{screen_name})")
+        } else if !display_name.is_empty() {
+            display_name
+        } else if !screen_name.is_empty() {
+            format!("@{screen_name}")
+        } else {
+            "Post on X".into()
+        };
+
+        let title = article_title.unwrap_or(author_label.clone());
+
+        let description = if let Some(d) = article_desc {
+            d.chars().take(280).collect()
+        } else if text.is_empty() {
+            if article_title.is_some() {
+                author_label
+            } else {
+                "X".into()
+            }
+        } else {
+            text.chars().take(280).collect()
+        };
+
+        return Some(LinkPreview {
+            title: Some(title),
+            description: Some(description),
+            image,
+            favicon: Some("https://x.com/favicon.ico".into()),
+            site_name: Some("X".into()),
+        });
+    }
+
+    None
 }
 
 async fn embed_best_favicon(
@@ -404,53 +778,53 @@ async fn fetch_link_preview(url: String) -> Result<LinkPreview, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
-        .get(parsed.clone())
-        .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
-        .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
-        .send()
-        .await;
-
     let mut final_url = parsed.clone();
     let mut preview = LinkPreview::default();
-    if let Ok(resp) = response {
-        if resp.status().is_success() {
-            final_url = resp.url().clone();
-            if let Ok(mut html) = resp.text().await {
-                if html.len() > 600_000 {
-                    html.truncate(600_000);
+
+    // Site-native providers first: X/YouTube block or starve generic HTML scrapes.
+    if extract_youtube_video_id(&parsed).is_some() {
+        if let Some(yt) = fetch_youtube_preview(&client, &parsed).await {
+            preview = yt;
+        }
+    } else if is_x_status_url(&parsed) {
+        if let Some(x) = fetch_x_preview(&client, &parsed).await {
+            preview = x;
+        }
+    }
+
+    // Generic HTML OG scrape (works for most other sites; X often closes the socket)
+    if preview.image.is_none() || preview.title.is_none() {
+        let response = client
+            .get(parsed.clone())
+            .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+            .send()
+            .await;
+
+        if let Ok(resp) = response {
+            if resp.status().is_success() {
+                final_url = resp.url().clone();
+                if let Ok(mut html) = resp.text().await {
+                    if html.len() > 600_000 {
+                        html.truncate(600_000);
+                    }
+                    let scraped = parse_preview(&html, &final_url);
+                    fill_missing_preview(&mut preview, scraped);
                 }
-                preview = parse_preview(&html, &final_url);
             }
         }
     }
 
-    // X status pages expose a generic X share image to direct HTTP clients,
-    // while Microlink resolves the actual post media. For those URLs the
-    // provider image is authoritative rather than merely a missing-field
-    // fallback. This keeps packaged output aligned with the browser build.
-    let x_status = is_x_status_url(&final_url) || is_x_status_url(&parsed);
-    if x_status {
-        if let Some(mut provider) = fetch_microlink_preview(&client, &final_url).await {
-            if provider.title.is_some() {
-                preview.title = provider.title.take();
-            }
-            if provider.description.is_some() {
-                preview.description = provider.description.take();
-            }
-            if provider.image.is_some() {
-                preview.image = provider.image.take();
-            }
-            if provider.site_name.is_some() {
-                preview.site_name = provider.site_name.take();
-            }
-            fill_missing_preview(&mut preview, provider);
-        }
-    } else if preview.title.is_none() || preview.description.is_none() || preview.image.is_none() {
-        // In a packaged app, a frontend fetch to Microlink can be rejected
-        // because its Origin is tauri://localhost. Do the fallback natively.
+    // Microlink as last metadata filler (not authoritative for X media)
+    if preview.title.is_none() || preview.description.is_none() || preview.image.is_none() {
         if let Some(provider) = fetch_microlink_preview(&client, &final_url).await {
             fill_missing_preview(&mut preview, provider);
+        }
+        // X: if microlink still has no image, retry FxTwitter after scrape
+        if preview.image.is_none() && (is_x_status_url(&final_url) || is_x_status_url(&parsed)) {
+            if let Some(x) = fetch_x_preview(&client, &parsed).await {
+                fill_missing_preview(&mut preview, x);
+            }
         }
     }
 
@@ -463,12 +837,27 @@ async fn fetch_link_preview(url: String) -> Result<LinkPreview, String> {
     // Always try to embed OG image as data URL (WebView cannot load many CDNs directly)
     if let Some(img) = preview.image.clone() {
         if !img.starts_with("data:") {
-            // Keep the original URL when proxying fails. Some WebViews can load
-            // it directly, and discarding it here guarantees a placeholder.
-            preview.image = fetch_as_data_url(&client, &img, &referer)
-                .await
-                .or(fetch_as_data_url(&client, &img, "").await)
-                .or(Some(img));
+            // Media CDNs (ytimg / twimg) often reject page Referers — empty first.
+            let img_host = Url::parse(&img)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+                .unwrap_or_default();
+            let media_cdn = img_host.contains("ytimg.com")
+                || img_host.contains("twimg.com")
+                || img_host.contains("youtube.com")
+                || img_host.contains("ggpht.com");
+
+            preview.image = if media_cdn {
+                fetch_as_data_url(&client, &img, "")
+                    .await
+                    .or(fetch_as_data_url(&client, &img, &referer).await)
+                    .or(Some(img))
+            } else {
+                fetch_as_data_url(&client, &img, &referer)
+                    .await
+                    .or(fetch_as_data_url(&client, &img, "").await)
+                    .or(Some(img))
+            };
         }
     }
 
