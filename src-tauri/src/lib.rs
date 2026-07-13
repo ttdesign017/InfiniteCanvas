@@ -691,12 +691,13 @@ async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPrev
             "Post on X".into()
         };
 
-        let title = article_title.unwrap_or(author_label.clone());
+        let has_article_title = article_title.is_some();
+        let title = article_title.unwrap_or_else(|| author_label.clone());
 
         let description = if let Some(d) = article_desc {
             d.chars().take(280).collect()
         } else if text.is_empty() {
-            if article_title.is_some() {
+            if has_article_title {
                 author_label
             } else {
                 "X".into()
