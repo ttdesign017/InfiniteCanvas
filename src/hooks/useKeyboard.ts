@@ -82,6 +82,22 @@ export function useKeyboard() {
         return
       }
 
+      // Always block reload — even while typing (prevents wiping the canvas)
+      {
+        const modEarly = e.ctrlKey || e.metaKey
+        const k = e.key.toLowerCase()
+        if (modEarly && (k === 'r' || e.code === 'KeyR')) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+        if (k === 'f5' || e.code === 'F5') {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
+
       if (typing) return
 
       const store = useCanvasStore.getState()
@@ -110,15 +126,18 @@ export function useKeyboard() {
         store.selectAll()
         return
       }
-      if (mod && key === 'o') {
+      // Ctrl+O opens media. Ctrl+Shift+O is reserved for project files.
+      if (mod && !e.shiftKey && key === 'o') {
         e.preventDefault()
         void openMediaDialog()
         return
       }
-      // Quit app: Ctrl+Q
+      // Quit app: Ctrl+Q (with save prompt)
       if (mod && !e.altKey && !e.shiftKey && key === 'q') {
         e.preventDefault()
-        if (desktop.isDesktop()) void desktop.windowQuit()
+        if (desktop.isDesktop()) {
+          void import('./useCloseGuard').then((m) => m.requestAppClose())
+        }
         return
       }
 

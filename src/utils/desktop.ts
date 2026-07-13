@@ -2,13 +2,14 @@
  * Desktop shell abstraction — Tauri 2 implementation.
  */
 
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { LogicalPosition } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog'
-import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { ask, open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog'
+import { readFile, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { ICANVAS_EXT } from './boardFile'
 
 export function isDesktop(): boolean {
   return (
@@ -59,11 +60,16 @@ export async function openMediaDialog(): Promise<string[]> {
   return Array.isArray(selected) ? selected : [selected]
 }
 
-export async function saveBoardDialog(defaultName = 'board.json'): Promise<string | null> {
+export async function saveBoardDialog(
+  defaultName = `board.${ICANVAS_EXT}`,
+): Promise<string | null> {
   if (!isDesktop()) return null
   const path = await dialogSave({
     defaultPath: defaultName,
-    filters: [{ name: 'Canvas Board', extensions: ['json'] }],
+    filters: [
+      { name: 'Infinite Canvas', extensions: [ICANVAS_EXT] },
+      { name: 'All files', extensions: ['*'] },
+    ],
   })
   return path ?? null
 }
@@ -72,7 +78,10 @@ export async function loadBoardDialog(): Promise<string | null> {
   if (!isDesktop()) return null
   const selected = await dialogOpen({
     multiple: false,
-    filters: [{ name: 'Canvas Board', extensions: ['json'] }],
+    filters: [
+      { name: 'Infinite Canvas', extensions: [ICANVAS_EXT, 'json'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
   })
   if (!selected) return null
   return Array.isArray(selected) ? selected[0] : selected
@@ -82,8 +91,33 @@ export async function readText(path: string): Promise<string> {
   return readTextFile(path)
 }
 
+export async function getLaunchFilePath(): Promise<string | null> {
+  if (!isDesktop()) return null
+  try {
+    return await invoke<string | null>('get_launch_file_path')
+  } catch {
+    return null
+  }
+}
+
 export async function writeText(path: string, content: string): Promise<void> {
   await writeTextFile(path, content)
+}
+
+/** Read file bytes (for packing media into .icanvas) */
+export async function readBinaryFile(path: string): Promise<Uint8Array> {
+  return readFile(path)
+}
+
+/** Native yes/no dialog */
+export async function askYesNo(
+  message: string,
+  title = 'Infinite Canvas',
+): Promise<boolean> {
+  if (!isDesktop()) {
+    return window.confirm(message)
+  }
+  return ask(message, { title, kind: 'warning' })
 }
 
 export async function openExternal(url: string): Promise<void> {

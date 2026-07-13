@@ -6,6 +6,7 @@ import { StackFolder } from './StackFolder'
 import type { CanvasItem, MediaItem } from '../types/canvas'
 import {
   expandStackSelection,
+  hitStackGroupAt,
   placeItemsTight,
   screenToWorld,
   stackGroupBounds,
@@ -171,6 +172,16 @@ export function InfiniteCanvas() {
   } | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([])
+  /** Stack group under free-item drag (merge target) */
+  const [stackDropTargetId, setStackDropTargetId] = useState<string | null>(
+    null,
+  )
+  const stackDropTargetRef = useRef<string | null>(null)
+
+  const setStackDropTarget = useCallback((gid: string | null) => {
+    stackDropTargetRef.current = gid
+    setStackDropTargetId(gid)
+  }, [])
 
   const items = useCanvasStore((s) => s.items)
   const selectedIds = useCanvasStore((s) => s.selectedIds)
@@ -203,6 +214,7 @@ export function InfiniteCanvas() {
         members,
         bounds: b,
         selected: members.some((m) => selectedSet.has(m.id)),
+        dropTarget: stackDropTargetId === gid,
         z: Math.min(...members.map((m) => m.zIndex)) - 1,
         proxy: members[0],
       }
@@ -211,10 +223,11 @@ export function InfiniteCanvas() {
       members: CanvasItem[]
       bounds: { x: number; y: number; width: number; height: number }
       selected: boolean
+      dropTarget: boolean
       z: number
       proxy: CanvasItem
     }>
-  }, [items, selectedSet])
+  }, [items, selectedSet, stackDropTargetId])
 
   const getLocalPoint = useCallback((e: { clientX: number; clientY: number }) => {
     const rect = surfaceRef.current?.getBoundingClientRect()
@@ -696,6 +709,7 @@ export function InfiniteCanvas() {
         const accDx = drag.accDx
         const accDy = drag.accDy
         const snapOn = store.snapEnabled
+        const pointerLocal = getLocalPoint(e)
 
         scheduleDragWrite(() => {
           const st = useCanvasStore.getState()
@@ -740,6 +754,24 @@ export function InfiniteCanvas() {
             }),
           )
           setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
+
+          // Merge highlight: free materials over a stack folder
+          const liveItems = useCanvasStore.getState().items
+          const draggingStacked = ids.some((id) => {
+            const it = liveItems.find((i) => i.id === id)
+            return !!(it?.stacked && it.stackGroupId)
+          })
+          if (draggingStacked) {
+            setStackDropTarget(null)
+          } else {
+            const world = screenToWorld(
+              pointerLocal.x,
+              pointerLocal.y,
+              st.viewport,
+            )
+            const hit = hitStackGroupAt(world, liveItems, { excludeIds: ids })
+            setStackDropTarget(hit)
+          }
         })
         return
       }
@@ -911,7 +943,7 @@ export function InfiniteCanvas() {
         setMarquee({ x, y, w, h })
       }
     },
-    [getLocalPoint, scheduleDragWrite],
+    [getLocalPoint, scheduleDragWrite, setStackDropTarget],
   )
 
   const onPointerUp = useCallback(() => {
@@ -1005,6 +1037,17 @@ export function InfiniteCanvas() {
 
     if (drag?.kind === 'move') {
       setSnapGuides([])
+      const dropGid = stackDropTargetRef.current
+      setStackDropTarget(null)
+      if (dropGid && drag.moved) {
+        const freeIds = drag.ids.filter((id) => {
+          const it = store.items.find((i) => i.id === id)
+          return !!it && !it.stacked
+        })
+        if (freeIds.length > 0) {
+          store.mergeIntoStack(freeIds, dropGid)
+        }
+      }
     }
 
     if (drag?.kind === 'scribble') {
@@ -1071,7 +1114,8 @@ export function InfiniteCanvas() {
 
     dragRef.current = null
     eraseHistoryPushed.current = false
-  }, [flushDragWrite])
+    setStackDropTarget(null)
+  }, [flushDragWrite, setStackDropTarget])
 
   const placeMediaAt = useCallback(
     async (
@@ -1209,6 +1253,7 @@ export function InfiniteCanvas() {
             members={f.members}
             bounds={f.bounds}
             selected={f.selected}
+            dropTarget={f.dropTarget}
             zIndex={f.z}
             onPointerDown={(e) => {
               if (!f.proxy) return

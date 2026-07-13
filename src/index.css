@@ -849,6 +849,32 @@ kbd {
     0 12px 32px rgba(13, 153, 255, 0.12);
 }
 
+/* Drag-merge target: stronger selection + slightly larger folder chrome */
+.stack-folder.is-drop-target {
+  transition: transform 0.14s ease;
+  pointer-events: none;
+}
+
+.stack-folder.is-drop-target .stack-folder-body {
+  border-color: rgba(13, 153, 255, 0.65);
+  background: linear-gradient(165deg, #eef7ff 0%, #e3f0fc 55%, #d9ebfa 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 0 0 2px rgba(13, 153, 255, 0.35),
+    0 14px 36px rgba(13, 153, 255, 0.22);
+}
+
+.stack-folder.is-drop-target .stack-folder-tab {
+  border-color: rgba(13, 153, 255, 0.35);
+  background: linear-gradient(180deg, #eaf4ff 0%, #dceeff 100%);
+}
+
+.stack-folder.is-drop-target .stack-folder-label {
+  color: var(--accent);
+  border-color: rgba(13, 153, 255, 0.25);
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .stack-folder-label {
   position: absolute;
   right: 12px;
@@ -1600,6 +1626,76 @@ kbd {
   caret-color: var(--accent);
 }
 
+/* Exit save dialog */
+.close-save-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200000;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 15, 15, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+.close-save-dialog {
+  width: min(400px, calc(100vw - 32px));
+  padding: 22px 22px 18px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 15, 15, 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+  font-family: var(--font-ui);
+}
+
+.close-save-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.close-save-body {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.close-save-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.close-save-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: #f5f5f5;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.close-save-btn:hover {
+  filter: brightness(0.97);
+}
+
+.close-save-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.close-save-btn.danger {
+  background: #fff5f5;
+  border-color: rgba(220, 38, 38, 0.25);
+  color: #b91c1c;
+}
+
 /* Snap alignment guides — bright, full surface */
 .snap-guide {
   position: absolute;
@@ -1685,6 +1781,53 @@ kbd {
   pointer-events: none;
   z-index: 100001;
   backdrop-filter: blur(4px);
+}
+
+/* Ctrl+S success feedback */
+.save-toast {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(28, 31, 40, 0.92);
+  color: #f5f5f5;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+  animation: save-toast-in 0.22s ease-out;
+}
+
+.save-toast-check {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(13, 153, 255, 0.25);
+  color: #6ec8ff;
+  font-size: 11px;
+  line-height: 1;
+}
+
+@keyframes save-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 
 /* Empty state */

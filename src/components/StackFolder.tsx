@@ -7,6 +7,8 @@ interface Props {
   members: CanvasItem[]
   bounds: { x: number; y: number; width: number; height: number }
   selected: boolean
+  /** Free item is being dragged over this stack as a merge target */
+  dropTarget?: boolean
   zIndex: number
   onPointerDown: (e: React.PointerEvent) => void
 }
@@ -16,6 +18,7 @@ export function StackFolder({
   members,
   bounds,
   selected,
+  dropTarget = false,
   zIndex,
   onPointerDown,
 }: Props) {
@@ -69,9 +72,15 @@ export function StackFolder({
     <div
       className={`stack-folder ${selected ? 'is-selected' : ''} ${
         editing ? 'is-naming' : ''
-      } ${expanded ? 'has-name' : 'is-compact'}`}
+      } ${expanded ? 'has-name' : 'is-compact'} ${
+        dropTarget ? 'is-drop-target' : ''
+      }`}
       style={{
-        transform: `translate(${bounds.x}px, ${bounds.y}px)`,
+        // Grow from folder center when accepting a drop so chrome expands evenly
+        transformOrigin: dropTarget ? 'center center' : 'top left',
+        transform: dropTarget
+          ? `translate(${bounds.x}px, ${bounds.y}px) scale(1.04)`
+          : `translate(${bounds.x}px, ${bounds.y}px)`,
         width: bounds.width,
         height: bounds.height,
         zIndex,

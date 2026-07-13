@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as desktop from '../utils/desktop'
+import { requestAppClose } from '../hooks/useCloseGuard'
 
 /** Frameless window controls — minimal icons, visible only near top edge */
 export function WindowChrome() {
@@ -64,7 +65,7 @@ export function WindowChrome() {
           type="button"
           className="win-btn win-btn-close"
           title="Close"
-          onClick={() => void desktop.windowClose()}
+          onClick={() => void requestAppClose()}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path

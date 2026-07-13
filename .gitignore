@@ -27,6 +27,9 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 
+# Local portable builds (publish via GitHub Releases)
+release/
+
 # Env / secrets
 .env
 .env.*

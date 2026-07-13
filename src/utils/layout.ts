@@ -320,6 +320,58 @@ export function allContentBounds(items: CanvasItem[]): {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
 }
 
+/**
+ * Topmost stack folder under a world point, excluding items/groups being dragged.
+ * Returns stackGroupId or null.
+ */
+export function hitStackGroupAt(
+  world: Point,
+  items: CanvasItem[],
+  options?: {
+    /** Item ids currently being dragged (excluded) */
+    excludeIds?: Iterable<string>
+    /** Stack group ids to ignore */
+    excludeGroupIds?: Iterable<string>
+  },
+): string | null {
+  const excludeIds = new Set(options?.excludeIds ?? [])
+  const excludeGroups = new Set(options?.excludeGroupIds ?? [])
+
+  const groups = new Map<string, CanvasItem[]>()
+  for (const it of items) {
+    if (!it.stacked || !it.stackGroupId) continue
+    if (excludeIds.has(it.id)) continue
+    if (excludeGroups.has(it.stackGroupId)) continue
+    const list = groups.get(it.stackGroupId) || []
+    list.push(it)
+    groups.set(it.stackGroupId, list)
+  }
+
+  // Prefer topmost stack (highest max member z)
+  const ranked = [...groups.entries()]
+    .map(([gid, members]) => ({
+      gid,
+      members,
+      maxZ: Math.max(...members.map((m) => m.zIndex)),
+      bounds: stackGroupBounds(members),
+    }))
+    .filter((g) => g.bounds)
+    .sort((a, b) => b.maxZ - a.maxZ)
+
+  for (const g of ranked) {
+    const b = g.bounds!
+    if (
+      world.x >= b.x &&
+      world.y >= b.y &&
+      world.x <= b.x + b.width &&
+      world.y <= b.y + b.height
+    ) {
+      return g.gid
+    }
+  }
+  return null
+}
+
 export function screenToWorld(
   sx: number,
   sy: number,

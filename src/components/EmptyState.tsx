@@ -15,7 +15,7 @@ export function EmptyState() {
             <kbd>P</kbd> draw · <kbd>E</kbd> erase · <kbd>T</kbd> text · <kbd>N</kbd> note
           </li>
           <li>
-            <kbd>Ctrl+V</kbd> paste media/link · <kbd>Ctrl+O</kbd> open · <kbd>Space</kbd> play
+            <kbd>Ctrl+S</kbd> save · <kbd>Ctrl+Shift+O</kbd> open project · <kbd>Ctrl+V</kbd> paste · <kbd>Space</kbd> play
           </li>
           <li>
             <kbd>Ctrl+G</kbd> stack · <kbd>Alt+G</kbd> unstack / layout

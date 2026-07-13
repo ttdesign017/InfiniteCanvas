@@ -67,7 +67,27 @@ async function fetchViaTauri(url: string): Promise<LinkPreviewMeta | null> {
   try {
     const data = await invoke<LinkPreviewMeta>('fetch_link_preview', { url })
     return data ?? null
-  } catch {
+  } catch (e) {
+    console.warn('fetch_link_preview failed', e)
+    return null
+  }
+}
+
+/** Proxy remote image → data URL via Rust (for WebView display) */
+export async function proxyImageToDataUrl(
+  imageUrl: string,
+  referer?: string,
+): Promise<string | null> {
+  if (!imageUrl) return null
+  if (imageUrl.startsWith('data:')) return imageUrl
+  if (!isDesktop()) return imageUrl
+  try {
+    return await invoke<string>('proxy_image_data_url', {
+      url: imageUrl,
+      referer: referer || null,
+    })
+  } catch (e) {
+    console.warn('proxy_image_data_url failed', e)
     return null
   }
 }
@@ -84,6 +104,7 @@ async function fetchViaMicrolink(url: string): Promise<LinkPreviewMeta | null> {
         title?: string
         description?: string
         image?: { url?: string }
+        screenshot?: { url?: string }
         logo?: { url?: string }
         publisher?: string
       }
@@ -93,7 +114,7 @@ async function fetchViaMicrolink(url: string): Promise<LinkPreviewMeta | null> {
     return {
       title: d.title || undefined,
       description: d.description || undefined,
-      image: d.image?.url || undefined,
+      image: d.image?.url || d.screenshot?.url || undefined,
       favicon: d.logo?.url || faviconFor(url),
       siteName: d.publisher || undefined,
     }
@@ -102,22 +123,84 @@ async function fetchViaMicrolink(url: string): Promise<LinkPreviewMeta | null> {
   }
 }
 
+async function ensureDisplayableImage(
+  image: string | undefined,
+  pageUrl: string,
+): Promise<string | undefined> {
+  if (!image) return undefined
+  if (image.startsWith('data:')) return image
+
+  // Desktop: always proxy http(s) images into data URLs for WebView
+  if (isDesktop() && /^https?:\/\//i.test(image)) {
+    const proxied = await proxyImageToDataUrl(image, pageUrl)
+    if (proxied?.startsWith('data:')) return proxied
+    // Do not throw away a valid OG URL merely because native proxying failed.
+    // WebView2 can display many CDN images directly.
+    return image
+  }
+
+  return image
+}
+
 /**
- * Fetch Open Graph / page metadata for a Notion-style bookmark card.
- * Prefer Tauri native HTTP (no CORS); fall back to microlink in browser.
+ * Fetch Open Graph metadata for a Notion-style bookmark card.
+ * Desktop: Tauri scrape + image proxy to data URL (required for packaged app).
+ * Browser: microlink.
  */
 export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | null> {
   const normalized = normalizeUrl(url)
   if (!normalized || !/^https?:\/\//i.test(normalized)) return null
 
   if (isDesktop()) {
-    const native = await fetchViaTauri(normalized)
-    if (native && (native.title || native.description || native.image)) {
-      return {
-        ...native,
-        favicon: native.favicon || faviconFor(normalized),
+    let native = await fetchViaTauri(normalized)
+
+    // Ensure image is a data: URL for the WebView
+    if (native) {
+      const image = await ensureDisplayableImage(native.image, normalized)
+      let favicon = native.favicon
+      if (favicon && !favicon.startsWith('data:') && /^https?:\/\//i.test(favicon)) {
+        favicon = (await proxyImageToDataUrl(favicon, normalized)) || faviconFor(normalized)
+      } else if (!favicon) {
+        const fallback = faviconFor(normalized)
+        favicon = (await proxyImageToDataUrl(fallback, normalized)) || undefined
+      }
+
+      // If still no image, try microlink (often has better OG extraction)
+      if (!image) {
+        const remote = await fetchViaMicrolink(normalized)
+        if (remote?.image) {
+          const remoteImg = await ensureDisplayableImage(remote.image, normalized)
+          return {
+            title: native.title || remote.title,
+            description: native.description || remote.description,
+            image: remoteImg,
+            favicon: favicon || remote.favicon || faviconFor(normalized),
+            siteName: native.siteName || remote.siteName,
+          }
+        }
+      }
+
+      if (native.title || native.description || image) {
+        return {
+          ...native,
+          image,
+          favicon: favicon || faviconFor(normalized),
+        }
       }
     }
+
+    // Full microlink fallback on desktop if native scrape failed
+    const remote = await fetchViaMicrolink(normalized)
+    if (remote) {
+      const image = await ensureDisplayableImage(remote.image, normalized)
+      return {
+        ...remote,
+        image,
+        favicon: remote.favicon || faviconFor(normalized),
+      }
+    }
+
+    return null
   }
 
   const remote = await fetchViaMicrolink(normalized)

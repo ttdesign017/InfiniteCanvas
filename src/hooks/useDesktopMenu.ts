@@ -3,38 +3,46 @@ import { useCanvasStore } from '../store/useCanvasStore'
 import { createMediaFromPath } from '../utils/media'
 import { placeItemsTight, screenToWorld } from '../utils/layout'
 import * as desktop from '../utils/desktop'
+import { openBoardFromDisk, saveCurrentBoard } from '../utils/boardIO'
+import { requestAppClose } from './useCloseGuard'
 
 /** Wire desktop menus / hotkeys that need shell dialogs (Tauri). */
 export function useDesktopMenu() {
   useEffect(() => {
     if (!desktop.isDesktop()) return
 
-    // No native menu tree like Electron; shortcuts live in useKeyboard.
-    // Optional: future global shortcut registration via tauri-plugin-global-shortcut.
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey
       if (!mod) return
       const key = e.key.toLowerCase()
+      const code = e.code
 
-      if (key === 's' && !e.shiftKey) {
+      // Never allow reload
+      if (key === 'r' || code === 'KeyR') {
         e.preventDefault()
-        void (async () => {
-          const store = useCanvasStore.getState()
-          const path = await desktop.saveBoardDialog(`${store.boardName || 'board'}.json`)
-          if (!path) return
-          const board = store.exportBoard()
-          await desktop.writeText(path, JSON.stringify(board, null, 2))
-        })()
+        e.stopPropagation()
+        return
       }
 
+      // Save: Ctrl+S
+      if (key === 's' && !e.shiftKey) {
+        e.preventDefault()
+        void saveCurrentBoard()
+        return
+      }
+
+      // Save As: Ctrl+Shift+S
+      if (key === 's' && e.shiftKey) {
+        e.preventDefault()
+        void saveCurrentBoard({ saveAs: true })
+        return
+      }
+
+      // Open project: Ctrl+Shift+O
       if (key === 'o' && e.shiftKey) {
         e.preventDefault()
-        void (async () => {
-          const path = await desktop.loadBoardDialog()
-          if (!path) return
-          const text = await desktop.readText(path)
-          useCanvasStore.getState().importBoard(JSON.parse(text))
-        })()
+        void openBoardFromDisk()
+        return
       }
     }
 
@@ -43,7 +51,7 @@ export function useDesktopMenu() {
   }, [])
 }
 
-/** Open media via dialog — used by Ctrl+O path already; keep helper for menus */
+/** Open media via dialog */
 export async function desktopOpenMedia() {
   const store = useCanvasStore.getState()
   const center = screenToWorld(window.innerWidth / 2, window.innerHeight / 2, store.viewport)
@@ -59,3 +67,5 @@ export async function desktopOpenMedia() {
   }
   if (raw.length) store.addItems(placeItemsTight(raw, ox, oy, 4))
 }
+
+export { requestAppClose }

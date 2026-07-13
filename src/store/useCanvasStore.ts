@@ -20,6 +20,7 @@ import {
   computeSmoothLayout,
   type LayoutTarget,
 } from '../utils/layout'
+import { allocateStackZBlock, buildRaiseZMap } from '../utils/zOrder'
 import { faviconFor, guessTitleFromUrl, normalizeUrl } from '../utils/linkMeta'
 import { eraseFromPaths, recomputeScribbleBounds } from '../utils/scribble'
 import { applyWorldCrop } from '../utils/crop'
@@ -61,6 +62,10 @@ interface CanvasState {
   eraseWidth: number
   activeScribbleId: string | null
   boardName: string
+  /** Absolute path of the open .icanvas file, if any */
+  boardFilePath: string | null
+  /** True when canvas has unsaved changes */
+  dirty: boolean
   animating: boolean
   /** Item currently in inline edit mode (text / textcard) */
   editingId: string | null
@@ -68,6 +73,10 @@ interface CanvasState {
   editingStackGroupId: string | null
   /** Snap selection edges to nearby item edges while moving */
   snapEnabled: boolean
+  /** Ephemeral UI notice after save (auto-cleared by SaveToast) */
+  saveNotice: string | null
+  /** Bumps so the same message still retriggers the toast */
+  saveNoticeSeq: number
   history: HistoryEntry[]
   future: HistoryEntry[]
 
@@ -76,6 +85,8 @@ interface CanvasState {
   setEditingStackGroupId: (groupId: string | null) => void
   /** Rename a stack folder tab (writes stackName onto all members) */
   commitStackName: (groupId: string, name: string) => void
+  flashSaveNotice: (message?: string) => void
+  clearSaveNotice: () => void
   setViewport: (viewport: Partial<Viewport>) => void
   panBy: (dx: number, dy: number) => void
   zoomAt: (screenX: number, screenY: number, factor: number) => void
@@ -139,10 +150,19 @@ interface CanvasState {
   quickStack: () => void
   smoothLayout: (columns?: number) => void
   rowLayout: () => void
+  /**
+   * Merge free (non-stacked) items into an existing stack on top.
+   * Animates into the stack fan layout.
+   */
+  mergeIntoStack: (itemIds: string[], groupId: string) => void
 
   getSelectedItems: () => CanvasItem[]
   exportBoard: () => BoardSnapshot
   importBoard: (board: BoardSnapshot) => void
+  markDirty: () => void
+  clearDirty: () => void
+  setBoardFilePath: (path: string | null) => void
+  setBoardName: (name: string) => void
 }
 
 function cloneItems(items: CanvasItem[]): CanvasItem[] {
@@ -192,10 +212,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   eraseWidth: 18,
   activeScribbleId: null,
   boardName: 'Untitled Board',
+  boardFilePath: null,
+  dirty: false,
   animating: false,
   editingId: null,
   editingStackGroupId: null,
   snapEnabled: true,
+  saveNotice: null,
+  saveNoticeSeq: 0,
   history: [],
   future: [],
 
@@ -203,6 +227,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setEditingId: (id) => set({ editingId: id, editingStackGroupId: null }),
   setEditingStackGroupId: (groupId) =>
     set({ editingStackGroupId: groupId, editingId: null }),
+  flashSaveNotice: (message = 'Saved') =>
+    set((s) => ({
+      saveNotice: message,
+      saveNoticeSeq: s.saveNoticeSeq + 1,
+    })),
+  clearSaveNotice: () => set({ saveNotice: null }),
   commitStackName: (groupId, name) => {
     const trimmed = name.trim()
     const members = get().items.filter(
@@ -317,45 +347,28 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         return { selectedIds, editingId: null }
       }
 
-      const zOf = (id: string) => s.items.find((i) => i.id === id)?.zIndex ?? 0
       const isStackedId = (id: string) => {
         const it = s.items.find((i) => i.id === id)
         return !!(it?.stacked && it.stackGroupId)
       }
 
-      // Always raise as a block preserving existing relative z-order first
-      const order = [...selectedIds].sort((a, b) => zOf(a) - zOf(b))
-
-      // Only a single free (non-stacked) click promotes that item to top —
-      // marquee / multi-select must NOT scramble prior z-order.
-      const singleFreeClick =
+      // Single free click: that item becomes the top body; stacks stay atomic
+      // (folder chrome reserved under members so notes cannot slip between).
+      const promoteFreeId =
         ids.length === 1 &&
         selectedIds.includes(ids[0]) &&
         !isStackedId(ids[0])
-      if (singleFreeClick) {
-        const id = ids[0]
-        const idx = order.indexOf(id)
-        if (idx >= 0) {
-          order.splice(idx, 1)
-          order.push(id)
-        }
-      }
+          ? ids[0]
+          : null
 
-      // Pure stack selection: never reshuffle internals
-      if (selectedIds.every(isStackedId)) {
-        order.sort((a, b) => zOf(a) - zOf(b))
-      }
-
-      let z = s.nextZ
-      const zMap = new Map<string, number>()
-      for (const id of order) {
-        zMap.set(id, z++)
-      }
+      const { zMap, nextZ } = buildRaiseZMap(s.items, selectedIds, s.nextZ, {
+        promoteFreeId,
+      })
 
       return {
         selectedIds,
         editingId: null,
-        nextZ: z,
+        nextZ,
         items: s.items.map((item) =>
           zMap.has(item.id) ? { ...item, zIndex: zMap.get(item.id)! } : item,
         ),
@@ -379,8 +392,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({
       history: [...history.slice(-49), entry],
       future: [],
+      dirty: true,
     })
   },
+
+  markDirty: () => set({ dirty: true }),
+  clearDirty: () => set({ dirty: false }),
+  setBoardFilePath: (path) => set({ boardFilePath: path }),
+  setBoardName: (name) => set({ boardName: name, dirty: true }),
 
   undo: () => {
     const { history, items, nextZ, future } = get()
@@ -392,6 +411,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       items: prev.items,
       nextZ: prev.nextZ,
       selectedIds: [],
+      dirty: true,
     })
   },
 
@@ -405,12 +425,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       items: next.items,
       nextZ: next.nextZ,
       selectedIds: [],
+      dirty: true,
     })
   },
 
   addItems: (newItems, select = true) => {
     get().pushHistory()
     set((s) => ({
+      dirty: true,
       items: [...s.items, ...newItems],
       nextZ: Math.max(s.nextZ, ...newItems.map((i) => i.zIndex + 1)),
       selectedIds: select ? newItems.map((i) => i.id) : s.selectedIds,
@@ -419,6 +441,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   updateItem: (id, patch) =>
     set((s) => ({
+      dirty: true,
       items: s.items.map((item) =>
         item.id === id ? ({ ...item, ...patch } as CanvasItem) : item,
       ),
@@ -427,6 +450,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   updateItems: (patches) => {
     const map = new Map(patches.map((p) => [p.id, p.patch]))
     set((s) => ({
+      dirty: true,
       items: s.items.map((item) => {
         const patch = map.get(item.id)
         return patch ? ({ ...item, ...patch } as CanvasItem) : item
@@ -447,6 +471,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   resizeItem: (id, width, height, x, y) =>
     set((s) => ({
+      dirty: true,
       items: s.items.map((item) =>
         item.id === id
           ? {
@@ -487,15 +512,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const target = ids ?? get().selectedIds
     if (target.length === 0) return
     get().pushHistory()
-    let z = get().nextZ
-    const idSet = new Set(target)
-    set((s) => ({
-      items: s.items.map((item) => {
-        if (!idSet.has(item.id)) return item
-        return { ...item, zIndex: z++ }
-      }),
-      nextZ: z,
-    }))
+    set((s) => {
+      const { zMap, nextZ } = buildRaiseZMap(s.items, target, s.nextZ)
+      return {
+        nextZ,
+        items: s.items.map((item) =>
+          zMap.has(item.id) ? { ...item, zIndex: zMap.get(item.id)! } : item,
+        ),
+      }
+    })
   },
 
   sendToBack: (ids) => {
@@ -742,6 +767,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       title: normalized ? guessTitleFromUrl(normalized) : 'Untitled link',
       description: normalized ? extractHost(normalized) : 'Add a URL',
       favicon: normalized ? faviconFor(normalized) : undefined,
+      previewStatus: normalized ? 'pending' : undefined,
     }
     set((s) => ({
       items: [...s.items, item],
@@ -943,20 +969,30 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const targetIds = new Set(targets.map((t) => t.id))
 
     // Apply stack membership immediately so group-move works mid-animation.
-    // When stacking, lock z-order to match pre-stack order (low → bottom, high → top).
+    // When stacking, lock z-order to match pre-stack order (low → bottom, high → top)
+    // and reserve one z under the block for folder chrome.
     if (options?.stackGroupId || options?.unstack) {
       const orderedStack = state.items
         .filter((i) => targetIds.has(i.id))
         .sort((a, b) => a.zIndex - b.zIndex)
-      let zLock = state.nextZ
-      const stackZ = new Map(
+      const existingName =
         options?.stackGroupId
-          ? orderedStack.map((i) => [i.id, zLock++])
-          : [],
-      )
+          ? state.items.find(
+              (i) =>
+                i.stacked &&
+                i.stackGroupId === options.stackGroupId &&
+                (i.stackName || '').trim(),
+            )?.stackName
+          : undefined
+      const stackZ = options?.stackGroupId
+        ? allocateStackZBlock(
+            orderedStack.map((i) => i.id),
+            state.nextZ,
+          )
+        : null
 
       set((s) => ({
-        nextZ: options?.stackGroupId ? zLock : s.nextZ,
+        nextZ: stackZ ? stackZ.nextZ : s.nextZ,
         items: s.items.map((item) => {
           if (!targetIds.has(item.id)) return item
           if (options.unstack) {
@@ -967,7 +1003,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             ...item,
             stackGroupId: options.stackGroupId,
             stacked: true,
-            zIndex: stackZ.get(item.id) ?? item.zIndex,
+            zIndex: stackZ?.zMap.get(item.id) ?? item.zIndex,
+            ...(existingName ? { stackName: existingName } : {}),
           } as CanvasItem
         }),
       }))
@@ -1048,6 +1085,47 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({ editingStackGroupId: groupId, editingId: null })
   },
 
+  mergeIntoStack: (itemIds, groupId) => {
+    if (itemIds.length === 0 || !groupId) return
+    const state = get()
+    if (state.animating) return
+
+    const members = state.items
+      .filter((i) => i.stacked && i.stackGroupId === groupId)
+      .sort((a, b) => a.zIndex - b.zIndex)
+    if (members.length === 0) return
+
+    const idSet = new Set(itemIds)
+    const incoming = state.items.filter(
+      (i) => idSet.has(i.id) && !i.stacked,
+    )
+    if (incoming.length === 0) return
+
+    // Lock paint order before layout: existing members bottom, new materials top.
+    let z = state.nextZ
+    const prep = new Map<string, number>()
+    for (const m of members) prep.set(m.id, z++)
+    for (const m of incoming) prep.set(m.id, z++)
+    set((s) => ({
+      nextZ: z,
+      items: s.items.map((item) =>
+        prep.has(item.id) ? { ...item, zIndex: prep.get(item.id)! } : item,
+      ),
+    }))
+
+    const ordered = get()
+      .items.filter((i) => prep.has(i.id))
+      .sort((a, b) => a.zIndex - b.zIndex)
+    get().animateToLayout(computeQuickStack(ordered), 420, {
+      stackGroupId: groupId,
+    })
+    set({
+      selectedIds: ordered.map((i) => i.id),
+      editingId: null,
+      editingStackGroupId: null,
+    })
+  },
+
   smoothLayout: () => {
     const items = get().getSelectedItems()
     if (items.length < 2) return
@@ -1094,6 +1172,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       selectedIds: [],
       editingId: null,
       editingStackGroupId: null,
+      dirty: false,
     })
   },
 }))

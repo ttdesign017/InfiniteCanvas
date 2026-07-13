@@ -1783,6 +1783,7 @@ dependencies = [
 name = "infinite-canvas"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "once_cell",
  "regex",
  "reqwest 0.12.28",

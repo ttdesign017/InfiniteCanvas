@@ -100,6 +100,8 @@ export interface LinkCardItem extends BaseItem {
   /** Open Graph / Twitter card preview image */
   image?: string
   siteName?: string
+  /** Whether remote bookmark metadata has already been resolved. */
+  previewStatus?: 'pending' | 'complete'
 }
 
 export interface ScribbleItem extends BaseItem {
@@ -129,5 +131,4 @@ export interface BoardSnapshot {
   items: CanvasItem[]
   nextZ: number
 }
-
 

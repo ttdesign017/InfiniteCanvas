@@ -8,8 +8,9 @@ import {
   mergePreview,
   normalizeUrl,
   placeholderPreview,
+  proxyImageToDataUrl,
 } from '../../utils/linkMeta'
-import { openExternal } from '../../utils/desktop'
+import { openExternal, isDesktop } from '../../utils/desktop'
 
 interface Props {
   item: LinkCardItem
@@ -45,6 +46,22 @@ export function LinkCardView({ item, selected }: Props) {
       return
     }
 
+    const placeholder = placeholderPreview(url)
+    // Avoid re-fetching a bookmark every time a saved board is reopened.
+    // Older saved files do not have previewStatus, so detect their resolved
+    // metadata by comparing it to the initial local placeholder.
+    const hasStoredPreview =
+      item.previewStatus === 'complete' ||
+      (!item.previewStatus &&
+        (Boolean(item.image) ||
+          Boolean(item.siteName) ||
+          item.title !== placeholder.title ||
+          item.description !== placeholder.description))
+    if (hasStoredPreview) {
+      setLoading(false)
+      return
+    }
+
     const gen = ++fetchGen.current
     let cancelled = false
     setLoading(true)
@@ -60,20 +77,28 @@ export function LinkCardView({ item, selected }: Props) {
         return
       }
 
+      // Keep the icon shown immediately after paste. Remote metadata often
+      // supplies a different favicon URL which may fail inside WebView2 (X is
+      // a common example), causing a visible icon swap followed by a blank
+      // tile. Metadata refreshes title/description/image, never an icon that
+      // is already present on the card.
+      const stableFavicon = current.favicon || merged.favicon
+
       const same =
         current.title === merged.title &&
         current.description === merged.description &&
-        (current.favicon || '') === (merged.favicon || '') &&
+        (current.favicon || '') === (stableFavicon || '') &&
         (current.image || '') === (merged.image || '') &&
         (current.siteName || '') === (merged.siteName || '')
 
-      if (!same) {
+      if (!same || current.previewStatus !== 'complete') {
         updateItem(item.id, {
           title: merged.title,
           description: merged.description,
-          favicon: merged.favicon,
+          favicon: stableFavicon,
           image: merged.image,
           siteName: merged.siteName,
+          previewStatus: 'complete',
         })
       }
       setLoading(false)
@@ -134,6 +159,7 @@ export function LinkCardView({ item, selected }: Props) {
       favicon: place.favicon,
       image: undefined,
       siteName: undefined,
+      previewStatus: url ? 'pending' : undefined,
     })
     setEditing(false)
   }
@@ -212,7 +238,27 @@ export function LinkCardView({ item, selected }: Props) {
               src={item.image}
               alt=""
               draggable={false}
-              onError={() => setImgBroken(true)}
+              onError={() => {
+                // Last resort: proxy remote image once for packaged WebView
+                const src = item.image
+                if (
+                  isDesktop() &&
+                  src &&
+                  !src.startsWith('data:') &&
+                  /^https?:\/\//i.test(src)
+                ) {
+                  void proxyImageToDataUrl(src, item.url).then((data) => {
+                    if (data?.startsWith('data:')) {
+                      updateItem(item.id, { image: data })
+                      setImgBroken(false)
+                    } else {
+                      setImgBroken(true)
+                    }
+                  })
+                  return
+                }
+                setImgBroken(true)
+              }}
             />
           </div>
         ) : loading ? (
