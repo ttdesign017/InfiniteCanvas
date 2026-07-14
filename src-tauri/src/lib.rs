@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, ToSocketAddrs};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +185,173 @@ fn parse_preview(html: &str, page_url: &Url) -> LinkPreview {
 /// images are commonly larger than 1.5 MB, especially when a site serves AVIF
 /// or an unoptimised social image.
 const MAX_PREVIEW_IMAGE_BYTES: usize = 6_000_000;
+const MAX_PREVIEW_HTML_BYTES: usize = 600_000;
+const MAX_PROVIDER_JSON_BYTES: usize = 2_000_000;
+const PREVIEW_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 InfiniteCanvas/1.0";
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(mapped));
+            }
+            let octets = ip.octets();
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (octets[0] & 0xfe) == 0xfc
+                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+                || octets[0..4] == [0x20, 0x01, 0x0d, 0xb8])
+        }
+    }
+}
+
+fn validate_public_http_url(url: &Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("only http(s) urls are supported".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "url has no host".to_string())?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".lan")
+        || host.ends_with(".internal")
+    {
+        return Err("local network urls are not allowed".into());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if is_public_ip(ip) {
+            Ok(())
+        } else {
+            Err("private or local network urls are not allowed".into())
+        };
+    }
+
+    let port = url.port_or_known_default().unwrap_or(80);
+    let addresses: Vec<_> = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| format!("unable to resolve url host: {e}"))?
+        .collect();
+    if addresses.is_empty() {
+        return Err("url host resolved to no addresses".into());
+    }
+    if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err("url host resolves to a private or local address".into());
+    }
+    Ok(())
+}
+
+fn build_safe_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 8 {
+                return attempt.stop();
+            }
+            match validate_public_http_url(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(message) => attempt.error(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    message,
+                )),
+            }
+        }))
+        .user_agent(PREVIEW_USER_AGENT)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn safe_remote_fallback(value: String) -> Option<String> {
+    let url = Url::parse(&value).ok()?;
+    validate_public_http_url(&url).ok()?;
+    Some(value)
+}
+
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return None;
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(0)
+            .min(max_bytes as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
+}
+
+async fn read_body_prefix(mut response: reqwest::Response, max_bytes: usize) -> Option<Vec<u8>> {
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(0)
+            .min(max_bytes as u64) as usize,
+    );
+    while body.len() < max_bytes {
+        let Some(chunk) = response.chunk().await.ok()? else {
+            break;
+        };
+        let remaining = max_bytes - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if chunk.len() >= remaining {
+            break;
+        }
+    }
+    Some(body)
+}
+
+async fn read_json_limited(response: reqwest::Response) -> Option<serde_json::Value> {
+    let body = read_body_limited(response, MAX_PROVIDER_JSON_BYTES).await?;
+    serde_json::from_slice(&body).ok()
+}
+
+async fn response_has_at_least(mut response: reqwest::Response, min_bytes: usize) -> bool {
+    if let Some(length) = response.content_length() {
+        return length >= min_bytes as u64;
+    }
+    let mut received = 0usize;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        received = received.saturating_add(chunk.len());
+        if received >= min_bytes {
+            return true;
+        }
+    }
+    false
+}
 
 /// Download an image with page Referer (anti-hotlink) and return a data URL.
 /// WebView often fails on raw og:image URLs (Referer / CDN blocks); data URLs always work.
@@ -193,9 +361,7 @@ async fn fetch_as_data_url(
     referer: &str,
 ) -> Option<String> {
     let parsed = Url::parse(image_url).ok()?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return None;
-    }
+    validate_public_http_url(&parsed).ok()?;
 
     let mut request = client
         .get(parsed)
@@ -240,8 +406,8 @@ async fn fetch_as_data_url(
         };
     }
 
-    let bytes = resp.bytes().await.ok()?;
-    if bytes.is_empty() || bytes.len() > MAX_PREVIEW_IMAGE_BYTES {
+    let bytes = read_body_limited(resp, MAX_PREVIEW_IMAGE_BYTES).await?;
+    if bytes.is_empty() {
         return None;
     }
 
@@ -284,7 +450,7 @@ async fn fetch_microlink_preview(
     if !response.status().is_success() {
         return None;
     }
-    let json: serde_json::Value = response.json().await.ok()?;
+    let json = read_json_limited(response).await?;
     if json.get("status")?.as_str()? != "success" {
         return None;
     }
@@ -353,7 +519,7 @@ fn extract_x_status_id(url: &Url) -> Option<String> {
         return None;
     }
     static RE_STATUS: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?i)/status(?:es)?/(\d{5,25})").unwrap());
+        Lazy::new(|| Regex::new(r"(?i)/status(?:es)?/(\d{1,25})(?:/|$)").unwrap());
     RE_STATUS
         .captures(url.path())
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -431,7 +597,7 @@ async fn fetch_youtube_preview(client: &reqwest::Client, url: &Url) -> Option<Li
     let mut author = None;
     if let Ok(resp) = client.get(&oembed).send().await {
         if resp.status().is_success() {
-            if let Ok(json) = resp.json::<serde_json::Value>().await {
+            if let Some(json) = read_json_limited(resp).await {
                 title = json
                     .get("title")
                     .and_then(|v| v.as_str())
@@ -457,12 +623,10 @@ async fn fetch_youtube_preview(client: &reqwest::Client, url: &Url) -> Option<Li
     for candidate in &thumb_candidates {
         if let Ok(resp) = client.get(candidate).send().await {
             if resp.status().is_success() {
-                if let Ok(bytes) = resp.bytes().await {
+                if response_has_at_least(resp, 8_001).await {
                     // maxresdefault sometimes returns a tiny grey 120×90 placeholder
-                    if bytes.len() > 8_000 {
-                        image = Some(candidate.clone());
-                        break;
-                    }
+                    image = Some(candidate.clone());
+                    break;
                 }
             }
         }
@@ -515,7 +679,7 @@ async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPrev
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(json) = resp.json::<serde_json::Value>().await else {
+        let Some(json) = read_json_limited(resp).await else {
             continue;
         };
 
@@ -765,19 +929,9 @@ async fn fetch_link_preview(url: String) -> Result<LinkPreview, String> {
         return Err("empty url".into());
     }
     let parsed = Url::parse(trimmed).map_err(|e| e.to_string())?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err("only http(s) urls are supported".into());
-    }
+    validate_public_http_url(&parsed)?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .redirect(reqwest::redirect::Policy::limited(8))
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 InfiniteCanvas/1.0",
-        )
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = build_safe_client(12)?;
 
     let mut final_url = parsed.clone();
     let mut preview = LinkPreview::default();
@@ -805,10 +959,8 @@ async fn fetch_link_preview(url: String) -> Result<LinkPreview, String> {
         if let Ok(resp) = response {
             if resp.status().is_success() {
                 final_url = resp.url().clone();
-                if let Ok(mut html) = resp.text().await {
-                    if html.len() > 600_000 {
-                        html.truncate(600_000);
-                    }
+                if let Some(bytes) = read_body_prefix(resp, MAX_PREVIEW_HTML_BYTES).await {
+                    let html = String::from_utf8_lossy(&bytes);
                     let scraped = parse_preview(&html, &final_url);
                     fill_missing_preview(&mut preview, scraped);
                 }
@@ -852,12 +1004,12 @@ async fn fetch_link_preview(url: String) -> Result<LinkPreview, String> {
                 fetch_as_data_url(&client, &img, "")
                     .await
                     .or(fetch_as_data_url(&client, &img, &referer).await)
-                    .or(Some(img))
+                    .or_else(|| safe_remote_fallback(img))
             } else {
                 fetch_as_data_url(&client, &img, &referer)
                     .await
                     .or(fetch_as_data_url(&client, &img, "").await)
-                    .or(Some(img))
+                    .or_else(|| safe_remote_fallback(img))
             };
         }
     }
@@ -880,15 +1032,7 @@ async fn proxy_image_data_url(url: String, referer: Option<String>) -> Result<St
         return Ok(trimmed.to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(8))
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 InfiniteCanvas/1.0",
-        )
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = build_safe_client(15)?;
 
     let ref_str = referer.unwrap_or_default();
     if let Some(data) = fetch_as_data_url(&client, trimmed, &ref_str).await {
@@ -957,5 +1101,23 @@ mod tests {
             "https://twitter.com/example/status/123"
         ).unwrap()));
         assert!(!is_x_status_url(&Url::parse("https://x.com/home").unwrap()));
+        assert!(!is_x_status_url(&Url::parse(
+            "https://x.com/example/status/123abc"
+        ).unwrap()));
+    }
+
+    #[test]
+    fn blocks_private_and_local_preview_targets() {
+        for value in [
+            "http://127.0.0.1/admin",
+            "http://10.0.0.2/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+            "http://localhost/",
+        ] {
+            let url = Url::parse(value).unwrap();
+            assert!(validate_public_http_url(&url).is_err(), "allowed {value}");
+        }
+        assert!(validate_public_http_url(&Url::parse("https://8.8.8.8/").unwrap()).is_ok());
     }
 }

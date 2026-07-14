@@ -180,6 +180,8 @@ export interface BoardSnapshot {
   version: 1
   name: string
   viewport: Viewport
+  /** Root-canvas viewport when `viewport` currently belongs to a nested stack. */
+  homeViewport?: Viewport
   items: CanvasItem[]
   nextZ: number
   /** Nested stack folders (enterable canvases) */
@@ -187,4 +189,3 @@ export interface BoardSnapshot {
   /** Active nested canvas; omit or `root` = home */
   currentContainerId?: string
 }
-

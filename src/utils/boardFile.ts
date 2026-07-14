@@ -19,7 +19,7 @@ export const ICANVAS_MAGIC = 'ICNV'
 export const ICANVAS_FORMAT = 'InfiniteCanvas'
 export const ICANVAS_EXT = 'icanvas'
 /** Current on-disk format version */
-export const ICANVAS_FORMAT_VERSION = 2
+export const ICANVAS_FORMAT_VERSION = 3
 
 export interface ICanvasAsset {
   mime: string
@@ -34,6 +34,8 @@ export interface ICanvasDocument {
   formatVersion: number
   name: string
   viewport: Viewport
+  /** Root-canvas viewport when the document was saved inside a nested stack. */
+  homeViewport?: Viewport
   nextZ: number
   items: CanvasItem[]
   stacks?: StackRecord[]
@@ -235,6 +237,9 @@ export async function packICanvasDocument(snapshot: BoardSnapshot): Promise<ICan
     formatVersion: ICANVAS_FORMAT_VERSION,
     name: snapshot.name,
     viewport: { ...snapshot.viewport },
+    homeViewport: snapshot.homeViewport
+      ? { ...snapshot.homeViewport }
+      : undefined,
     nextZ: snapshot.nextZ,
     items,
     stacks: snapshot.stacks ? structuredClone(snapshot.stacks) : [],
@@ -302,6 +307,9 @@ export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
     version: 1,
     name: doc.name || 'Untitled Board',
     viewport: doc.viewport,
+    homeViewport: doc.homeViewport
+      ? { ...doc.homeViewport }
+      : undefined,
     items,
     nextZ: doc.nextZ ?? 1,
     stacks: doc.stacks ? structuredClone(doc.stacks) : [],
@@ -329,6 +337,9 @@ export function parseICanvasFile(text: string): BoardSnapshot {
       version: 1,
       name: data.name || 'Untitled Board',
       viewport: data.viewport,
+      homeViewport: data.homeViewport
+        ? { ...data.homeViewport }
+        : undefined,
       items: data.items,
       nextZ: data.nextZ ?? 1,
       stacks: data.stacks ?? [],

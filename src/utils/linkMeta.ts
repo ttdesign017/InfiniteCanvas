@@ -181,7 +181,7 @@ export function extractXStatusId(url: string): string | null {
     const host = u.hostname.toLowerCase()
     if (!X_HOSTS.has(host)) return null
     // /user/status/ID or /i/web/status/ID or /i/status/ID
-    const m = u.pathname.match(/\/status(?:es)?\/(\d{5,25})/i)
+    const m = u.pathname.match(/\/status(?:es)?\/(\d{1,25})(?:\/|$)/i)
     return m?.[1] ?? null
   } catch {
     return null

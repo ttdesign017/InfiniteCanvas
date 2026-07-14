@@ -1652,7 +1652,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           })
 
           const settleT0 = performance.now()
-          const settleDur = 320
+          const settleDur = 160
           const settleTick = (now: number) => {
             const st = Math.min(1, (now - settleT0) / settleDur)
             const e = st * st * (3 - 2 * st)
@@ -2898,22 +2898,43 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (stack && stack.parentId === parentId) {
         const ox = stack.x + STACK_FOLDER_PAD
         const oy = stack.y + STACK_FOLDER_PAD
+        const promotedChildStackIds = new Set(
+          nextStacks
+            .filter((candidate) => candidate.parentId === sid)
+            .map((candidate) => candidate.id),
+        )
         nextItems = nextItems.map((it) => {
-          if (containerOf(it) !== sid) return it
-          releasedIds.push(it.id)
-          const px = it.stackPreview?.x
-          const py = it.stackPreview?.y
-          const prot = it.stackPreview?.rotation
-          return asFreeOnContainer(
-            it,
-            parentId,
-            {
-              x: px ?? it.x + ox,
-              y: py ?? it.y + oy,
-              rotation: prot ?? 0,
-            },
-            null,
-          )
+          const containerId = containerOf(it)
+          if (containerId === sid) {
+            releasedIds.push(it.id)
+            const px = it.stackPreview?.x
+            const py = it.stackPreview?.y
+            const prot = it.stackPreview?.rotation
+            return asFreeOnContainer(
+              it,
+              parentId,
+              {
+                x: px ?? it.x + ox,
+                y: py ?? it.y + oy,
+                rotation: prot ?? 0,
+              },
+              null,
+            )
+          }
+          // A direct child stack is promoted to our parent below. Its direct
+          // leaves keep living in that child, but their fan pose changes from
+          // the dissolved stack's coordinate space to the new parent space.
+          if (promotedChildStackIds.has(containerId) && it.stackPreview) {
+            return {
+              ...it,
+              stackPreview: {
+                ...it.stackPreview,
+                x: it.stackPreview.x + ox,
+                y: it.stackPreview.y + oy,
+              },
+            }
+          }
+          return it
         })
         nextStacks = nextStacks
           .filter((s) => s.id !== sid)
@@ -3014,12 +3035,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   exportBoard: () => {
-    const { items, stacks, viewport, nextZ, boardName, currentContainerId } =
-      get()
+    const {
+      items,
+      stacks,
+      viewport,
+      homeViewport,
+      nextZ,
+      boardName,
+      currentContainerId,
+    } = get()
     return {
       version: 1 as const,
       name: boardName,
       viewport: { ...viewport },
+      homeViewport: {
+        ...(currentContainerId === ROOT_CONTAINER_ID ? viewport : homeViewport),
+      },
       items: cloneItems(items),
       nextZ,
       stacks: cloneStacks(stacks),
@@ -3028,14 +3059,21 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   importBoard: (board) => {
-    get().pushHistory()
     const normalized = normalizeImportedItems(board.items)
     const migrated = migrateLegacyStacks(normalized, board.stacks ?? [])
+    const currentContainerId = board.currentContainerId || ROOT_CONTAINER_ID
+    const homeViewport =
+      currentContainerId === ROOT_CONTAINER_ID
+        ? { ...board.viewport }
+        : board.homeViewport
+          ? { ...board.homeViewport }
+          : { ...DEFAULT_VIEWPORT }
     set({
       items: migrated.items,
       stacks: migrated.stacks,
-      currentContainerId: board.currentContainerId || ROOT_CONTAINER_ID,
-      viewport: board.viewport,
+      currentContainerId,
+      viewport: { ...board.viewport },
+      homeViewport,
       nextZ: board.nextZ,
       boardName: board.name || 'Untitled Board',
       selectedIds: [],
@@ -3043,6 +3081,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       editingId: null,
       editingStackGroupId: null,
       stackEnterAnim: null,
+      history: [],
+      future: [],
       dirty: false,
     })
   },

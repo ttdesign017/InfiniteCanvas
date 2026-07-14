@@ -681,13 +681,6 @@ export function InfiniteCanvas() {
       let moveIds = expandStackSelection(ids, useCanvasStore.getState().items)
       if (moveIds.length === 0) return
 
-      let duplicated = false
-      if (e.altKey) {
-        // Alt-drag duplicate: promote immediately (user intent is drag)
-        store.pushHistory()
-        moveIds = store.duplicateItems(moveIds)
-        duplicated = true
-      }
       const live = useCanvasStore.getState().items
       const origins: Record<string, { x: number; y: number }> = {}
       for (const id of moveIds) {
@@ -709,7 +702,7 @@ export function InfiniteCanvas() {
         lastY: e.clientY,
         ids: moveIds,
         origins,
-        duplicated,
+        duplicated: false,
         altHeld: e.altKey,
       }
 
@@ -856,23 +849,37 @@ export function InfiniteCanvas() {
           drag.lastY = e.clientY
           return
         }
-        // Real drag: push history once, then switch to move mode
+        // Real drag: push history once, then duplicate only after the pointer
+        // has crossed the drag threshold. Alt-click remains a normal click.
         store.pushHistory()
+        let moveIds = drag.ids
+        let origins = drag.origins
+        let duplicated = false
+        if (e.altKey) {
+          moveIds = store.duplicateItems(moveIds)
+          const live = useCanvasStore.getState().items
+          origins = {}
+          for (const id of moveIds) {
+            const item = live.find((candidate) => candidate.id === id)
+            if (item) origins[id] = { x: item.x, y: item.y }
+          }
+          duplicated = true
+        }
         // Leave text edit if any
         if (store.editingId) {
           useCanvasStore.setState({ editingId: null })
         }
         dragRef.current = {
           kind: 'move',
-          ids: drag.ids,
+          ids: moveIds,
           stackIds: drag.stackIds,
           stackOrigins: drag.stackOrigins,
           lastX: e.clientX,
           lastY: e.clientY,
-          moved: true,
-          duplicated: drag.duplicated,
-          altHeld: drag.altHeld,
-          origins: drag.origins,
+          moved: false,
+          duplicated,
+          altHeld: e.altKey,
+          origins,
           accDx: 0,
           accDy: 0,
         }
@@ -1554,7 +1561,13 @@ export function InfiniteCanvas() {
     isExitAnim &&
     exitingStackId != null &&
     currentContainerId !== exitingStackId
-
+  // Stack chrome and contents share the exact settle curve. The store uses a
+  // shorter 160ms settle, preserving the previously stable render lifecycle.
+  const exitPeerContentOpacity = isExitAnim
+    ? exitAfterHandoff
+      ? Math.max(0, Math.min(1, stackEnterAnim?.settle ?? 0))
+      : 0
+    : 1
   // Parent free items (non-embed) as stack-local ghosts during early exit
   const exitParentPeerItems = useMemo(() => {
     if (!exitGhostParent || !exitingStackRec || !exitParentId) return []
@@ -1571,26 +1584,60 @@ export function InfiniteCanvas() {
       }))
   }, [exitGhostParent, exitingStackRec, exitParentId, items])
 
-  // Other stacks on parent (not the one we're leaving), stack-local coords
-  const exitParentPeerFolders = useMemo(() => {
-    if (!exitGhostParent || !exitingStackRec || !exitParentId || !exitingStackId)
+  // Other stack folder chrome on the parent (not the one we're leaving) is one
+  // persistent visual layer for the entire exit. Preview contents deliberately
+  // stay out of this ghost layer; their real Home nodes fade in after handoff.
+  const exitParentPeerStacks = useMemo(() => {
+    if (
+      !isExitAnim ||
+      !exitingStackRec ||
+      !exitParentId ||
+      !exitingStackId ||
+      (currentContainerId !== exitingStackId &&
+        currentContainerId !== exitParentId)
+    )
       return []
-    const ox = exitingStackRec.x
-    const oy = exitingStackRec.y
+    const stillInsideExitingStack = currentContainerId === exitingStackId
+    const ox = stillInsideExitingStack ? exitingStackRec.x : 0
+    const oy = stillInsideExitingStack ? exitingStackRec.y : 0
     return stacks
       .filter((s) => s.parentId === exitParentId && s.id !== exitingStackId)
-      .map((s) => ({
-        ...s,
-        x: s.x - ox,
-        y: s.y - oy,
-      }))
+      .map((stack) => {
+        const worldBounds = collapsedStackFolderBounds(stack, items, stacks)
+        const leafItems = collectItemsInStackTree(items, stacks, stack.id)
+        const leafZ = leafItems.map((item) => item.zIndex)
+        const folderZ =
+          Math.min(
+            stack.zIndex,
+            ...(leafZ.length ? leafZ : [stack.zIndex + 1]),
+          ) - 1
+        const countZ = Math.max(stack.zIndex, ...leafZ, 1) + 2
+        return {
+          stack,
+          bounds: {
+            x: worldBounds.x - ox,
+            y: worldBounds.y - oy,
+            width: worldBounds.width,
+            height: worldBounds.height,
+          },
+          count: leafItems.length,
+          folderZ,
+          countZ,
+        }
+      })
   }, [
-    exitGhostParent,
+    isExitAnim,
     exitingStackRec,
     exitParentId,
     exitingStackId,
+    currentContainerId,
+    items,
     stacks,
   ])
+  const exitParentPeerStackIds = useMemo(
+    () => new Set(exitParentPeerStacks.map((peer) => peer.stack.id)),
+    [exitParentPeerStacks],
+  )
 
   return (
     <div
@@ -1617,6 +1664,9 @@ export function InfiniteCanvas() {
         <div className="canvas-grid" />
         {/* Folder chrome for nested stacks + legacy groups */}
         {stackFolders.map((f) => {
+          // A persistent exit-peer layer below owns this stack until the fade
+          // reaches 1. Avoid mounting a second real folder at handoff.
+          if (exitParentPeerStackIds.has(f.gid)) return null
           // During exit settle, real folder fades in under morph overlay
           const exitAnim =
             stackEnterAnim?.mode === 'exit' &&
@@ -1755,24 +1805,36 @@ export function InfiniteCanvas() {
           )
         })}
         {/* Parent peers while still inside exiting stack (stack-local coords) */}
-        {exitParentPeerFolders.map((st) => (
-          <StackFolder
-            key={`exit-peer-folder-${st.id}`}
-            groupId={st.id}
-            members={[]}
-            bounds={{
-              x: st.x,
-              y: st.y,
-              width: st.width,
-              height: st.height,
-            }}
-            selected={false}
-            zIndex={st.zIndex}
-            name={st.name}
-            styleOpacity={exitPeerOpacity}
-            count={items.filter((i) => containerOf(i) === st.id).length}
-            onPointerDown={() => {}}
-          />
+        {exitParentPeerStacks.map((peer) => (
+          <Fragment key={`exit-peer-stack-${peer.stack.id}`}>
+            <StackFolder
+              groupId={peer.stack.id}
+              members={[]}
+              bounds={peer.bounds}
+              selected={false}
+              zIndex={peer.folderZ}
+              name={peer.stack.name}
+              styleOpacity={exitPeerContentOpacity}
+              count={peer.count}
+              countZIndex={peer.countZ}
+              onPointerDown={() => {}}
+            />
+            {peer.count > 0 && exitPeerContentOpacity > 0.05 && (
+              <span
+                className="stack-folder-label stack-count-float"
+                style={{
+                  transform: `translate(${peer.bounds.x + peer.bounds.width - 12}px, ${
+                    peer.bounds.y + peer.bounds.height - 10
+                  }px) translate(-100%, -100%)`,
+                  zIndex: peer.countZ,
+                  opacity: exitPeerContentOpacity,
+                  pointerEvents: 'none',
+                }}
+              >
+                {peer.count}
+              </span>
+            )}
+          </Fragment>
         ))}
         {exitParentPeerItems.map((item) => (
           <div
@@ -1792,18 +1854,18 @@ export function InfiniteCanvas() {
           </div>
         ))}
         {stackPreviewItems.map((item) => {
-          // Fan of the stack we just exited stays opaque; other stacks fade with peers
-          const previewOp =
-            exitAfterHandoff &&
-            exitingStackId != null &&
-            item.stackGroupId !== exitingStackId
-              ? exitPeerOpacity
-              : 1
+          const isExitPeerPreview =
+            item.stackGroupId != null &&
+            exitParentPeerStackIds.has(item.stackGroupId)
           return (
             <div
               key={item.id}
               className="stack-preview-wrap"
-              style={{ opacity: previewOp }}
+              style={{
+                opacity: isExitPeerPreview
+                  ? exitPeerContentOpacity
+                  : 1,
+              }}
             >
               <CanvasItemView
                 item={item}
@@ -1934,10 +1996,16 @@ export function InfiniteCanvas() {
           const display = embedDisplayItem(item, pose)
           const isExitingFan =
             pose.asPreview && pose.stackGroupId === exitingStackId
+          const isExitPeerPreview =
+            pose.asPreview &&
+            pose.stackGroupId != null &&
+            exitParentPeerStackIds.has(pose.stackGroupId)
           const embedOp = !pose.visible
             ? 0
             : isExitingFan
               ? 1
+              : isExitPeerPreview
+                ? exitPeerContentOpacity
               : exitGhostParent || exitAfterHandoff
                 ? // Free on current stack (inner members): full; parent ghosts: peer fade
                   containerOf(item) === currentContainerId && !pose.asPreview

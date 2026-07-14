@@ -38,7 +38,14 @@ export async function saveCurrentBoard(options?: {
   }
 
   try {
+    // Keep the exact state references present at snapshot time. Zustand updates
+    // replace these objects, so a reference change means the live board moved
+    // on while media was being packed or the file was being written.
+    const saveStart = useCanvasStore.getState()
     const snapshot = store.exportBoard()
+    const savedName =
+      path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || snapshot.name
+    snapshot.name = savedName
     const doc = await packICanvasDocument(snapshot)
     const text = serializeICanvas(doc)
     await desktop.writeText(path, text)
@@ -52,10 +59,21 @@ export async function saveCurrentBoard(options?: {
       )
     }
     store.setBoardFilePath(path)
-    store.clearDirty()
-    // Derive display name from file
-    const name = path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || store.boardName
-    useCanvasStore.setState({ boardName: name })
+    const live = useCanvasStore.getState()
+    const unchangedSinceSnapshot =
+      live.items === saveStart.items &&
+      live.stacks === saveStart.stacks &&
+      live.viewport === saveStart.viewport &&
+      live.homeViewport === saveStart.homeViewport &&
+      live.nextZ === saveStart.nextZ &&
+      live.boardName === saveStart.boardName &&
+      live.currentContainerId === saveStart.currentContainerId
+    useCanvasStore.setState({
+      ...(live.boardName === saveStart.boardName
+        ? { boardName: savedName }
+        : {}),
+      ...(unchangedSinceSnapshot ? { dirty: false } : { dirty: true }),
+    })
     store.flashSaveNotice('Saved')
     return true
   } catch (err) {
