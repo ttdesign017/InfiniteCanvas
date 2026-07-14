@@ -5,7 +5,13 @@
  * even after original files are deleted.
  */
 
-import type { BoardSnapshot, CanvasItem, MediaItem, Viewport } from '../types/canvas'
+import type {
+  BoardSnapshot,
+  CanvasItem,
+  MediaItem,
+  StackRecord,
+  Viewport,
+} from '../types/canvas'
 import { isDesktop, readBinaryFile } from './desktop'
 import { getExtension } from './media'
 
@@ -30,6 +36,8 @@ export interface ICanvasDocument {
   viewport: Viewport
   nextZ: number
   items: CanvasItem[]
+  stacks?: StackRecord[]
+  currentContainerId?: string
   /** Media blobs keyed by asset id */
   assets: Record<string, ICanvasAsset>
 }
@@ -229,6 +237,8 @@ export async function packICanvasDocument(snapshot: BoardSnapshot): Promise<ICan
     viewport: { ...snapshot.viewport },
     nextZ: snapshot.nextZ,
     items,
+    stacks: snapshot.stacks ? structuredClone(snapshot.stacks) : [],
+    currentContainerId: snapshot.currentContainerId,
     assets,
   }
 }
@@ -294,6 +304,8 @@ export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
     viewport: doc.viewport,
     items,
     nextZ: doc.nextZ ?? 1,
+    stacks: doc.stacks ? structuredClone(doc.stacks) : [],
+    currentContainerId: doc.currentContainerId,
   }
 }
 
@@ -319,6 +331,8 @@ export function parseICanvasFile(text: string): BoardSnapshot {
       viewport: data.viewport,
       items: data.items,
       nextZ: data.nextZ ?? 1,
+      stacks: data.stacks ?? [],
+      currentContainerId: data.currentContainerId,
     }
   }
   throw new Error('Unable to open the file: not an Infinite Canvas project (.icanvas)')

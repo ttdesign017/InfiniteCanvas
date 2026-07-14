@@ -174,6 +174,10 @@ kbd {
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
+  transition:
+    opacity 0.28s ease,
+    transform 0.28s ease,
+    visibility 0.28s ease;
 }
 
 .dock-right {
@@ -181,6 +185,230 @@ kbd {
   top: 50%;
   transform: translateY(-50%);
   align-items: flex-end;
+  transition:
+    opacity 0.28s ease,
+    transform 0.28s ease,
+    visibility 0.28s ease;
+}
+
+/* Immersive: fade side docks out; top style bar stays */
+.app-shell.is-immersive .dock-left,
+.app-shell.is-immersive .dock-right {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%) scale(0.96);
+}
+
+.app-shell.is-immersive .dock-left {
+  transform: translate(-8px, -50%) scale(0.96);
+}
+
+.app-shell.is-immersive .dock-right {
+  transform: translate(8px, -50%) scale(0.96);
+}
+
+/* Bottom-right immersive toggle — visible on corner hover or when immersive */
+.immersive-hotzone {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 72px;
+  height: 72px;
+  z-index: 60;
+  pointer-events: auto;
+}
+
+.immersive-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(4px) scale(0.94);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+  pointer-events: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Only reveal on corner hover — never stay permanently visible (incl. immersive) */
+.immersive-hotzone:hover .immersive-toggle,
+.immersive-toggle:focus-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.immersive-toggle:hover {
+  color: var(--text);
+  border-color: rgba(13, 153, 255, 0.35);
+  background: #fff;
+}
+
+/* Active state only changes color while the toggle is already revealed by hover */
+.immersive-hotzone:hover .immersive-toggle.is-active,
+.immersive-toggle.is-active:focus-visible {
+  color: var(--accent);
+  border-color: rgba(13, 153, 255, 0.4);
+  background: var(--accent-soft);
+}
+
+/* Nested canvas path breadcrumb — fades in/out via .is-visible */
+.canvas-path {
+  position: fixed;
+  left: 14px;
+  top: 12px;
+  z-index: 48;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: min(560px, calc(100vw - 120px));
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+  pointer-events: none;
+}
+
+.canvas-path.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.app-shell.is-immersive .canvas-path {
+  /* keep path visible in immersive */
+}
+
+.canvas-path-seg {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-path-seg:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.canvas-path-seg.is-current {
+  color: var(--text);
+  cursor: default;
+}
+
+.canvas-path-sep {
+  color: var(--text-faint);
+  user-select: none;
+  padding: 0 1px;
+}
+
+.canvas-path-input {
+  border: none;
+  outline: none;
+  background: rgba(13, 153, 255, 0.08);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  min-width: 64px;
+  max-width: 180px;
+  caret-color: var(--accent);
+}
+
+/* Stack folder morph: BELOW items (z-index 1 < .canvas-world z-index 2) */
+.stack-enter-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/*
+ * Morph folder mirrors real StackFolder geometry.
+ * IMPORTANT: body must have `top` set — without it the absolute body collapses
+ * to zero height and only tab/badge/shadow appear to animate.
+ */
+.stack-enter-folder.stack-folder-morph {
+  position: absolute;
+  pointer-events: none;
+  will-change: left, top, width, height, opacity, transform;
+  /* No background on shell — fill lives on .stack-folder-body */
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  /*
+   * Layout uses world units + transform: scale(zoom) so tab / badge / radius
+   * match real .stack-folder inside .canvas-world (same zoom factor).
+   */
+}
+
+.stack-enter-folder.stack-folder-morph .stack-folder-body {
+  /* Solid fill; parent opacity drives the fade (must never cliff via CSS) */
+  opacity: 1 !important;
+  transition: none !important;
+  background: linear-gradient(165deg, #f7f8fa 0%, #eef1f5 55%, #e8ecf1 100%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 10px 28px rgba(0, 0, 0, 0.08);
+}
+
+/* Same body top offsets as real .stack-folder (selectors don't share that class) */
+.stack-enter-folder.stack-folder-morph.is-compact .stack-folder-body {
+  top: 12px;
+}
+
+.stack-enter-folder.stack-folder-morph.has-name .stack-folder-body {
+  top: 22px;
+}
+
+.stack-enter-folder.stack-folder-morph .stack-folder-tab {
+  transition: none !important;
+}
+
+.stack-enter-folder.stack-folder-morph .stack-folder-label {
+  transition: none !important;
 }
 
 .tool-group {
@@ -601,9 +829,20 @@ kbd {
   overflow: hidden;
   background: #e5e5e5;
   touch-action: none;
-  border: none;
-  outline: none;
-  box-shadow: none;
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Kill any outer focus/system ring around the canvas window */
+html,
+body,
+#root,
+.app-shell,
+.workspace,
+.canvas-surface {
+  border: 0 !important;
+  outline: none !important;
 }
 
 /* tabIndex={0} would otherwise draw a black focus ring around the whole canvas */
@@ -611,7 +850,7 @@ kbd {
 .canvas-surface:focus-visible,
 .canvas-surface:active {
   outline: none !important;
-  border: none !important;
+  border: 0 !important;
   box-shadow: none !important;
 }
 
@@ -619,7 +858,8 @@ kbd {
 .workspace:focus-visible,
 .app-shell:focus,
 .app-shell:focus-visible {
-  outline: none;
+  outline: none !important;
+  border: 0 !important;
 }
 
 .canvas-surface.drop-active {
@@ -639,6 +879,8 @@ kbd {
   height: 1px;
   transform-origin: 0 0;
   will-change: transform;
+  /* Above folder morph overlay so cards paint on top of chrome */
+  z-index: 2;
 }
 
 .canvas-grid {
@@ -666,13 +908,27 @@ kbd {
   touch-action: none;
 }
 
-.canvas-item.is-stacked {
-  transform-origin: bottom left;
+/* Enter A: nested stack B's leaves flying into place (visual only) */
+.nested-leaf-enter-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 10px;
+  background: linear-gradient(165deg, #f7f8fa 0%, #e8ecf1 100%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  transform-origin: top left;
+  pointer-events: none !important;
 }
 
-/* Stacked content is frozen: no nested hit-targets (edit, video, links) */
+/* Fan / stack preview: atomic with folder — no per-card drag, interact, or resize */
+.canvas-item.is-stacked {
+  transform-origin: bottom left;
+  pointer-events: none !important;
+}
+
 .canvas-item.is-stacked > * {
-  pointer-events: none;
+  pointer-events: none !important;
   user-select: none;
 }
 
@@ -883,10 +1139,23 @@ kbd {
   font-weight: 600;
   color: var(--text-faint);
   letter-spacing: 0.04em;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.92);
   border-radius: 999px;
   padding: 2px 8px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  z-index: 2;
+}
+
+/* World-space count badge (above stacked cards).
+ * Positioned by JS so bottom-right matches in-folder right:12 bottom:10. */
+.stack-count-float {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: auto;
+  bottom: auto;
+  /* override in-folder absolute inset — origin for translate(-100%,-100%) */
+  transform-origin: top left;
 }
 
 .canvas-item.is-editing {
@@ -1185,7 +1454,8 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px 12px;
+  /* Extra bottom padding so last line is not clipped */
+  padding: 12px 14px 18px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: #ffffff;
@@ -1193,6 +1463,7 @@ kbd {
   overflow: hidden;
   font-family: var(--font-ui);
   line-height: 1.45;
+  box-sizing: border-box;
 }
 
 .notion-card-label {
@@ -1231,9 +1502,11 @@ kbd {
   white-space: pre-wrap;
   word-break: break-word;
   overflow: hidden;
+  overflow-wrap: anywhere;
   color: inherit;
   font-size: inherit;
   line-height: 1.5;
+  padding-bottom: 2px;
 }
 
 .notion-card-input {
@@ -1247,7 +1520,8 @@ kbd {
   color: inherit;
   font: inherit;
   line-height: 1.5;
-  padding: 0;
+  padding: 0 0 2px;
+  box-sizing: border-box;
 }
 
 .link-card-main {
@@ -1915,6 +2189,138 @@ kbd {
 
 .status-platform {
   flex-shrink: 0;
+}
+
+/* Wrappers for exit peer fade / embed keepalive (zero-size positioned hosts) */
+.peer-fade-wrap,
+.stack-preview-wrap,
+.embed-alive {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+}
+
+/* Embed keepalive slot — always mounted; hide without display:none (avoids unload) */
+.embed-alive {
+  /* base box from shared rule above */
+}
+
+.embed-alive.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.embed-alive.is-hidden .canvas-item {
+  /* Keep compositor layer warm; no hit testing while off-canvas */
+  content-visibility: visible;
+}
+
+/* ── Embed (iframe) ── */
+
+.embed-item {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  isolation: isolate;
+  contain: layout style;
+}
+
+.embed-item.is-selected,
+.embed-item.is-live {
+  border-color: rgba(13, 153, 255, 0.45);
+  box-shadow:
+    0 0 0 1px rgba(13, 153, 255, 0.2),
+    0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* Top strip: always drag the card on the canvas (never fights the player) */
+.embed-drag-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 22px;
+  z-index: 4;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(255, 255, 255, 0.55) 70%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  pointer-events: auto;
+}
+
+.embed-item.is-live .embed-drag-bar,
+.embed-item.is-selected .embed-drag-bar {
+  background: linear-gradient(
+    180deg,
+    rgba(232, 244, 255, 0.95) 0%,
+    rgba(232, 244, 255, 0.45) 70%,
+    rgba(232, 244, 255, 0) 100%
+  );
+}
+
+.embed-drag-grip {
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.embed-drag-bar:active {
+  cursor: grabbing;
+}
+
+.embed-frame {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.embed-frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: #f7f7f7;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* Cold: full cover for select/drag without fighting the iframe */
+.embed-hit-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: grab;
+  background: transparent;
+}
+
+/* Fan card on parent: fully inert — clicks pass to stack folder underneath */
+.embed-item.is-stack-preview,
+.embed-item.is-stack-preview .embed-frame,
+.embed-item.is-stack-preview iframe {
+  pointer-events: none !important;
+}
+
+.embed-hit-shield.is-passthrough {
+  pointer-events: none !important;
+  cursor: inherit;
 }
 
 ::-webkit-scrollbar {

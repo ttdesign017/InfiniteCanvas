@@ -18,18 +18,38 @@ function hashUnit(id: string, salt: number): number {
   return ((h >>> 0) % 2001) / 1000 - 1
 }
 
-/** Quick stack: offset fan; bottom flat, others random −8°…8° around bottom-left */
-export function computeQuickStack(items: CanvasItem[], gap = 16): LayoutTarget[] {
-  if (items.length === 0) return []
+/** Rect body for fan layout (free item or nested stack folder) */
+export type FanBody = {
+  id: string
+  x: number
+  y: number
+  width: number
+  height: number
+  zIndex?: number
+}
 
-  const sorted = [...items].sort((a, b) => a.zIndex - b.zIndex)
-  const cx = sorted.reduce((s, i) => s + i.x + i.width / 2, 0) / sorted.length
-  const cy = sorted.reduce((s, i) => s + i.y + i.height / 2, 0) / sorted.length
+/**
+ * Quick stack fan for mixed bodies (items + nested stack folders).
+ * Offset pile; bottom flat, others random −8°…8° around bottom-left.
+ */
+export function computeQuickStackBodies(
+  bodies: FanBody[],
+  gap = 16,
+): LayoutTarget[] {
+  if (bodies.length === 0) return []
+
+  const sorted = [...bodies].sort(
+    (a, b) =>
+      (a.zIndex ?? 0) - (b.zIndex ?? 0) || a.id.localeCompare(b.id),
+  )
+  const cx =
+    sorted.reduce((s, i) => s + i.x + i.width / 2, 0) / sorted.length
+  const cy =
+    sorted.reduce((s, i) => s + i.y + i.height / 2, 0) / sorted.length
 
   const maxW = Math.max(...sorted.map((i) => i.width))
   const maxH = Math.max(...sorted.map((i) => i.height))
 
-  // Anchor stack so items share a common bottom-left region
   const baseX = cx - maxW / 2
   const baseY = cy - maxH / 2
 
@@ -37,8 +57,6 @@ export function computeQuickStack(items: CanvasItem[], gap = 16): LayoutTarget[]
     const offset = index * gap
     const rotation =
       index === 0 ? 0 : Math.max(-8, Math.min(8, hashUnit(item.id, index) * 8))
-    // Position top-left so bottom-left corner sits on the fan offset
-    // (transform-origin is bottom-left when stacked)
     return {
       id: item.id,
       x: baseX + offset,
@@ -48,6 +66,21 @@ export function computeQuickStack(items: CanvasItem[], gap = 16): LayoutTarget[]
       rotation,
     }
   })
+}
+
+/** Quick stack: offset fan; bottom flat, others random −8°…8° around bottom-left */
+export function computeQuickStack(items: CanvasItem[], gap = 16): LayoutTarget[] {
+  return computeQuickStackBodies(
+    items.map((i) => ({
+      id: i.id,
+      x: i.x,
+      y: i.y,
+      width: i.width,
+      height: i.height,
+      zIndex: i.zIndex,
+    })),
+    gap,
+  )
 }
 
 /** Expand selection ids to full stack groups */
@@ -160,6 +193,86 @@ export function stackFolderBodyBounds(members: CanvasItem[]): BoundsRect | null 
     width: outer.width,
     height: Math.max(1, outer.height - bodyTop),
   }
+}
+
+/** Folder body edges for a nested StackRecord (parent-canvas chrome). */
+export function stackRecordBodyBounds(stack: {
+  x: number
+  y: number
+  width: number
+  height: number
+  name?: string
+}): BoundsRect {
+  const hasName = (stack.name || '').trim().length > 0
+  const bodyTop = hasName
+    ? STACK_FOLDER_BODY_TOP_NAMED
+    : STACK_FOLDER_BODY_TOP_COMPACT
+  return {
+    x: stack.x,
+    y: stack.y + bodyTop,
+    width: stack.width,
+    height: Math.max(1, stack.height - bodyTop),
+  }
+}
+
+/**
+ * Snap/align bounds for a collapsed stack on its parent: prefer fan previews of
+ * all leaf items (including nested stacks' content). Nested stack folders are
+ * not separate bodies — only the outer chrome / content hull.
+ *
+ * Direct members: stackPreview is parent-canvas absolute.
+ * Nested members: stackPreview is outer-stack local → add stack.x/y.
+ */
+export function stackCollapsedSnapBounds(
+  stack: {
+    id: string
+    x: number
+    y: number
+    width: number
+    height: number
+    name?: string
+  },
+  leafItems: CanvasItem[],
+): BoundsRect {
+  const previews = leafItems
+    .filter((i) => i.stackPreview)
+    .map((i) => {
+      const p = i.stackPreview!
+      const nested = (i.containerId || 'root') !== stack.id
+      return {
+        ...i,
+        x: nested ? stack.x + p.x : p.x,
+        y: nested ? stack.y + p.y : p.y,
+        rotation: p.rotation ?? 0,
+      } as CanvasItem
+    })
+  if (previews.length > 0) {
+    const cards = stackCardBounds(previews)
+    if (cards) {
+      const hasName = (stack.name || '').trim().length > 0
+      const bodyTop = hasName
+        ? STACK_FOLDER_BODY_TOP_NAMED
+        : STACK_FOLDER_BODY_TOP_COMPACT
+      const pad = STACK_FOLDER_PAD
+      const outerX = Math.min(stack.x, cards.x - pad)
+      const outerY = Math.min(stack.y, cards.y - pad)
+      const outerR = Math.max(
+        stack.x + stack.width,
+        cards.x + cards.width + pad,
+      )
+      const outerB = Math.max(
+        stack.y + stack.height,
+        cards.y + cards.height + pad,
+      )
+      return {
+        x: outerX,
+        y: outerY + bodyTop,
+        width: Math.max(1, outerR - outerX),
+        height: Math.max(1, outerB - outerY - bodyTop),
+      }
+    }
+  }
+  return stackRecordBodyBounds(stack)
 }
 
 /**
@@ -321,8 +434,8 @@ export function allContentBounds(items: CanvasItem[]): {
 }
 
 /**
- * Topmost stack folder under a world point, excluding items/groups being dragged.
- * Returns stackGroupId or null.
+ * Topmost stack folder under a world point.
+ * Prefers nested StackRecord folders; falls back to legacy stacked members.
  */
 export function hitStackGroupAt(
   world: Point,
@@ -332,10 +445,35 @@ export function hitStackGroupAt(
     excludeIds?: Iterable<string>
     /** Stack group ids to ignore */
     excludeGroupIds?: Iterable<string>
+    /** Nested stack folders on the current canvas */
+    stacks?: Array<{
+      id: string
+      x: number
+      y: number
+      width: number
+      height: number
+      zIndex: number
+    }>
   },
 ): string | null {
   const excludeIds = new Set(options?.excludeIds ?? [])
   const excludeGroups = new Set(options?.excludeGroupIds ?? [])
+
+  if (options?.stacks?.length) {
+    const ranked = [...options.stacks]
+      .filter((s) => !excludeGroups.has(s.id))
+      .sort((a, b) => b.zIndex - a.zIndex)
+    for (const s of ranked) {
+      if (
+        world.x >= s.x &&
+        world.y >= s.y &&
+        world.x <= s.x + s.width &&
+        world.y <= s.y + s.height
+      ) {
+        return s.id
+      }
+    }
+  }
 
   const groups = new Map<string, CanvasItem[]>()
   for (const it of items) {
@@ -347,7 +485,6 @@ export function hitStackGroupAt(
     groups.set(it.stackGroupId, list)
   }
 
-  // Prefer topmost stack (highest max member z)
   const ranked = [...groups.entries()]
     .map(([gid, members]) => ({
       gid,

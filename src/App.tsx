@@ -4,6 +4,8 @@ import { InfiniteCanvas } from './components/InfiniteCanvas'
 import { WindowChrome } from './components/WindowChrome'
 import { CloseSaveDialog } from './components/CloseSaveDialog'
 import { SaveToast } from './components/SaveToast'
+import { CanvasPath } from './components/CanvasPath'
+import { useCanvasStore } from './store/useCanvasStore'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useDesktopMenu } from './hooks/useDesktopMenu'
 import { useWindowDrag } from './hooks/useWindowDrag'
@@ -18,6 +20,7 @@ export default function App() {
   useDesktopMenu()
   useWindowDrag()
   useCloseGuard()
+  const immersiveMode = useCanvasStore((s) => s.immersiveMode)
 
   useEffect(() => {
     if (!isDesktop() || launchFileChecked) return
@@ -28,11 +31,12 @@ export default function App() {
   }, [])
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${immersiveMode ? 'is-immersive' : ''}`}>
       <WindowChrome />
       <main className="workspace">
         <InfiniteCanvas />
         <Toolbar />
+        <CanvasPath />
       </main>
       <CloseSaveDialog />
       <SaveToast />

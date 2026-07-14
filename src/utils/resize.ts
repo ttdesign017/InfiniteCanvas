@@ -161,10 +161,15 @@ export function computeResize(
 }
 
 export function isCardType(type: string): boolean {
-  return type === 'textcard' || type === 'link'
+  return type === 'textcard' || type === 'link' || type === 'embed'
 }
 
-/** Edge drag resizes one side only (note / link / free text) */
+/** Edge drag resizes one side only (note / link / free text / embed) */
 export function isEdgeResizeType(type: string): boolean {
-  return type === 'textcard' || type === 'link' || type === 'text'
+  return (
+    type === 'textcard' ||
+    type === 'link' ||
+    type === 'text' ||
+    type === 'embed'
+  )
 }

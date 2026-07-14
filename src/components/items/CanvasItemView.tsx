@@ -11,6 +11,7 @@ import { TextCardView } from './TextCardView'
 import { LinkCardView } from './LinkCardView'
 import { ScribbleView } from './ScribbleView'
 import { TextItemView } from './TextItemView'
+import { EmbedItemView } from './EmbedItemView'
 
 interface Props {
   item: CanvasItem
@@ -96,8 +97,14 @@ function CanvasItemViewInner({
         // Backup if browser fires dblclick (primary path: pending-move / detail>=2)
         e.stopPropagation()
         e.preventDefault()
+        // Stacked cards / previews: enter nested canvas (rename only via folder tab)
         if (stacked && item.stackGroupId) {
-          const items = useCanvasStore.getState().items
+          const st = useCanvasStore.getState()
+          if (st.stacks.some((s) => s.id === item.stackGroupId)) {
+            st.enterStack(item.stackGroupId!)
+            return
+          }
+          const items = st.items
           const expanded = expandStackSelection([item.id], items)
           select(expanded)
           useCanvasStore.setState({
@@ -125,6 +132,12 @@ function CanvasItemViewInner({
         <LinkCardView item={item} selected={selected} />
       ) : item.type === 'scribble' ? (
         <ScribbleView item={item} selected={selected} />
+      ) : item.type === 'embed' ? (
+        <EmbedItemView
+          item={item}
+          selected={selected}
+          stackPreview={stacked}
+        />
       ) : null}
 
       {showResize && (

@@ -135,6 +135,8 @@ export function Toolbar() {
   const rowLayout = useCanvasStore((s) => s.rowLayout)
   const snapEnabled = useCanvasStore((s) => s.snapEnabled)
   const toggleSnap = useCanvasStore((s) => s.toggleSnap)
+  const immersiveMode = useCanvasStore((s) => s.immersiveMode)
+  const toggleImmersiveMode = useCanvasStore((s) => s.toggleImmersiveMode)
 
   const hasMulti = selectedIds.length >= 2
 
@@ -243,6 +245,31 @@ export function Toolbar() {
           </div>
         )}
       </aside>
+
+      {/* Bottom-right immersive toggle (hover corner to reveal) */}
+      <div className="immersive-hotzone">
+        <button
+          type="button"
+          className={`immersive-toggle ${immersiveMode ? 'is-active' : ''}`}
+          title={
+            immersiveMode
+              ? 'Exit immersive mode (Ctrl+F)'
+              : 'Immersive mode (Ctrl+F)'
+          }
+          aria-pressed={immersiveMode}
+          onClick={() => toggleImmersiveMode()}
+        >
+          {immersiveMode ? (
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M9 3H5a2 2 0 00-2 2v4M15 3h4a2 2 0 012 2v4M9 21H5a2 2 0 01-2-2v-4M15 21h4a2 2 0 002-2v-4" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M4 9V5a1 1 0 011-1h4M20 9V5a1 1 0 00-1-1h-4M4 15v4a1 1 0 001 1h4M20 15v4a1 1 0 01-1 1h-4" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+      </div>
     </>
   )
 }

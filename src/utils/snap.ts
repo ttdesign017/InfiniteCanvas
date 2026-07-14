@@ -1,5 +1,12 @@
-import type { CanvasItem } from '../types/canvas'
-import { stackFolderBodyBounds } from './layout'
+import type { CanvasItem, StackRecord } from '../types/canvas'
+import { ROOT_CONTAINER_ID } from '../types/canvas'
+import {
+  stackCollapsedSnapBounds,
+  stackFolderBodyBounds,
+  stackRecordBodyBounds,
+} from './layout'
+import { collectItemsInStackTree } from './stacks'
+import { containerOf } from './stacks'
 
 export interface SnapGuide {
   orientation: 'v' | 'h'
@@ -20,34 +27,59 @@ export interface RectLike {
   height: number
 }
 
+export interface SnapContext {
+  /** Nested stack folders on the board */
+  stacks?: StackRecord[]
+  /** Active canvas (`root` or stack id) — only bodies on this canvas snap */
+  containerId?: string
+  /** Stack folder ids currently being dragged (excluded as targets) */
+  excludeStackIds?: Iterable<string>
+}
+
 /** Default snap distance in world units (callers pass screen-scaled values) */
 const DEFAULT_THRESHOLD = 10
 
 /**
- * Snap targets:
- * - Free items → own rect
- * - Stacks → large rounded folder body (not name tab, not card fan)
+ * Snap targets on the current canvas:
+ * - Free items on this container
+ * - Nested StackRecords as a single folder body (NOT fan cards / inner coords)
+ * - Legacy same-canvas stacked groups as one body
  */
 export function collectSnapBodies(
   allItems: CanvasItem[],
   excludeIds: Set<string>,
+  ctx: SnapContext = {},
 ): RectLike[] {
   const bodies: RectLike[] = []
-  const seenGroups = new Set<string>()
+  const containerId = ctx.containerId ?? ROOT_CONTAINER_ID
+  const stacks = ctx.stacks ?? []
+  const excludeStackIds = new Set(ctx.excludeStackIds ?? [])
+  const seenLegacy = new Set<string>()
+
+  // Enterable stacks on this canvas → one body (folder + all nested leaf content)
+  // Nested stacks (parentId ≠ containerId) are never separate snap targets here.
+  for (const st of stacks) {
+    if (st.parentId !== containerId) continue
+    if (excludeStackIds.has(st.id)) continue
+    const leaves = collectItemsInStackTree(allItems, stacks, st.id)
+    if (leaves.some((m) => excludeIds.has(m.id))) continue
+    bodies.push(stackCollapsedSnapBounds(st, leaves))
+  }
 
   for (const item of allItems) {
     if (excludeIds.has(item.id)) continue
+    // Nested members of enterable stacks are NOT individual snap targets on parent
+    if (containerOf(item) !== containerId) continue
 
     if (item.stackGroupId && item.stacked) {
-      if (seenGroups.has(item.stackGroupId)) continue
-      seenGroups.add(item.stackGroupId)
-
+      if (seenLegacy.has(item.stackGroupId)) continue
+      // Skip if this id is already an enterable StackRecord on this canvas
+      if (stacks.some((s) => s.id === item.stackGroupId)) continue
+      seenLegacy.add(item.stackGroupId)
       const members = allItems.filter(
         (i) => i.stackGroupId === item.stackGroupId && i.stacked,
       )
-      // Whole stack is moving together → skip as target
       if (members.some((m) => excludeIds.has(m.id))) continue
-
       const b = stackFolderBodyBounds(members)
       if (b) bodies.push(b)
       continue
@@ -66,10 +98,19 @@ export function collectSnapBodies(
 
 /**
  * Bounds of the moving set for snap.
- * Stacks use folder body edges (rounded rect), not the name tab.
+ * Free items + optional moving stack folders (from StackRecord).
  */
-export function movingSnapBounds(moving: CanvasItem[]): RectLike | null {
-  if (moving.length === 0) return null
+export function movingSnapBounds(
+  moving: CanvasItem[],
+  movingStacks: Array<{
+    x: number
+    y: number
+    width: number
+    height: number
+    name?: string
+  }> = [],
+): RectLike | null {
+  const rects: RectLike[] = []
 
   const groups = new Map<string, CanvasItem[]>()
   const free: CanvasItem[] = []
@@ -84,13 +125,15 @@ export function movingSnapBounds(moving: CanvasItem[]): RectLike | null {
     }
   }
 
-  const rects: RectLike[] = []
   for (const members of groups.values()) {
     const b = stackFolderBodyBounds(members)
     if (b) rects.push(b)
   }
   for (const f of free) {
     rects.push({ x: f.x, y: f.y, width: f.width, height: f.height })
+  }
+  for (const st of movingStacks) {
+    rects.push(stackRecordBodyBounds(st))
   }
 
   if (rects.length === 0) return null
@@ -123,7 +166,8 @@ export function guidesEqual(a: SnapGuide[], b: SnapGuide[]): boolean {
   if (a === b) return true
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].orientation !== b[i].orientation || a[i].pos !== b[i].pos) return false
+    if (a[i].orientation !== b[i].orientation || a[i].pos !== b[i].pos)
+      return false
   }
   return true
 }
@@ -135,14 +179,30 @@ export function computeSnapDelta(
   moving: CanvasItem[],
   allItems: CanvasItem[],
   threshold = DEFAULT_THRESHOLD,
+  ctx: SnapContext & {
+    movingStacks?: Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      name?: string
+    }>
+  } = {},
 ): SnapResult {
-  if (moving.length === 0) return { dx: 0, dy: 0, guides: [] }
+  const movingStacks = ctx.movingStacks ?? []
+  if (moving.length === 0 && movingStacks.length === 0) {
+    return { dx: 0, dy: 0, guides: [] }
+  }
 
   const moveIds = new Set(moving.map((i) => i.id))
-  const bounds = movingSnapBounds(moving)
+  const bounds = movingSnapBounds(moving, movingStacks)
   if (!bounds) return { dx: 0, dy: 0, guides: [] }
 
-  const bodies = collectSnapBodies(allItems, moveIds)
+  const bodies = collectSnapBodies(allItems, moveIds, {
+    stacks: ctx.stacks,
+    containerId: ctx.containerId,
+    excludeStackIds: ctx.excludeStackIds,
+  })
   if (bodies.length === 0) return { dx: 0, dy: 0, guides: [] }
 
   const { targetsV, targetsH } = edgesFromBodies(bodies)
@@ -183,8 +243,10 @@ export function computeSnapDelta(
   }
 
   const guides: SnapGuide[] = []
-  if (guideV !== null && bestAbsX <= threshold) guides.push({ orientation: 'v', pos: guideV })
-  if (guideH !== null && bestAbsY <= threshold) guides.push({ orientation: 'h', pos: guideH })
+  if (guideV !== null && bestAbsX <= threshold)
+    guides.push({ orientation: 'v', pos: guideV })
+  if (guideH !== null && bestAbsY <= threshold)
+    guides.push({ orientation: 'h', pos: guideH })
 
   return {
     dx: bestAbsX <= threshold ? bestDx : 0,
@@ -239,15 +301,7 @@ export function enforceAspectFromHandle(
 
 /**
  * Snap free edges of a resized rect to nearby bodies.
- *
- * Root cause of "guides but no snap": aspect re-lock ran AFTER snap and
- * moved free edges off the guide while guides still pointed at the snap line.
- *
- * Strategy when aspect is locked:
- * 1) Find the best free-edge snap candidate (by distance)
- * 2) Apply that snap
- * 3) Re-derive the other free dimension from aspect (fixed corner stays put)
- * Guides always match the applied geometry.
+ * Root cause of "guides but no snap": aspect re-lock must run AFTER snap.
  */
 export function snapResizeRect(
   rect: RectLike,
@@ -256,6 +310,7 @@ export function snapResizeRect(
   allItems: CanvasItem[],
   threshold = DEFAULT_THRESHOLD,
   aspect?: number,
+  ctx: SnapContext = {},
 ): { rect: RectLike; guides: SnapGuide[] } {
   const exclude = new Set<string>([selfId])
   const self = allItems.find((i) => i.id === selfId)
@@ -265,7 +320,7 @@ export function snapResizeRect(
     }
   }
 
-  const bodies = collectSnapBodies(allItems, exclude)
+  const bodies = collectSnapBodies(allItems, exclude, ctx)
   if (bodies.length === 0) return { rect, guides: [] }
 
   const { targetsV, targetsH } = edgesFromBodies(bodies)
@@ -279,13 +334,15 @@ export function snapResizeRect(
 
   type Cand = {
     axis: 'v' | 'h'
-    /** Which free edge */
     edge: 'l' | 'r' | 't' | 'b'
     target: number
     dist: number
   }
 
-  const nearest = (v: number, targets: number[]): { target: number; dist: number } | null => {
+  const nearest = (
+    v: number,
+    targets: number[],
+  ): { target: number; dist: number } | null => {
     let bestT = 0
     let bestD = threshold + 1
     let found = false
@@ -320,7 +377,6 @@ export function snapResizeRect(
 
   if (cands.length === 0) return { rect, guides: [] }
 
-  // Closest free-edge wins (stable sticky snap)
   cands.sort((a, b) => a.dist - b.dist)
   const best = cands[0]
 
@@ -366,30 +422,18 @@ export function snapResizeRect(
     return { rect, guides: [] }
   }
 
-  // Keep aspect from fixed corner AFTER snap so free edge stays on the guide
-  // for the snapped axis; the other free dim follows aspect.
   if (aspect != null && aspect > 0) {
     const a = Math.max(1e-6, aspect)
-    // Fixed corner opposite the free handle
-    const fixR = freeL && !freeR
-    const fixB = freeT && !freeB
-    const fixL = freeR && !freeL
-    const fixT = freeB && !freeT
-    // Corners free both axes: fixed is opposite corner
     const corner = h.length === 2
 
     if (best.axis === 'v') {
-      // Width is authoritative (snapped); height from aspect
       height = Math.max(minSize, width / a)
       if (corner) {
         if (h.includes('n')) y = rect.y + rect.height - height
-        // se/sw: top fixed (y unchanged)
       } else if (h === 'e' || h === 'w') {
-        // mid-edge: keep vertical center
         y = rect.y + rect.height / 2 - height / 2
       }
     } else {
-      // Height authoritative; width from aspect
       width = Math.max(minSize, height * a)
       if (corner) {
         if (h.includes('w')) x = rect.x + rect.width - width
@@ -397,18 +441,9 @@ export function snapResizeRect(
         x = rect.x + rect.width / 2 - width / 2
       }
     }
-
-    // Suppress unused fixed flags for lint — kept for clarity of intent
-    void fixR
-    void fixB
-    void fixL
-    void fixT
   } else {
-    // No aspect: also try the second-closest free edge on the other axis
     const second = cands.find((c) => c.axis !== best.axis)
-    if (second) {
-      applyEdge(second.edge, second.target)
-    }
+    if (second) applyEdge(second.edge, second.target)
   }
 
   return { rect: { x, y, width, height }, guides }

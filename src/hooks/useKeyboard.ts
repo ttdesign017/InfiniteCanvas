@@ -3,7 +3,9 @@ import { useCanvasStore } from '../store/useCanvasStore'
 import { toggleVideos } from '../utils/videoRegistry'
 import { normalizeUrl } from '../utils/linkMeta'
 import { looksLikeMediaFilePath, looksLikeUrl } from '../utils/dropImport'
+import { parseEmbedHtml } from '../utils/embed'
 import { placeItemsTight, screenToWorld } from '../utils/layout'
+import { ROOT_CONTAINER_ID } from '../types/canvas'
 import {
   collectClipboardMedia,
   openMediaDialog,
@@ -45,10 +47,15 @@ export function useKeyboard() {
       // Ignore OS key-repeat for held modifiers / tools
       const typing = isTextEditingTarget(e.target)
 
-      // Space: play/pause selected video; otherwise pan
+      // Space: enter selected stack · play/pause video · otherwise pan
       if ((e.code === 'Space' || e.key === ' ') && !typing) {
         e.preventDefault()
         const store = useCanvasStore.getState()
+        // Prefer entering a selected stack folder
+        if (store.selectedStackIds.length === 1 && !e.repeat) {
+          store.enterStack(store.selectedStackIds[0])
+          return
+        }
         const videoIds = store
           .getSelectedItems()
           .filter((i) => i.type === 'video')
@@ -147,12 +154,38 @@ export function useKeyboard() {
         store.smoothLayout()
         return
       }
+      // Immersive mode: Ctrl+F (hide side docks)
+      if (mod && !e.altKey && !e.shiftKey && (key === 'f' || e.code === 'KeyF')) {
+        e.preventDefault()
+        store.toggleImmersiveMode()
+        return
+      }
       // Fit all content: F or Ctrl+0
-      if ((!mod && !e.altKey && !e.shiftKey && (key === 'f' || e.code === 'KeyF')) ||
-          (mod && (e.key === '0' || e.code === 'Digit0'))) {
+      if (
+        (!mod && !e.altKey && !e.shiftKey && (key === 'f' || e.code === 'KeyF')) ||
+        (mod && (e.key === '0' || e.code === 'Digit0'))
+      ) {
         e.preventDefault()
         store.resetView()
         return
+      }
+      // Escape: exit text/embed edit first, then leave nested stack
+      if (key === 'escape' || e.code === 'Escape') {
+        if (store.editingId || store.editingStackGroupId) {
+          e.preventDefault()
+          useCanvasStore.setState({
+            editingId: null,
+            editingStackGroupId: null,
+          })
+          return
+        }
+        if (store.currentContainerId !== ROOT_CONTAINER_ID) {
+          e.preventDefault()
+          const path = store.getBreadcrumb()
+          const parent = path[path.length - 2]
+          if (parent) store.navigateToContainer(parent.id)
+          return
+        }
       }
 
       // Pack / 靠拢: Ctrl+Arrow (closes gaps toward that side — NOT the same as align buttons)
@@ -313,7 +346,10 @@ export function useKeyboard() {
         return true
       }
 
-      if (looksLikeUrl(text)) {
+      const embed = parseEmbedHtml(text)
+      if (embed) {
+        store.addEmbed(world, embed)
+      } else if (looksLikeUrl(text)) {
         store.addLinkCard(world, normalizeUrl(text))
       } else {
         store.addTextCard(world, { content: text })

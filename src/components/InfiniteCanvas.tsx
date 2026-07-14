@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
-import type { CanvasItem, MediaItem } from '../types/canvas'
+import type {
+  CanvasItem,
+  EmbedItem,
+  MediaItem,
+  StackRecord,
+} from '../types/canvas'
+import { ROOT_CONTAINER_ID } from '../types/canvas'
 import {
   expandStackSelection,
   hitStackGroupAt,
@@ -11,6 +24,20 @@ import {
   screenToWorld,
   stackGroupBounds,
 } from '../utils/layout'
+import {
+  collapsedStackFanCards,
+  collapsedStackFolderBounds,
+  collectItemsInStackTree,
+  containerOf,
+  countLeafItemsInStack,
+  itemsInContainer,
+  migrateLegacyStacks,
+} from '../utils/stacks'
+import { pruneEmbedIframes } from '../utils/embedIframeCache'
+import {
+  embedDisplayItem,
+  resolveEmbedWorldPose,
+} from '../utils/embedPose'
 import { createMediaFromFile, createMediaFromPath } from '../utils/media'
 import { importDropAt } from '../utils/dropImport'
 import { computeResize, isEdgeResizeType } from '../utils/resize'
@@ -48,12 +75,17 @@ type DragMode =
       lastY: number
       ids: string[]
       origins: Record<string, { x: number; y: number }>
+      stackIds?: string[]
+      stackOrigins?: Record<string, { x: number; y: number }>
       duplicated: boolean
       altHeld: boolean
     }
   | {
       kind: 'move'
       ids: string[]
+      /** Nested stack folder ids being moved on this canvas */
+      stackIds?: string[]
+      stackOrigins?: Record<string, { x: number; y: number }>
       lastX: number
       lastY: number
       moved: boolean
@@ -185,50 +217,201 @@ export function InfiniteCanvas() {
   }, [])
 
   const items = useCanvasStore((s) => s.items)
+  const stacks = useCanvasStore((s) => s.stacks)
+  const currentContainerId = useCanvasStore((s) => s.currentContainerId)
   const selectedIds = useCanvasStore((s) => s.selectedIds)
+  const selectedStackIds = useCanvasStore((s) => s.selectedStackIds)
   const viewport = useCanvasStore((s) => s.viewport)
   const tool = useCanvasStore((s) => s.tool)
   const spaceHeld = useCanvasStore((s) => s.spaceHeld)
   const cHeld = useCanvasStore((s) => s.cHeld)
   const isPanning = useCanvasStore((s) => s.isPanning)
+  const stackEnterAnim = useCanvasStore((s) => s.stackEnterAnim)
+  const setStackEnterAnim = useCanvasStore((s) => s.setStackEnterAnim)
+
+  const visibleItems = useMemo(
+    () => itemsInContainer(items, currentContainerId),
+    [items, currentContainerId],
+  )
+  const visibleStacks = useMemo(
+    () => stacks.filter((s) => s.parentId === currentContainerId),
+    [stacks, currentContainerId],
+  )
+
+  // Drop keep-alive iframes when their embed items are deleted from the board
+  useEffect(() => {
+    const live = new Set(
+      items.filter((i) => i.type === 'embed').map((i) => i.id),
+    )
+    pruneEmbedIframes(live)
+  }, [items])
 
   const sortedItems = useMemo(
-    () => [...items].sort((a, b) => a.zIndex - b.zIndex),
+    () => [...visibleItems].sort((a, b) => a.zIndex - b.zIndex),
+    [visibleItems],
+  )
+  /** Non-embed free items — embeds use a permanent keepalive layer */
+  const sortedNonEmbeds = useMemo(
+    () => sortedItems.filter((i) => i.type !== 'embed'),
+    [sortedItems],
+  )
+  /** Every board embed, always mounted (pose only changes on stack nav) */
+  const allEmbedItems = useMemo(
+    () =>
+      items
+        .filter((i): i is EmbedItem => i.type === 'embed')
+        .sort((a, b) => a.zIndex - b.zIndex),
     [items],
   )
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedStackSet = useMemo(
+    () => new Set(selectedStackIds),
+    [selectedStackIds],
+  )
   const effectiveTool = spaceHeld ? 'pan' : cHeld ? 'crop' : tool
 
+  // Drive enter-stack folder expand only (exit is store-driven; cards use animateToLayout)
+  useEffect(() => {
+    if (!stackEnterAnim) return
+    if (stackEnterAnim.mode === 'exit') return
+    const startSnap = { ...stackEnterAnim.start }
+    const stackId = stackEnterAnim.stackId
+    const name = stackEnterAnim.name
+    const memberCount = stackEnterAnim.memberCount
+    const t0 = performance.now()
+    // Fast expand; nested B chrome fades in — do NOT move nested leaves (causes jump)
+    const dur = 380
+    let raf = 0
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - t0) / dur)
+      const e = 1 - Math.pow(1 - t, 3)
+      const nestedChromeOpacity = Math.max(
+        0,
+        Math.min(1, (e - 0.15) / 0.85),
+      )
+      useCanvasStore.getState().setStackEnterAnim({
+        stackId,
+        mode: 'enter',
+        start: startSnap,
+        t: e,
+        nestedChromeOpacity,
+        name,
+        memberCount,
+      })
+      if (t < 1) {
+        raf = requestAnimationFrame(tick)
+      } else {
+        setStackEnterAnim(null)
+      }
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    stackEnterAnim?.stackId,
+    stackEnterAnim?.mode,
+    stackEnterAnim?.start.x,
+    stackEnterAnim?.start.y,
+  ])
+
   const stackFolders = useMemo(() => {
+    // Enterable stacks whose parent is the current canvas
+    const fromRecords = visibleStacks.map((st) => {
+      const members = items.filter((i) => containerOf(i) === st.id)
+      // Single bounds logic: direct fan + nested-stack fan (never drop nested content)
+      const bounds = collapsedStackFolderBounds(st, items, stacks)
+      return {
+        gid: st.id,
+        members,
+        bounds,
+        selected: selectedStackSet.has(st.id),
+        dropTarget: stackDropTargetId === st.id,
+        z: st.zIndex,
+        name: st.name,
+        record: st as StackRecord,
+        proxy: members[0] as CanvasItem | undefined,
+        isRecord: true as const,
+      }
+    })
+
+    // Transient same-canvas fan only (mid Ctrl+G anim / unmigrated legacy).
+    // Never treat stackGroupId === currentContainerId as a folder — that was
+    // wrapping the entire inner canvas after enter.
     const groups = new Map<string, CanvasItem[]>()
-    for (const it of items) {
+    for (const it of visibleItems) {
       if (!it.stackGroupId || !it.stacked) continue
+      if (it.stackGroupId === currentContainerId) continue
+      if (fromRecords.some((r) => r.gid === it.stackGroupId)) continue
+      // Skip if this group id is already an enterable nested stack record
+      if (stacks.some((s) => s.id === it.stackGroupId)) continue
       const list = groups.get(it.stackGroupId) || []
       list.push(it)
       groups.set(it.stackGroupId, list)
     }
-    return [...groups.entries()].map(([gid, members]) => {
-      const b = stackGroupBounds(members)
-      if (!b) return null
-      return {
-        gid,
-        members,
-        bounds: b,
-        selected: members.some((m) => selectedSet.has(m.id)),
-        dropTarget: stackDropTargetId === gid,
-        z: Math.min(...members.map((m) => m.zIndex)) - 1,
-        proxy: members[0],
-      }
-    }).filter(Boolean) as Array<{
+    const legacy = [...groups.entries()]
+      .map(([gid, members]) => {
+        const b = stackGroupBounds(members)
+        if (!b) return null
+        return {
+          gid,
+          members,
+          bounds: b,
+          selected: members.some((m) => selectedSet.has(m.id)),
+          dropTarget: stackDropTargetId === gid,
+          z: Math.min(...members.map((m) => m.zIndex)) - 1,
+          name: members.find((m) => m.stackName)?.stackName || '',
+          record: null as StackRecord | null,
+          proxy: members[0],
+          isRecord: false as const,
+        }
+      })
+      .filter(Boolean) as Array<{
       gid: string
       members: CanvasItem[]
       bounds: { x: number; y: number; width: number; height: number }
       selected: boolean
       dropTarget: boolean
       z: number
+      name: string
+      record: StackRecord | null
       proxy: CanvasItem
+      isRecord: boolean
     }>
-  }, [items, selectedSet, stackDropTargetId])
+
+    return [...fromRecords, ...legacy]
+  }, [
+    visibleStacks,
+    visibleItems,
+    items,
+    stacks,
+    currentContainerId,
+    selectedSet,
+    selectedStackSet,
+    stackDropTargetId,
+  ])
+
+  /**
+   * Fan cards for collapsed stacks — MUST use the same set as folder bounds
+   * (collapsedStackFanCards) so chrome never shrinks past nested content.
+   */
+  const stackPreviewItems = useMemo(() => {
+    const out: CanvasItem[] = []
+    for (const st of visibleStacks) {
+      for (const c of collapsedStackFanCards(st, items, stacks)) {
+        const m = items.find((i) => i.id === c.id)
+        if (!m || m.type === 'embed') continue
+        out.push({
+          ...m,
+          x: c.x,
+          y: c.y,
+          rotation: c.rotation,
+          stacked: true,
+          stackGroupId: st.id,
+        })
+      }
+    }
+    return out.sort((a, b) => a.zIndex - b.zIndex)
+  }, [visibleStacks, items, stacks])
 
   const getLocalPoint = useCallback((e: { clientX: number; clientY: number }) => {
     const rect = surfaceRef.current?.getBoundingClientRect()
@@ -386,15 +569,6 @@ export function InfiniteCanvas() {
     useCanvasStore.setState({ editingId: itemId, editingStackGroupId: null })
   }
 
-  const enterStackRename = (groupId: string, itemId: string) => {
-    const store = useCanvasStore.getState()
-    const expanded = expandStackSelection([itemId], store.items)
-    store.select(expanded)
-    useCanvasStore.setState({
-      editingStackGroupId: groupId,
-      editingId: null,
-    })
-  }
 
   const onItemPointerDown = useCallback(
     (e: React.PointerEvent, item: CanvasItem) => {
@@ -441,23 +615,50 @@ export function InfiniteCanvas() {
 
       e.stopPropagation()
 
-      // Double-click (detail>=2): enter edit immediately — never start a drag
+      // Double-click (detail>=2): text edit, or enter stack (not rename)
       if (e.detail >= 2) {
         if (canEditText) {
           enterTextEdit(item.id)
           return
         }
         if (isStacked && item.stackGroupId) {
-          enterStackRename(item.stackGroupId, item.id)
+          // Enter nested canvas; rename only via folder tab double-click
+          const st = useCanvasStore.getState()
+          const folder = st.stacks.find((s) => s.id === item.stackGroupId)
+          if (folder) {
+            const vp = st.viewport
+            st.enterStack(item.stackGroupId, {
+              // Surface-local coords (overlay is absolute inside canvas-surface)
+              x: folder.x * vp.zoom + vp.x,
+              y: folder.y * vp.zoom + vp.y,
+              w: folder.width * vp.zoom,
+              h: folder.height * vp.zoom,
+            })
+          } else {
+            // Legacy stack: migrate-on-the-fly by entering via group id after migrate
+            st.enterStack(item.stackGroupId)
+          }
           return
         }
       }
 
-      // While editing this item, clicks stay for text selection
+      // Drag started on embed drag-bar only when embed is live — body clicks
+      // are stopped inside EmbedItemView. Skip canvas drag if target is iframe.
       if (
-        canEditText &&
-        store.editingId === item.id
+        item.type === 'embed' &&
+        (e.target as HTMLElement).closest?.('iframe, .embed-frame')
       ) {
+        // Only allow move from the dedicated drag bar
+        if (!(e.target as HTMLElement).closest?.('[data-embed-drag]')) {
+          // If cold (shield), fall through to normal select/drag
+          if ((e.target as HTMLElement).closest?.('.embed-item.is-live')) {
+            return
+          }
+        }
+      }
+
+      // While editing this item, clicks stay for text selection
+      if (canEditText && store.editingId === item.id) {
         return
       }
 
@@ -664,6 +865,8 @@ export function InfiniteCanvas() {
         dragRef.current = {
           kind: 'move',
           ids: drag.ids,
+          stackIds: drag.stackIds,
+          stackOrigins: drag.stackOrigins,
           lastX: e.clientX,
           lastY: e.clientY,
           moved: true,
@@ -712,6 +915,9 @@ export function InfiniteCanvas() {
         const snapOn = store.snapEnabled
         const pointerLocal = getLocalPoint(e)
 
+        const stackIds = drag.stackIds ?? []
+        const stackOrigins = drag.stackOrigins ?? {}
+
         scheduleDragWrite(() => {
           const st = useCanvasStore.getState()
           const freeTargets = ids.map((id) => {
@@ -734,34 +940,68 @@ export function InfiniteCanvas() {
           let finalDx = accDx
           let finalDy = accDy
           let guides: SnapGuide[] = []
-          if (snapOn) {
+          if (snapOn && (freeTargets.length > 0 || stackIds.length > 0)) {
             const threshold = 10 / Math.max(0.01, st.viewport.zoom || 1)
-            const snap = computeSnapDelta(freeTargets, st.items, threshold)
+            const movingStacks = stackIds.map((id) => {
+              const o = stackOrigins[id]
+              const sk = st.stacks.find((s) => s.id === id)
+              return {
+                x: (o?.x ?? sk?.x ?? 0) + accDx,
+                y: (o?.y ?? sk?.y ?? 0) + accDy,
+                width: sk?.width ?? 100,
+                height: sk?.height ?? 100,
+                name: sk?.name,
+              }
+            })
+            const snap = computeSnapDelta(freeTargets, st.items, threshold, {
+              stacks: st.stacks,
+              containerId: st.currentContainerId,
+              excludeStackIds: stackIds,
+              movingStacks,
+            })
             finalDx += snap.dx
             finalDy += snap.dy
             guides = snap.guides
           }
 
-          st.updateItems(
-            ids.map((id) => {
-              const o = origins[id]
-              return {
-                id,
-                patch: {
-                  x: (o?.x ?? 0) + finalDx,
-                  y: (o?.y ?? 0) + finalDy,
-                },
-              }
-            }),
-          )
+          if (ids.length) {
+            st.updateItems(
+              ids.map((id) => {
+                const o = origins[id]
+                return {
+                  id,
+                  patch: {
+                    x: (o?.x ?? 0) + finalDx,
+                    y: (o?.y ?? 0) + finalDy,
+                  },
+                }
+              }),
+            )
+          }
+          if (stackIds.length) {
+            st.updateStacks(
+              stackIds.map((id) => {
+                const o = stackOrigins[id]
+                return {
+                  id,
+                  patch: {
+                    x: (o?.x ?? 0) + finalDx,
+                    y: (o?.y ?? 0) + finalDy,
+                  },
+                }
+              }),
+            )
+          }
           setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
 
           // Merge highlight: free materials over a stack folder
-          const liveItems = useCanvasStore.getState().items
-          const draggingStacked = ids.some((id) => {
-            const it = liveItems.find((i) => i.id === id)
-            return !!(it?.stacked && it.stackGroupId)
-          })
+          const live = useCanvasStore.getState()
+          const draggingStacked =
+            stackIds.length > 0 ||
+            ids.some((id) => {
+              const it = live.items.find((i) => i.id === id)
+              return !!(it?.stacked && it.stackGroupId)
+            })
           if (draggingStacked) {
             setStackDropTarget(null)
           } else {
@@ -770,7 +1010,12 @@ export function InfiniteCanvas() {
               pointerLocal.y,
               st.viewport,
             )
-            const hit = hitStackGroupAt(world, liveItems, { excludeIds: ids })
+            const hit = hitStackGroupAt(world, live.items, {
+              excludeIds: ids,
+              stacks: live.stacks.filter(
+                (s) => s.parentId === live.currentContainerId,
+              ),
+            })
             setStackDropTarget(hit)
           }
         })
@@ -842,6 +1087,10 @@ export function InfiniteCanvas() {
             store.items,
             threshold,
             keepAspect ? aspect : undefined,
+            {
+              stacks: store.stacks,
+              containerId: store.currentContainerId,
+            },
           )
           next = snapped.rect
           guides = snapped.guides
@@ -975,7 +1224,17 @@ export function InfiniteCanvas() {
           if (drag.canEditText) {
             enterTextEdit(drag.itemId)
           } else if (drag.isStacked && drag.stackGroupId) {
-            enterStackRename(drag.stackGroupId, drag.itemId)
+            const st = useCanvasStore.getState()
+            const folder = st.stacks.find((s) => s.id === drag.stackGroupId)
+            if (folder) {
+              const vp = st.viewport
+              st.enterStack(drag.stackGroupId, {
+                x: folder.x * vp.zoom + vp.x,
+                y: folder.y * vp.zoom + vp.y,
+                w: folder.width * vp.zoom,
+                h: folder.height * vp.zoom,
+              })
+            }
           }
           lastItemClickRef.current = null
         } else {
@@ -1077,6 +1336,7 @@ export function InfiniteCanvas() {
           h: h / vp.zoom,
         }
         const hit = store.items
+          .filter((item) => containerOf(item) === store.currentContainerId)
           .filter((item) => {
             return (
               item.x < worldRect.x + worldRect.w &&
@@ -1086,12 +1346,29 @@ export function InfiniteCanvas() {
             )
           })
           .map((i) => i.id)
-        const expanded = expandStackSelection(hit, store.items)
 
-        if (additive) {
-          store.select([...new Set([...store.selectedIds, ...expanded])])
+        const hitStacks = store.stacks
+          .filter((s) => s.parentId === store.currentContainerId)
+          .filter(
+            (s) =>
+              s.x < worldRect.x + worldRect.w &&
+              s.x + s.width > worldRect.x &&
+              s.y < worldRect.y + worldRect.h &&
+              s.y + s.height > worldRect.y,
+          )
+          .map((s) => s.id)
+
+        const nextIds = additive
+          ? [...new Set([...store.selectedIds, ...hit])]
+          : hit
+        const nextStacks = additive
+          ? [...new Set([...store.selectedStackIds, ...hitStacks])]
+          : hitStacks
+        // Raise free items + nested stacks as one selection
+        if (nextStacks.length > 0) {
+          store.selectBodies(nextIds, nextStacks)
         } else {
-          store.select(expanded)
+          store.select(nextIds)
         }
       }
       setMarquee(null)
@@ -1251,6 +1528,70 @@ export function InfiniteCanvas() {
             ? 'cell'
             : 'default'
 
+  /**
+   * Exit peer fade: starts ~200ms after exit begins (store peerReveal), independent
+   * of morph settle. While still inside the stack we ghost-render parent peers
+   * in stack-local coords so they can appear before handoff.
+   */
+  const isExitAnim = stackEnterAnim?.mode === 'exit'
+  const exitingStackId = isExitAnim ? stackEnterAnim!.stackId : null
+  const exitingStackRec = exitingStackId
+    ? stacks.find((s) => s.id === exitingStackId)
+    : null
+  const exitParentId = exitingStackRec?.parentId ?? null
+  /** Still inside the stack during shrink — parent peers not in normal lists yet */
+  const exitGhostParent =
+    isExitAnim &&
+    exitingStackId != null &&
+    currentContainerId === exitingStackId &&
+    exitParentId != null &&
+    exitingStackRec != null
+  const exitPeerOpacity = isExitAnim
+    ? Math.max(0, Math.min(1, stackEnterAnim?.peerReveal ?? 0))
+    : 1
+  /** After handoff: dim peers via peerReveal; exiting stack fan stays solid */
+  const exitAfterHandoff =
+    isExitAnim &&
+    exitingStackId != null &&
+    currentContainerId !== exitingStackId
+
+  // Parent free items (non-embed) as stack-local ghosts during early exit
+  const exitParentPeerItems = useMemo(() => {
+    if (!exitGhostParent || !exitingStackRec || !exitParentId) return []
+    const ox = exitingStackRec.x
+    const oy = exitingStackRec.y
+    return items
+      .filter(
+        (i) => containerOf(i) === exitParentId && i.type !== 'embed',
+      )
+      .map((i) => ({
+        ...i,
+        x: i.x - ox,
+        y: i.y - oy,
+      }))
+  }, [exitGhostParent, exitingStackRec, exitParentId, items])
+
+  // Other stacks on parent (not the one we're leaving), stack-local coords
+  const exitParentPeerFolders = useMemo(() => {
+    if (!exitGhostParent || !exitingStackRec || !exitParentId || !exitingStackId)
+      return []
+    const ox = exitingStackRec.x
+    const oy = exitingStackRec.y
+    return stacks
+      .filter((s) => s.parentId === exitParentId && s.id !== exitingStackId)
+      .map((s) => ({
+        ...s,
+        x: s.x - ox,
+        y: s.y - oy,
+      }))
+  }, [
+    exitGhostParent,
+    exitingStackRec,
+    exitParentId,
+    exitingStackId,
+    stacks,
+  ])
+
   return (
     <div
       ref={surfaceRef}
@@ -1274,34 +1615,458 @@ export function InfiniteCanvas() {
         }}
       >
         <div className="canvas-grid" />
-        {/* Folder chrome behind each stack group */}
-        {stackFolders.map((f) => (
+        {/* Folder chrome for nested stacks + legacy groups */}
+        {stackFolders.map((f) => {
+          // During exit settle, real folder fades in under morph overlay
+          const exitAnim =
+            stackEnterAnim?.mode === 'exit' &&
+            stackEnterAnim.stackId === f.gid
+              ? stackEnterAnim
+              : null
+          // Other stacks on parent fade in with exit settle (not the one we just left)
+          const folderOpacity =
+            exitAnim != null
+              ? Math.max(0, Math.min(1, exitAnim.settle ?? 0))
+              : exitAfterHandoff
+                ? exitPeerOpacity
+                : 1
+          // Leaf items only (nested stack folders are not counted as items)
+          const countN = countLeafItemsInStack(items, stacks, f.gid)
+          const leafZ = collectItemsInStackTree(items, stacks, f.gid).map(
+            (i) => i.zIndex,
+          )
+          // Folder chrome always under fan cards
+          const folderZ =
+            Math.min(f.z, ...(leafZ.length ? leafZ : [f.z + 1])) - 1
+          const countZ = Math.max(f.z, ...leafZ, 1) + 2
+          // Nested child stack chrome (B inside A): fade with enter/exit anim
+          const childOfAnim =
+            stackEnterAnim &&
+            stacks.some(
+              (s) =>
+                s.id === f.gid && s.parentId === stackEnterAnim.stackId,
+            )
+          const nestedChrome =
+            childOfAnim && stackEnterAnim
+              ? Math.max(0, Math.min(1, stackEnterAnim.nestedChromeOpacity ?? 1))
+              : 1
+          const folderOp = folderOpacity * nestedChrome
+          return (
+          <Fragment key={`folder-wrap-${f.gid}`}>
           <StackFolder
-            key={`folder-${f.gid}`}
             groupId={f.gid}
             members={f.members}
             bounds={f.bounds}
             selected={f.selected}
             dropTarget={f.dropTarget}
-            zIndex={f.z}
+            zIndex={folderZ}
+            name={f.name}
+            styleOpacity={folderOp}
+            count={countN}
+            countZIndex={countZ}
+            onEnter={() => {
+              const st = useCanvasStore.getState()
+              const vp = st.viewport
+              // Ensure stack exists as a record (legacy migrate path)
+              if (!st.stacks.some((s) => s.id === f.gid) && f.members.length) {
+                const live = useCanvasStore.getState()
+                const migrated = migrateLegacyStacks(live.items, live.stacks)
+                useCanvasStore.setState({
+                  items: migrated.items,
+                  stacks: migrated.stacks,
+                })
+              }
+              st.enterStack(f.gid, {
+                x: f.bounds.x * vp.zoom + vp.x,
+                y: f.bounds.y * vp.zoom + vp.y,
+                w: f.bounds.width * vp.zoom,
+                h: f.bounds.height * vp.zoom,
+              })
+            }}
             onPointerDown={(e) => {
-              if (!f.proxy) return
-              onItemPointerDown(e, f.proxy)
+              if (e.button !== 0) return
+              const store = useCanvasStore.getState()
+              dismissStackNameEdit()
+              blurChrome()
+              cancelLayoutAnimation()
+              flushDragWrite()
+              if (store.spaceHeld || store.tool === 'pan') return
+              if (store.tool === 'scribble' || store.tool === 'erase') return
+              e.stopPropagation()
+
+              const additive = e.shiftKey || e.ctrlKey || e.metaKey
+              if (f.isRecord) {
+                if (additive) store.selectStacks([f.gid], true)
+                else if (!store.selectedStackIds.includes(f.gid)) {
+                  store.selectStacks([f.gid])
+                }
+                const stackIds = additive
+                  ? useCanvasStore.getState().selectedStackIds
+                  : [f.gid]
+                const origins: Record<string, { x: number; y: number }> = {}
+                const stackOrigins: Record<string, { x: number; y: number }> =
+                  {}
+                for (const sid of stackIds) {
+                  const st = store.stacks.find((s) => s.id === sid)
+                  if (st) stackOrigins[sid] = { x: st.x, y: st.y }
+                }
+                dragRef.current = {
+                  kind: 'pending-move',
+                  itemId: f.gid,
+                  isStacked: true,
+                  stackGroupId: f.gid,
+                  canEditText: false,
+                  startClientX: e.clientX,
+                  startClientY: e.clientY,
+                  lastX: e.clientX,
+                  lastY: e.clientY,
+                  ids: [],
+                  origins,
+                  stackIds,
+                  stackOrigins,
+                  duplicated: false,
+                  altHeld: false,
+                }
+                surfaceRef.current?.setPointerCapture(e.pointerId)
+                return
+              }
+              // Legacy: drag via proxy members
+              if (f.proxy) onItemPointerDown(e, f.proxy)
             }}
           />
-        ))}
-        {sortedItems.map((item) => (
-          <CanvasItemView
-            key={item.id}
-            item={item}
-            selected={selectedSet.has(item.id)}
-            onPointerDown={onItemPointerDown}
-            onResizePointerDown={onResizePointerDown}
+          {/* Count above fan cards — same anchor as .stack-folder-label (right:12 bottom:10) */}
+          {countN > 0 && folderOp > 0.05 && (
+            <span
+              className="stack-folder-label stack-count-float"
+              style={{
+                // Bottom-right of badge at folder corner inset (matches morph chrome)
+                transform: `translate(${f.bounds.x + f.bounds.width - 12}px, ${
+                  f.bounds.y + f.bounds.height - 10
+                }px) translate(-100%, -100%)`,
+                zIndex: countZ,
+                opacity: folderOp,
+                pointerEvents: 'none',
+              }}
+            >
+              {countN}
+            </span>
+          )}
+          </Fragment>
+          )
+        })}
+        {/* Parent peers while still inside exiting stack (stack-local coords) */}
+        {exitParentPeerFolders.map((st) => (
+          <StackFolder
+            key={`exit-peer-folder-${st.id}`}
+            groupId={st.id}
+            members={[]}
+            bounds={{
+              x: st.x,
+              y: st.y,
+              width: st.width,
+              height: st.height,
+            }}
+            selected={false}
+            zIndex={st.zIndex}
+            name={st.name}
+            styleOpacity={exitPeerOpacity}
+            count={items.filter((i) => containerOf(i) === st.id).length}
+            onPointerDown={() => {}}
           />
         ))}
+        {exitParentPeerItems.map((item) => (
+          <div
+            key={`exit-peer-${item.id}`}
+            className="peer-fade-wrap"
+            style={{
+              opacity: exitPeerOpacity,
+              pointerEvents: 'none',
+            }}
+          >
+            <CanvasItemView
+              item={item}
+              selected={false}
+              onPointerDown={() => {}}
+              onResizePointerDown={() => {}}
+            />
+          </div>
+        ))}
+        {stackPreviewItems.map((item) => {
+          // Fan of the stack we just exited stays opaque; other stacks fade with peers
+          const previewOp =
+            exitAfterHandoff &&
+            exitingStackId != null &&
+            item.stackGroupId !== exitingStackId
+              ? exitPeerOpacity
+              : 1
+          return (
+            <div
+              key={item.id}
+              className="stack-preview-wrap"
+              style={{ opacity: previewOp }}
+            >
+              <CanvasItemView
+                item={item}
+                selected={
+                  !!(
+                    item.stackGroupId &&
+                    selectedStackSet.has(item.stackGroupId)
+                  )
+                }
+                onPointerDown={(e, it) => {
+                  // Stacked previews use pointer-events:none — hits go to folder.
+                  // Keep handler for legacy paths / safety.
+                  if (e.button !== 0) return
+                  const gid = it.stackGroupId
+                  if (!gid) return
+                  const store = useCanvasStore.getState()
+                  dismissStackNameEdit()
+                  blurChrome()
+                  cancelLayoutAnimation()
+                  flushDragWrite()
+                  if (store.spaceHeld || store.tool === 'pan') return
+                  if (store.tool === 'scribble' || store.tool === 'erase') return
+                  e.stopPropagation()
+
+                  if (e.detail >= 2) {
+                    const vp = store.viewport
+                    const folder = store.stacks.find((s) => s.id === gid)
+                    if (folder) {
+                      store.enterStack(gid, {
+                        x: folder.x * vp.zoom + vp.x,
+                        y: folder.y * vp.zoom + vp.y,
+                        w: folder.width * vp.zoom,
+                        h: folder.height * vp.zoom,
+                      })
+                    }
+                    return
+                  }
+
+                  const additive = e.shiftKey || e.ctrlKey || e.metaKey
+                  if (additive) store.selectStacks([gid], true)
+                  else if (!store.selectedStackIds.includes(gid)) {
+                    store.selectStacks([gid])
+                  }
+                  const stackIds = additive
+                    ? useCanvasStore.getState().selectedStackIds
+                    : [gid]
+                  const origins: Record<string, { x: number; y: number }> = {}
+                  const stackOrigins: Record<
+                    string,
+                    { x: number; y: number }
+                  > = {}
+                  for (const sid of stackIds) {
+                    const st = store.stacks.find((s) => s.id === sid)
+                    if (st) stackOrigins[sid] = { x: st.x, y: st.y }
+                  }
+                  dragRef.current = {
+                    kind: 'pending-move',
+                    itemId: gid,
+                    isStacked: true,
+                    stackGroupId: gid,
+                    canEditText: false,
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    lastX: e.clientX,
+                    lastY: e.clientY,
+                    ids: [],
+                    origins,
+                    stackIds,
+                    stackOrigins,
+                    duplicated: false,
+                    altHeld: false,
+                  }
+                  surfaceRef.current?.setPointerCapture(e.pointerId)
+                }}
+                onResizePointerDown={() => {
+                  /* previews are not resizable */
+                }}
+              />
+            </div>
+          )
+        })}
+        {sortedNonEmbeds.map((item) => (
+          <div
+            key={item.id}
+            className="peer-fade-wrap"
+            style={{
+              opacity: exitAfterHandoff ? exitPeerOpacity : 1,
+            }}
+          >
+            <CanvasItemView
+              item={item}
+              selected={selectedSet.has(item.id)}
+              onPointerDown={onItemPointerDown}
+              onResizePointerDown={onResizePointerDown}
+            />
+          </div>
+        ))}
+        {/*
+          Embed keepalive: every embed stays mounted for the board lifetime.
+          Only pose/visibility change on stack enter/exit — iframe never remounts.
+        */}
+        {allEmbedItems.map((item) => {
+          let pose = resolveEmbedWorldPose(
+            item,
+            currentContainerId,
+            stacks,
+          )
+          // Early exit: also show free embeds living on the parent (ghost)
+          if (
+            exitGhostParent &&
+            exitingStackRec &&
+            exitParentId &&
+            !pose.visible
+          ) {
+            const parentPose = resolveEmbedWorldPose(
+              item,
+              exitParentId,
+              stacks,
+            )
+            if (parentPose.visible) {
+              pose = {
+                ...parentPose,
+                x: parentPose.x - exitingStackRec.x,
+                y: parentPose.y - exitingStackRec.y,
+              }
+            }
+          }
+          const display = embedDisplayItem(item, pose)
+          const isExitingFan =
+            pose.asPreview && pose.stackGroupId === exitingStackId
+          const embedOp = !pose.visible
+            ? 0
+            : isExitingFan
+              ? 1
+              : exitGhostParent || exitAfterHandoff
+                ? // Free on current stack (inner members): full; parent ghosts: peer fade
+                  containerOf(item) === currentContainerId && !pose.asPreview
+                  ? 1
+                  : exitPeerOpacity
+                : 1
+          return (
+            <div
+              key={item.id}
+              className={`embed-alive ${pose.visible ? 'is-shown' : 'is-hidden'}`}
+              style={{ opacity: pose.visible ? embedOp : undefined }}
+              aria-hidden={!pose.visible}
+            >
+              <CanvasItemView
+                item={display}
+                selected={
+                  pose.visible &&
+                  !pose.asPreview &&
+                  selectedSet.has(item.id) &&
+                  !exitGhostParent
+                }
+                onPointerDown={onItemPointerDown}
+                onResizePointerDown={onResizePointerDown}
+              />
+            </div>
+          )
+        })}
       </div>
 
-      {items.length === 0 && <EmptyState />}
+      {visibleItems.length === 0 &&
+        visibleStacks.length === 0 &&
+        currentContainerId === ROOT_CONTAINER_ID && <EmptyState />}
+
+      {/* Stack folder morph: screen-space outer rect, world-scale chrome (matches canvas zoom) */}
+      {stackEnterAnim && (
+        <div className="stack-enter-overlay" aria-hidden>
+          {(() => {
+            const t = stackEnterAnim.t
+            const settle = stackEnterAnim.settle ?? 0
+            const a = stackEnterAnim.start
+            const vw = window.innerWidth
+            const vh = window.innerHeight
+            const b =
+              stackEnterAnim.end ??
+              (stackEnterAnim.mode === 'enter'
+                ? { x: 0, y: 0, w: vw, h: vh }
+                : a)
+            const x = a.x + (b.x - a.x) * t
+            const y = a.y + (b.y - a.y) * t
+            const w = Math.max(1, a.w + (b.w - a.w) * t)
+            const h = Math.max(1, a.h + (b.h - a.h) * t)
+            /*
+             * CRITICAL scale match: real StackFolder lives inside .canvas-world
+             * (transform scale(zoom)), so tab / badge / radius are in world units.
+             * Morph is a surface overlay — if we paint CSS px at screen size, chrome
+             * looks larger whenever zoom < 1. Layout in world units then scale(zoom).
+             */
+            const zoom = Math.max(0.05, viewport.zoom)
+            const worldW = w / zoom
+            const worldH = h / zoom
+            /*
+             * Enter: expand + fade out together — fully transparent at full-screen edge.
+             * Exit: fade in with shrink, then settle crossfades to real folder.
+             */
+            const smooth = (u: number) => u * u * (3 - 2 * u) // smoothstep
+            const clamp01 = (u: number) => Math.max(0, Math.min(1, u))
+            // Enter: hit full transparency slightly before t=1 so edge is clean
+            const enterFade = clamp01(t / 0.92)
+            const baseOp =
+              stackEnterAnim.mode === 'exit'
+                ? smooth(clamp01(t))
+                : 1 - smooth(enterFade)
+            const opacity =
+              stackEnterAnim.mode === 'exit'
+                ? baseOp * (1 - smooth(clamp01(settle)))
+                : baseOp
+            // Tab + count: enter rides parent opacity; exit trails body then settle-out
+            const detailT =
+              stackEnterAnim.mode === 'exit'
+                ? clamp01((t - 0.08) / 0.92)
+                : 1
+            const detailOp =
+              stackEnterAnim.mode === 'exit'
+                ? smooth(detailT) * (1 - smooth(clamp01(settle)))
+                : 1
+            const hasName = !!(stackEnterAnim.name || '').trim()
+            const count = stackEnterAnim.memberCount ?? 0
+            return (
+              <div
+                className={`stack-enter-folder stack-folder-morph ${
+                  stackEnterAnim.mode === 'exit' ? 'is-exit' : 'is-enter'
+                } ${hasName ? 'has-name' : 'is-compact'}`}
+                style={{
+                  left: x,
+                  top: y,
+                  width: worldW,
+                  height: worldH,
+                  transform: `scale(${zoom})`,
+                  transformOrigin: 'top left',
+                  opacity,
+                }}
+              >
+                <div
+                  className={`stack-folder-tab ${
+                    hasName ? 'is-expanded' : 'is-compact'
+                  }`}
+                  style={{ opacity: detailOp }}
+                >
+                  {hasName && (
+                    <span className="stack-folder-tab-label">
+                      {stackEnterAnim.name}
+                    </span>
+                  )}
+                </div>
+                {/* Body fill — height from top offset; parent opacity drives fade */}
+                <div className="stack-folder-body" />
+                {count > 0 && (
+                  <span
+                    className="stack-folder-label"
+                    style={{ opacity: detailOp }}
+                  >
+                    {count}
+                  </span>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       {marquee && (
         <div

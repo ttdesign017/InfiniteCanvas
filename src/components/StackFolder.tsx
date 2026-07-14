@@ -10,7 +10,17 @@ interface Props {
   /** Free item is being dragged over this stack as a merge target */
   dropTarget?: boolean
   zIndex: number
+  /** Display name (from StackRecord or legacy members) */
+  name?: string
+  /** External opacity (exit settle crossfade) */
+  styleOpacity?: number
+  /** Count badge (defaults to members.length) */
+  count?: number
+  /** z-index for count badge (above fan cards) */
+  countZIndex?: number
   onPointerDown: (e: React.PointerEvent) => void
+  /** Double-click body/folder → enter stack */
+  onEnter?: () => void
 }
 
 export function StackFolder({
@@ -20,13 +30,19 @@ export function StackFolder({
   selected,
   dropTarget = false,
   zIndex,
+  name = '',
+  styleOpacity = 1,
+  count,
+  countZIndex,
   onPointerDown,
+  onEnter,
 }: Props) {
   const editingStackGroupId = useCanvasStore((s) => s.editingStackGroupId)
   const setEditingStackGroupId = useCanvasStore((s) => s.setEditingStackGroupId)
   const commitStackName = useCanvasStore((s) => s.commitStackName)
 
-  const stackName = members.find((m) => m.stackName)?.stackName ?? ''
+  const stackName =
+    name || members.find((m) => m.stackName)?.stackName || ''
   const editing = editingStackGroupId === groupId
   /** Expanded tab only when named or actively typing a name */
   const expanded = editing || stackName.trim().length > 0
@@ -84,6 +100,9 @@ export function StackFolder({
         width: bounds.width,
         height: bounds.height,
         zIndex,
+        opacity: styleOpacity,
+        // Avoid pointer hits while fully transparent during settle
+        pointerEvents: styleOpacity < 0.05 ? 'none' : undefined,
       }}
       onPointerDown={(e) => {
         const t = e.target as HTMLElement
@@ -91,14 +110,28 @@ export function StackFolder({
           e.stopPropagation()
           return
         }
-        // Double-click tab → rename (before folder drag)
+        // Double-click tab only → rename
         if (e.detail >= 2 && t.closest('.stack-folder-tab')) {
           e.stopPropagation()
           e.preventDefault()
           setEditingStackGroupId(groupId)
           return
         }
+        // Double-click body / folder → enter nested canvas
+        if (e.detail >= 2 && !t.closest('.stack-folder-tab')) {
+          e.stopPropagation()
+          e.preventDefault()
+          onEnter?.()
+          return
+        }
         onPointerDown(e)
+      }}
+      onDoubleClick={(e) => {
+        const t = e.target as HTMLElement
+        if (t.closest('.stack-folder-tab') || t.closest('input')) return
+        e.stopPropagation()
+        e.preventDefault()
+        onEnter?.()
       }}
     >
       <div
@@ -154,7 +187,13 @@ export function StackFolder({
       </div>
 
       <div className="stack-folder-body" />
-      <span className="stack-folder-label">{members.length}</span>
+      {/* Count rendered as sibling layer via portal-like absolute on parent —
+          kept here when countZIndex not provided; InfiniteCanvas may pass elevated z. */}
+      {countZIndex == null && (
+        <span className="stack-folder-label">
+          {count ?? members.length}
+        </span>
+      )}
     </div>
   )
 }

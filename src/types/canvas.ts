@@ -15,6 +15,7 @@ export type ItemType =
   | 'textcard'
   | 'link'
   | 'scribble'
+  | 'embed'
 
 export interface Point {
   x: number
@@ -37,6 +38,27 @@ export interface CropRect {
   h: number
 }
 
+/** Root canvas id for nested stack navigation */
+export const ROOT_CONTAINER_ID = 'root'
+
+/**
+ * A stack is an enterable nested canvas.
+ * On the parent canvas it appears as folder chrome; its children live inside.
+ */
+export interface StackRecord {
+  id: string
+  /** Parent container: `root` or another stack id */
+  parentId: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  zIndex: number
+  /** Last viewport while editing inside this stack */
+  viewport?: Viewport
+}
+
 export interface BaseItem {
   id: string
   type: ItemType
@@ -47,12 +69,31 @@ export interface BaseItem {
   rotation: number
   zIndex: number
   locked?: boolean
-  /** Items sharing this id move as one stack group */
+  /**
+   * Canvas container this item belongs to (`root` or a stack id).
+   * Undefined is treated as root for backwards compatibility.
+   */
+  containerId?: string
+  /**
+   * Same-canvas visual stack group (transient fan during Ctrl+G, or legacy boards).
+   * Nested stack membership uses `containerId` + `StackRecord` instead —
+   * do not leave stacked/stackGroupId set on nested members after nesting.
+   */
   stackGroupId?: string
-  /** Visual: rounded media + folder chrome after Quick Stack */
+  /** Same-canvas fan chrome (see stackGroupId) */
   stacked?: boolean
-  /** Display name on the folder tab (shared by all members of a stack) */
+  /** @deprecated Prefer StackRecord.name; kept for legacy files */
   stackName?: string
+  /**
+   * Fan pose on the *parent* canvas while this item lives inside a stack
+   * (`containerId` = that stack). Parent renders previews from this field.
+   * `x/y/rotation` remain the free pose inside the stack.
+   */
+  stackPreview?: {
+    x: number
+    y: number
+    rotation: number
+  }
 }
 
 export interface MediaItem extends BaseItem {
@@ -111,12 +152,23 @@ export interface ScribbleItem extends BaseItem {
   strokeWidth: number
 }
 
+/** Embedded HTML (e.g. podcast / music iframe) */
+export interface EmbedItem extends BaseItem {
+  type: 'embed'
+  /** Original embed markup (iframe) */
+  html: string
+  /** Resolved iframe src */
+  src: string
+  title?: string
+}
+
 export type CanvasItem =
   | MediaItem
   | TextItem
   | TextCardItem
   | LinkCardItem
   | ScribbleItem
+  | EmbedItem
 
 export interface Viewport {
   x: number
@@ -130,5 +182,9 @@ export interface BoardSnapshot {
   viewport: Viewport
   items: CanvasItem[]
   nextZ: number
+  /** Nested stack folders (enterable canvases) */
+  stacks?: StackRecord[]
+  /** Active nested canvas; omit or `root` = home */
+  currentContainerId?: string
 }
 
