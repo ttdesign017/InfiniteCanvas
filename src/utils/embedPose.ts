@@ -2,6 +2,7 @@ import type { CanvasItem, EmbedItem, StackRecord } from '../types/canvas'
 import {
   collectDescendantStackIds,
   containerOf,
+  stackPreviewInCollapsedParentAbs,
 } from './stacks'
 
 export type EmbedWorldPose = {
@@ -38,23 +39,19 @@ export function resolveEmbedWorldPose(
     }
   }
 
-  // Fan preview on an ancestor stack that lives on the current canvas
-  // Direct members of st: stackPreview is parent-canvas absolute.
-  // Nested (e.g. in B under A): stackPreview is A-local → offset by A.x/y.
+  // Fan preview on an ancestor stack that lives on the current canvas.
+  // Uses full depth map (A⊃B⊃C) so deep embeds don't vanish on outer collapse.
   if (item.stackPreview) {
     for (const st of stacks) {
       if (st.parentId !== currentContainerId) continue
       const tree = collectDescendantStackIds(stacks, st.id)
       if (!tree.has(cid)) continue
-      const nested = cid !== st.id
+      const mapped = stackPreviewInCollapsedParentAbs(item, st, stacks)
+      if (!mapped) continue
       return {
-        x: nested
-          ? st.x + item.stackPreview.x
-          : item.stackPreview.x,
-        y: nested
-          ? st.y + item.stackPreview.y
-          : item.stackPreview.y,
-        rotation: item.stackPreview.rotation ?? 0,
+        x: mapped.x,
+        y: mapped.y,
+        rotation: mapped.rotation,
         visible: true,
         asPreview: true,
         stackGroupId: st.id,

@@ -16,7 +16,12 @@
  *   (mid Ctrl+G) or unmigrated legacy boards.
  */
 
-import type { CanvasItem, StackRecord, Viewport } from '../types/canvas'
+import type {
+  CanvasItem,
+  StackFreeFanRel,
+  StackRecord,
+  Viewport,
+} from '../types/canvas'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
 import {
   computeQuickStackBodies,
@@ -194,17 +199,7 @@ export function directItemsInStack(
   return items.filter((i) => containerOf(i) === stackId)
 }
 
-/**
- * Compact fan poses for a nested stack's direct members, in the parent stack's
- * local coordinates. Folder chrome must always equal stackGroupBounds(fan).
- *
- * `stackPreview` on nested members is stored in **parent-of-nested** (e.g. A-local
- * for items in B). Free layout is only for when you enter B.
- */
-export function nestedStackFanOnParent(
-  nested: StackRecord,
-  items: CanvasItem[],
-): Array<{
+export type NestedFanCard = {
   id: string
   x: number
   y: number
@@ -212,9 +207,333 @@ export function nestedStackFanOnParent(
   width: number
   height: number
   zIndex: number
-}> {
+}
+
+/**
+ * Build freeFanRel offsets for every leaf under `stack` (incl. A⊃B⊃C).
+ * Offsets are relative to stack free origin: parent-abs card = stack.x + dx.
+ * For deeper leaves, dx/dy are this stack's local coords (B-local for C under B).
+ */
+function buildDeepFreeFanRel(
+  stack: StackRecord,
+  items: CanvasItem[],
+  stacks: StackRecord[],
+  preferPreview: boolean,
+): StackFreeFanRel[] {
+  const rel: StackFreeFanRel[] = []
+  const seen = new Set<string>()
+  const push = (r: StackFreeFanRel) => {
+    if (seen.has(r.id)) return
+    seen.add(r.id)
+    rel.push(r)
+  }
+
+  const direct = directItemsInStack(items, stack.id)
+  if (
+    preferPreview &&
+    direct.length > 0 &&
+    direct.every((m) => m.stackPreview)
+  ) {
+    for (const m of direct) {
+      push({
+        id: m.id,
+        dx: m.stackPreview!.x - stack.x,
+        dy: m.stackPreview!.y - stack.y,
+        rotation: m.stackPreview!.rotation ?? 0,
+      })
+    }
+  } else if (direct.length > 0) {
+    const computed = compactNestedFanAt(
+      { x: stack.x, y: stack.y },
+      direct,
+    )
+    for (const c of computed.cards) {
+      push({
+        id: c.id,
+        dx: c.x - stack.x,
+        dy: c.y - stack.y,
+        rotation: c.rotation,
+      })
+    }
+  }
+
+  // Nested: map each leaf into this stack's local space
+  for (const child of stacksInContainer(stacks, stack.id)) {
+    if (child.freeFanRel && child.freeFanRel.length > 0) {
+      // Child freeFanRel is relative to child origin (child-local)
+      for (const r of child.freeFanRel) {
+        push({
+          id: r.id,
+          dx: child.x + r.dx,
+          dy: child.y + r.dy,
+          rotation: r.rotation,
+        })
+      }
+      continue
+    }
+    const tree = collectItemsInStackTree(items, stacks, child.id)
+    for (const m of tree) {
+      if (!m.stackPreview) continue
+      const cid = containerOf(m)
+      if (cid === child.id) {
+        // Direct free of child: preview is this stack's local (e.g. B-local for C's parent=B)
+        push({
+          id: m.id,
+          dx: m.stackPreview.x,
+          dy: m.stackPreview.y,
+          rotation: m.stackPreview.rotation ?? 0,
+        })
+      } else {
+        // Deeper: preview is parent(cid)-local → offset into this stack's local
+        const byId = new Map(stacks.map((s) => [s.id, s]))
+        const node = byId.get(cid)
+        if (!node) continue
+        const off = localOffsetInStack(stacks, stack.id, node.parentId)
+        push({
+          id: m.id,
+          dx: off.x + m.stackPreview.x,
+          dy: off.y + m.stackPreview.y,
+          rotation: m.stackPreview.rotation ?? 0,
+        })
+      }
+    }
+  }
+
+  return rel
+}
+
+/**
+ * Resolve free fan for a nested stack on its parent without recomputing when
+ * a cache exists. Includes **all leaves** under the stack (A⊃B⊃C).
+ *
+ * `preferPreview`: use live free stackPreview (exit of parent while still inside).
+ */
+export function resolveNestedFreeFan(
+  stack: StackRecord,
+  items: CanvasItem[],
+  options?: { preferPreview?: boolean; stacks?: StackRecord[] },
+): {
+  cards: NestedFanCard[]
+  rel: StackFreeFanRel[]
+  bounds: { x: number; y: number; width: number; height: number }
+  needsPersist: boolean
+} {
+  const stacks = options?.stacks ?? []
+  const treeLeaves = (
+    stacks.length > 0
+      ? collectItemsInStackTree(items, stacks, stack.id)
+      : directItemsInStack(items, stack.id)
+  ).sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id))
+
+  const bounds = {
+    x: stack.x,
+    y: stack.y,
+    width: stack.width,
+    height: stack.height,
+  }
+
+  const cache = stack.freeFanRel
+  if (cache && cache.length > 0 && treeLeaves.length > 0) {
+    const byId = new Map(cache.map((c) => [c.id, c]))
+    if (treeLeaves.every((m) => byId.has(m.id))) {
+      const rel = treeLeaves.map((m) => {
+        const c = byId.get(m.id)!
+        return {
+          id: m.id,
+          dx: c.dx,
+          dy: c.dy,
+          rotation: c.rotation ?? 0,
+        }
+      })
+      const cards: NestedFanCard[] = treeLeaves.map((m) => {
+        const c = byId.get(m.id)!
+        return {
+          id: m.id,
+          x: stack.x + c.dx,
+          y: stack.y + c.dy,
+          rotation: c.rotation ?? 0,
+          width: m.width,
+          height: m.height,
+          zIndex: m.zIndex,
+        }
+      })
+      return { cards, rel, bounds, needsPersist: false }
+    }
+  }
+
+  const rel =
+    stacks.length > 0
+      ? buildDeepFreeFanRel(
+          stack,
+          items,
+          stacks,
+          options?.preferPreview === true,
+        )
+      : (() => {
+          const direct = directItemsInStack(items, stack.id)
+          if (
+            options?.preferPreview &&
+            direct.length > 0 &&
+            direct.every((m) => m.stackPreview)
+          ) {
+            return direct.map((m) => ({
+              id: m.id,
+              dx: m.stackPreview!.x - stack.x,
+              dy: m.stackPreview!.y - stack.y,
+              rotation: m.stackPreview!.rotation ?? 0,
+            }))
+          }
+          return compactNestedFanAt({ x: stack.x, y: stack.y }, direct).cards.map(
+            (c) => ({
+              id: c.id,
+              dx: c.x - stack.x,
+              dy: c.y - stack.y,
+              rotation: c.rotation,
+            }),
+          )
+        })()
+
+  const itemById = new Map(items.map((i) => [i.id, i]))
+  const cards: NestedFanCard[] = rel.map((r) => {
+    const m = itemById.get(r.id)
+    return {
+      id: r.id,
+      x: stack.x + r.dx,
+      y: stack.y + r.dy,
+      rotation: r.rotation,
+      width: m?.width ?? 100,
+      height: m?.height ?? 80,
+      zIndex: m?.zIndex ?? 0,
+    }
+  })
+
+  return { cards, rel, bounds, needsPersist: true }
+}
+
+export function freeFanRelFromLocalFan(
+  fanLocal: Array<{ id: string; x: number; y: number; rotation?: number }>,
+): StackFreeFanRel[] {
+  // fanLocal is in folder-local space (origin = stack top-left)
+  return fanLocal.map((c) => ({
+    id: c.id,
+    dx: c.x,
+    dy: c.y,
+    rotation: c.rotation ?? 0,
+  }))
+}
+
+/**
+ * Compact fan for a nested stack unit, pinned so folder top-left stays at
+ * `origin`. Never mix origin into minX/minY (that caused +pad drift each enter).
+ *
+ * Card poses and bounds share the same parent-local space (e.g. A-local for B).
+ * Prefer resolveNestedFreeFan for parent enter/exit — this is first-time only.
+ */
+export function compactNestedFanAt(
+  origin: { x: number; y: number },
+  members: Array<{
+    id: string
+    width: number
+    height: number
+    zIndex: number
+  }>,
+): {
+  cards: NestedFanCard[]
+  bounds: { x: number; y: number; width: number; height: number }
+} {
+  if (members.length === 0) {
+    return {
+      cards: [],
+      bounds: {
+        x: origin.x,
+        y: origin.y,
+        width: 80,
+        height: 80,
+      },
+    }
+  }
+  const sorted = [...members].sort(
+    (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
+  )
+  const compactBodies = sorted.map((m, i) => ({
+    id: m.id,
+    x: origin.x + STACK_FOLDER_PAD + i * 16,
+    y: origin.y + STACK_FOLDER_PAD + i * 12,
+    width: m.width,
+    height: m.height,
+    zIndex: m.zIndex,
+  }))
+  const fanRaw = computeQuickStackBodies(compactBodies)
+  // Pin using fan cards only — do NOT Math.min with origin (systematic drift)
+  const minX = Math.min(...fanRaw.map((t) => t.x))
+  const minY = Math.min(...fanRaw.map((t) => t.y))
+  const dx = origin.x + STACK_FOLDER_PAD - minX
+  const dy = origin.y + STACK_FOLDER_PAD - minY
+  const cards: NestedFanCard[] = fanRaw.map((t) => {
+    const m = sorted.find((x) => x.id === t.id)!
+    return {
+      id: t.id,
+      x: t.x + dx,
+      y: t.y + dy,
+      rotation: t.rotation ?? 0,
+      width: m.width,
+      height: m.height,
+      zIndex: m.zIndex,
+    }
+  })
+  // Rotation-aware hull so chrome always covers tilted fan cards
+  const hull = folderBoundsFromFan(cards)
+  if (!hull) {
+    return {
+      cards,
+      bounds: { x: origin.x, y: origin.y, width: 80, height: 80 },
+    }
+  }
+  // Union free origin with hull: keep anchor stable, never clip rotated corners
+  // (forcing bounds to origin.x/y + unrotated hull.width caused overflow).
+  const shellX = Math.min(origin.x, hull.x)
+  const shellY = Math.min(origin.y, hull.y)
+  const shellR = Math.max(origin.x, hull.x + hull.width)
+  const shellB = Math.max(origin.y, hull.y + hull.height)
+  return {
+    cards,
+    bounds: {
+      x: shellX,
+      y: shellY,
+      width: Math.max(1, shellR - shellX),
+      height: Math.max(1, shellB - shellY),
+    },
+  }
+}
+
+/**
+ * Compact fan poses for a nested stack's direct members, in the parent stack's
+ * local coordinates. Folder chrome must always equal stackGroupBounds(fan).
+ *
+ * `stackPreview` on nested members is stored in **parent-of-nested** (e.g. A-local
+ * for items in B). Free layout is only for when you enter B.
+ *
+ * Prefer collapsedStackFanCards for multi-level piles (A⊃B⊃C).
+ */
+export function nestedStackFanOnParent(
+  nested: StackRecord,
+  items: CanvasItem[],
+  stacks?: StackRecord[],
+): NestedFanCard[] {
+  // Full recursive fan in parent-of-nested coords when stacks graph is available
+  if (stacks) {
+    return collapsedStackFanCards(nested, items, stacks).map((c) => ({
+      id: c.id,
+      x: c.x,
+      y: c.y,
+      rotation: c.rotation,
+      width: c.width,
+      height: c.height,
+      zIndex: c.zIndex,
+    }))
+  }
   const members = directItemsInStack(items, nested.id).sort(
-    (a, b) => a.zIndex - b.zIndex,
+    (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
   )
   if (members.length === 0) {
     return []
@@ -232,65 +551,47 @@ export function nestedStackFanOnParent(
       zIndex: m.zIndex,
     }))
   }
-  // Compact fan at nested.x/y — free layout is NOT used as world pose (avoids
-  // huge free-layout offsets blowing the pile across the parent canvas).
-  const bodies = members.map((m, i) => ({
-    id: m.id,
-    x: nested.x + i * 16,
-    y: nested.y + i * 12,
-    width: m.width,
-    height: m.height,
-    zIndex: m.zIndex,
-  }))
-  const fan = computeQuickStackBodies(bodies)
-  const minX = Math.min(...fan.map((t) => t.x))
-  const minY = Math.min(...fan.map((t) => t.y))
-  const dx = nested.x + STACK_FOLDER_PAD - minX
-  const dy = nested.y + STACK_FOLDER_PAD - minY
-  return fan.map((t) => {
-    const m = members.find((x) => x.id === t.id)!
-    return {
-      id: t.id,
-      x: t.x + dx,
-      y: t.y + dy,
-      rotation: t.rotation ?? 0,
-      width: m.width,
-      height: m.height,
-      zIndex: m.zIndex,
-    }
-  })
+  // Compact fan under nested.x/y — free layout is NOT used as world pose
+  return compactNestedFanAt({ x: nested.x, y: nested.y }, members).cards
 }
 
-/** Folder bounds from fan cards (always under the pile). */
+/** Folder bounds from fan cards (always under the pile). Rotation-aware. */
 export function folderBoundsFromFan(
   fan: Array<{ x: number; y: number; width: number; height: number; rotation?: number }>,
   pad = STACK_FOLDER_PAD,
 ): { x: number; y: number; width: number; height: number } | null {
   if (fan.length === 0) return null
-  // Axis-aligned pad around unrotated boxes (good enough for compact fan)
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const m of fan) {
-    minX = Math.min(minX, m.x)
-    minY = Math.min(minY, m.y)
-    maxX = Math.max(maxX, m.x + m.width)
-    maxY = Math.max(maxY, m.y + m.height)
-  }
-  return {
-    x: minX - pad,
-    y: minY - pad,
-    width: maxX - minX + pad * 2,
-    height: maxY - minY + pad * 2,
-  }
+  // Same math as stackGroupBounds — tilted cards must not poke outside chrome
+  return stackGroupBounds(
+    fan.map((m, i) =>
+      ({
+        id: `fan-bounds-${i}`,
+        type: 'textcard',
+        x: m.x,
+        y: m.y,
+        width: m.width,
+        height: m.height,
+        rotation: m.rotation ?? 0,
+        zIndex: 0,
+      }) as CanvasItem,
+    ),
+    pad,
+  )
 }
 
 /**
  * Visual cards of a collapsed stack on its parent canvas (absolute parent coords).
- * - Direct free items: stackPreview is parent-absolute
- * - Nested child stacks: stackPreview is outer-stack local → offset by stack.x/y
- * Folder chrome must use this same set so bounds never “forget” nested content.
+ *
+ * A⊃B⊃C positioning:
+ * - Direct free members: parent-abs stackPreview.
+ * - Nested child tree: child.freeFanRel is folder-local collapsed fan (gather
+ *   offsets written on exit of child — must include deep leaves). Visual unit
+ *   origin is recovered from a free member's stackPreview − freeFanRel so when
+ *   child.x was restored to free but previews are still gather, C stays on the
+ *   pile (not free child.x + free C layout).
+ *
+ * Nested free members' stackPreview is stack-local (A-local for B on A; not yet
+ * parent-abs of outer stack). parent-abs = stack.x + visualOrigin + freeFanRel.
  */
 export function collapsedStackFanCards(
   stack: StackRecord,
@@ -314,7 +615,9 @@ export function collapsedStackFanCards(
     rotation: number
     zIndex: number
   }> = []
+  const itemById = new Map(items.map((i) => [i.id, i]))
 
+  // Direct free members: stackPreview is parent-absolute
   for (const m of directItemsInStack(items, stack.id)) {
     if (!m.stackPreview) continue
     cards.push({
@@ -329,21 +632,88 @@ export function collapsedStackFanCards(
   }
 
   for (const child of stacksInContainer(stacks, stack.id)) {
-    const fan = nestedStackFanOnParent(child, items)
-    for (const f of fan) {
+    // Collapsed-fan offsets for entire child tree (must include deep leaves)
+    const treeLeaves = collectItemsInStackTree(items, stacks, child.id)
+    const cacheOk =
+      !!child.freeFanRel &&
+      child.freeFanRel.length > 0 &&
+      treeLeaves.every((m) =>
+        child.freeFanRel!.some((r) => r.id === m.id),
+      )
+    const childRel = cacheOk
+      ? child.freeFanRel!
+      : buildDeepFreeFanRel(child, items, stacks, true)
+
+    // Visual origin of child unit in stack-local space (parent canvas of child).
+    // Recover from free members' stackPreview + freeFanRel so when previews
+    // are gather but child.x was restored to free, C still sits on the pile.
+    let originX = child.x
+    let originY = child.y
+    const relById = new Map(childRel.map((r) => [r.id, r]))
+    for (const m of directItemsInStack(items, child.id)) {
+      const r = relById.get(m.id)
+      if (r && m.stackPreview) {
+        originX = m.stackPreview.x - r.dx
+        originY = m.stackPreview.y - r.dy
+        break
+      }
+    }
+
+    for (const r of childRel) {
+      const m = itemById.get(r.id)
+      if (!m) continue
+      // parent-abs of `stack` = stack.x + (visualOrigin + rel) when origin/rel
+      // are stack-local (nested free members use stack-local stackPreview).
       cards.push({
-        id: f.id,
-        x: stack.x + f.x,
-        y: stack.y + f.y,
-        width: f.width,
-        height: f.height,
-        rotation: f.rotation,
-        zIndex: f.zIndex,
+        id: r.id,
+        x: stack.x + originX + r.dx,
+        y: stack.y + originY + r.dy,
+        width: m.width,
+        height: m.height,
+        rotation: r.rotation,
+        zIndex: m.zIndex,
       })
     }
   }
 
   return cards
+}
+
+/**
+ * Map an item's stackPreview into parent-of-`collapsedStack` absolute coords
+ * (same space as collapsedStackFanCards). Handles A⊃B⊃C depth.
+ */
+export function stackPreviewInCollapsedParentAbs(
+  item: CanvasItem,
+  collapsedStack: StackRecord,
+  stacks: StackRecord[],
+): { x: number; y: number; rotation: number } | null {
+  if (!item.stackPreview) return null
+  const cid = containerOf(item)
+  // Direct member of the collapsed stack: preview is already parent-absolute
+  if (cid === collapsedStack.id) {
+    return {
+      x: item.stackPreview.x,
+      y: item.stackPreview.y,
+      rotation: item.stackPreview.rotation ?? 0,
+    }
+  }
+  // Nested: stackPreview is parent(cid)-local. Offset parent(cid) into
+  // collapsedStack-local, then add collapsedStack origin for parent-absolute.
+  const byId = new Map(stacks.map((s) => [s.id, s]))
+  const node = byId.get(cid)
+  if (!node) return null
+  const parentOfContainer = node.parentId
+  const off = localOffsetInStack(
+    stacks,
+    collapsedStack.id,
+    parentOfContainer,
+  )
+  return {
+    x: collapsedStack.x + off.x + item.stackPreview.x,
+    y: collapsedStack.y + off.y + item.stackPreview.y,
+    rotation: item.stackPreview.rotation ?? 0,
+  }
 }
 
 /**

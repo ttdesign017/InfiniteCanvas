@@ -43,6 +43,9 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
 
 export function useKeyboard() {
   useEffect(() => {
+    // Guard against duplicate paste handling (capture + bubble / double fire)
+    let pasteLockUntil = 0
+
     const onKeyDown = (e: KeyboardEvent) => {
       // Ignore OS key-repeat for held modifiers / tools
       const typing = isTextEditingTarget(e.target)
@@ -109,6 +112,26 @@ export function useKeyboard() {
       if (mod && e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
         e.preventDefault()
         store.restoreCrop()
+        return
+      }
+
+      // Copy / Cut / Paste canvas selection (move items between stacks)
+      if (mod && !e.altKey && !e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
+        e.preventDefault()
+        store.copySelection()
+        return
+      }
+      if (mod && !e.altKey && !e.shiftKey && (key === 'x' || e.code === 'KeyX')) {
+        e.preventDefault()
+        store.cutSelection()
+        return
+      }
+      if (mod && !e.altKey && !e.shiftKey && (key === 'v' || e.code === 'KeyV')) {
+        // Prefer in-app clipboard when present; otherwise let OS paste handler run
+        if (store.hasClipboard() && store.pasteClipboard()) {
+          e.preventDefault()
+          pasteLockUntil = Date.now() + 400
+        }
         return
       }
 
@@ -292,9 +315,6 @@ export function useKeyboard() {
       useCanvasStore.getState().setCHeld(false)
       useCanvasStore.getState().setIsPanning(false)
     }
-
-    // Guard against duplicate paste handling (capture + bubble / double fire)
-    let pasteLockUntil = 0
 
     const readPasteText = (data: DataTransfer | null): string => {
       if (!data) return ''

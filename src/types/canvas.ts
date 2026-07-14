@@ -45,6 +45,14 @@ export const ROOT_CONTAINER_ID = 'root'
  * A stack is an enterable nested canvas.
  * On the parent canvas it appears as folder chrome; its children live inside.
  */
+/** Cached free fan of a stack's direct members, relative to stack.x/y on parent */
+export interface StackFreeFanRel {
+  id: string
+  dx: number
+  dy: number
+  rotation: number
+}
+
 export interface StackRecord {
   id: string
   /** Parent container: `root` or another stack id */
@@ -57,6 +65,14 @@ export interface StackRecord {
   zIndex: number
   /** Last viewport while editing inside this stack */
   viewport?: Viewport
+  /**
+   * Collapsed fan of all leaves under this stack (incl. nested e.g. A⊃B⊃C),
+   * relative to this folder's free origin on the parent canvas.
+   * Written on exit of this stack from gather end poses (not free layout of
+   * nested children). Parent enter/exit must NOT recompute it — only open/exit
+   * of this stack (or content edits that re-fan) may refresh it.
+   */
+  freeFanRel?: StackFreeFanRel[]
 }
 
 export interface BaseItem {

@@ -222,6 +222,7 @@ export function stackRecordBodyBounds(stack: {
  *
  * Direct members: stackPreview is parent-canvas absolute.
  * Nested members: stackPreview is outer-stack local → add stack.x/y.
+ * (Deep A⊃B⊃C display uses collapsedStackFanCards which recurses correctly.)
  */
 export function stackCollapsedSnapBounds(
   stack: {

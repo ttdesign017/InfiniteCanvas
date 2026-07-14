@@ -280,25 +280,32 @@ export function InfiniteCanvas() {
     const memberCount = stackEnterAnim.memberCount
     const t0 = performance.now()
     // Fast expand; nested B chrome fades in — do NOT move nested leaves (causes jump)
-    const dur = 380
+    const morphDur = 380
+    // Parent peers: reverse of exit appear (exit: 200ms delay + 500ms ease-in).
+    // Enter fades out over 500ms with the same smoothstep so it feels matched.
+    const peerFadeDur = 500
     let raf = 0
     const tick = (now: number) => {
-      const t = Math.min(1, (now - t0) / dur)
+      const t = Math.min(1, (now - t0) / morphDur)
       const e = 1 - Math.pow(1 - t, 3)
       const nestedChromeOpacity = Math.max(
         0,
         Math.min(1, (e - 0.15) / 0.85),
       )
+      const pu = Math.max(0, Math.min(1, (now - t0) / peerFadeDur))
+      const peerReveal = 1 - pu * pu * (3 - 2 * pu)
       useCanvasStore.getState().setStackEnterAnim({
         stackId,
         mode: 'enter',
         start: startSnap,
         t: e,
         nestedChromeOpacity,
+        peerReveal,
         name,
         memberCount,
       })
-      if (t < 1) {
+      // Keep ticking until both morph and peer fade finish
+      if (t < 1 || pu < 1) {
         raf = requestAnimationFrame(tick)
       } else {
         setStackEnterAnim(null)
@@ -485,11 +492,14 @@ export function InfiniteCanvas() {
     }
   }
 
-  /** End layout animation so it cannot overwrite manual moves */
-  const cancelLayoutAnimation = () => {
-    if (useCanvasStore.getState().animating) {
-      useCanvasStore.setState({ animating: false })
-    }
+  /**
+   * True while stack enter/exit, layout fan, or any store-driven pose anim runs.
+   * Interaction must not start during this — aborting anims mid-flight freezes
+   * items at intermediate poses (the old cancelLayoutAnimation bug).
+   */
+  const isInteractionLocked = () => {
+    const s = useCanvasStore.getState()
+    return !!(s.animating || s.stackEnterAnim)
   }
 
   const dismissStackNameEdit = () => {
@@ -512,10 +522,11 @@ export function InfiniteCanvas() {
       if (e.button !== 0) return
       const store = useCanvasStore.getState()
       if (item.stacked && item.stackGroupId) return
+      // Block resize while stack/layout animations run
+      if (isInteractionLocked()) return
 
       dismissStackNameEdit()
       blurChrome()
-      cancelLayoutAnimation()
       flushDragWrite()
 
       if (store.spaceHeld || store.tool === 'pan') return
@@ -579,9 +590,15 @@ export function InfiniteCanvas() {
 
       const store = useCanvasStore.getState()
 
+      // Stack enter/exit & layout anims: ignore clicks so we never freeze mid-pose
+      if (isInteractionLocked()) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+
       dismissStackNameEdit()
       blurChrome()
-      cancelLayoutAnimation()
       flushDragWrite()
 
       if (store.spaceHeld || store.tool === 'pan') return
@@ -736,12 +753,16 @@ export function InfiniteCanvas() {
       const holdingC = store.cHeld
       const holdingSpace = store.spaceHeld
 
+      // Pan always allowed (including during stack anim)
       if (holdingSpace || store.tool === 'pan') {
         store.setIsPanning(true)
         dragRef.current = { kind: 'pan', lastX: e.clientX, lastY: e.clientY }
         surfaceRef.current?.setPointerCapture(e.pointerId)
         return
       }
+
+      // During stack/layout anims: block marquee, draw, create, crop
+      if (isInteractionLocked()) return
 
       // PureRef-style crop: hold C + drag anywhere (uses selected media if start is outside)
       if (holdingC) {
@@ -1536,74 +1557,101 @@ export function InfiniteCanvas() {
             : 'default'
 
   /**
-   * Exit peer fade: starts ~200ms after exit begins (store peerReveal), independent
-   * of morph settle. While still inside the stack we ghost-render parent peers
-   * in stack-local coords so they can appear before handoff.
+   * Parent peer fade (enter + exit) via stackEnterAnim.peerReveal (0..1).
+   * Exit: 0 → 1 after ~200ms. Enter: 1 → 0 over 500ms (same ease, reverse).
+   * Ghost-render parent peers in stack-local coords while inside the nav stack
+   * (and for exit, also after handoff on parent).
    */
+  const isEnterAnim = stackEnterAnim?.mode === 'enter'
   const isExitAnim = stackEnterAnim?.mode === 'exit'
-  const exitingStackId = isExitAnim ? stackEnterAnim!.stackId : null
-  const exitingStackRec = exitingStackId
-    ? stacks.find((s) => s.id === exitingStackId)
+  const animStackId = stackEnterAnim?.stackId ?? null
+  const animStackRec = animStackId
+    ? stacks.find((s) => s.id === animStackId)
     : null
-  const exitParentId = exitingStackRec?.parentId ?? null
-  /** Still inside the stack during shrink — parent peers not in normal lists yet */
+  const animParentId = animStackRec?.parentId ?? null
+  /** Exit aliases (kept for embed / handoff branches below) */
+  const exitingStackId = isExitAnim ? animStackId : null
+  const exitingStackRec = isExitAnim ? animStackRec : null
+  const exitParentId = isExitAnim ? animParentId : null
+  /** Still inside the nav stack — parent peers not in normal lists yet */
   const exitGhostParent =
     isExitAnim &&
     exitingStackId != null &&
     currentContainerId === exitingStackId &&
     exitParentId != null &&
     exitingStackRec != null
-  const exitPeerOpacity = isExitAnim
-    ? Math.max(0, Math.min(1, stackEnterAnim?.peerReveal ?? 0))
-    : 1
+  const enterGhostParent =
+    isEnterAnim &&
+    animStackId != null &&
+    currentContainerId === animStackId &&
+    animParentId != null &&
+    animStackRec != null
+  const peerOpacity =
+    isExitAnim || isEnterAnim
+      ? Math.max(
+          0,
+          Math.min(
+            1,
+            stackEnterAnim?.peerReveal ?? (isEnterAnim ? 1 : 0),
+          ),
+        )
+      : 1
+  const exitPeerOpacity = isExitAnim ? peerOpacity : 1
+  const enterPeerOpacity = isEnterAnim ? peerOpacity : 1
   /** After handoff: dim peers via peerReveal; exiting stack fan stays solid */
   const exitAfterHandoff =
     isExitAnim &&
     exitingStackId != null &&
     currentContainerId !== exitingStackId
-  // Stack chrome and contents share the exact settle curve. The store uses a
-  // shorter 160ms settle, preserving the previously stable render lifecycle.
-  const exitPeerContentOpacity = isExitAnim
-    ? exitAfterHandoff
-      ? Math.max(0, Math.min(1, stackEnterAnim?.settle ?? 0))
-      : 0
-    : 1
-  // Parent free items (non-embed) as stack-local ghosts during early exit
-  const exitParentPeerItems = useMemo(() => {
-    if (!exitGhostParent || !exitingStackRec || !exitParentId) return []
-    const ox = exitingStackRec.x
-    const oy = exitingStackRec.y
+  // Parent free items (non-embed) as stack-local ghosts (enter fade-out / exit fade-in)
+  const parentPeerGhostItems = useMemo(() => {
+    const ghost = enterGhostParent || exitGhostParent
+    const rec = enterGhostParent ? animStackRec : exitingStackRec
+    const parentId = enterGhostParent ? animParentId : exitParentId
+    if (!ghost || !rec || !parentId) return []
+    const ox = rec.x
+    const oy = rec.y
     return items
       .filter(
-        (i) => containerOf(i) === exitParentId && i.type !== 'embed',
+        (i) => containerOf(i) === parentId && i.type !== 'embed',
       )
       .map((i) => ({
         ...i,
         x: i.x - ox,
         y: i.y - oy,
       }))
-  }, [exitGhostParent, exitingStackRec, exitParentId, items])
+  }, [
+    enterGhostParent,
+    exitGhostParent,
+    animStackRec,
+    exitingStackRec,
+    animParentId,
+    exitParentId,
+    items,
+  ])
 
-  // Other stack folder chrome on the parent (not the one we're leaving) is one
-  // persistent visual layer for the entire exit. Preview contents deliberately
-  // stay out of this ghost layer; their real Home nodes fade in after handoff.
-  const exitParentPeerStacks = useMemo(() => {
-    if (
-      !isExitAnim ||
-      !exitingStackRec ||
-      !exitParentId ||
-      !exitingStackId ||
-      (currentContainerId !== exitingStackId &&
-        currentContainerId !== exitParentId)
-    )
+  // Peer stacks on parent: continuous ghost (folder + fan) during enter/exit.
+  const parentPeerGhostStacks = useMemo(() => {
+    if (!animStackRec || !animParentId || !animStackId) return []
+    if (isEnterAnim) {
+      if (currentContainerId !== animStackId) return []
+    } else if (isExitAnim) {
+      if (
+        currentContainerId !== animStackId &&
+        currentContainerId !== animParentId
+      )
+        return []
+    } else {
       return []
-    const stillInsideExitingStack = currentContainerId === exitingStackId
-    const ox = stillInsideExitingStack ? exitingStackRec.x : 0
-    const oy = stillInsideExitingStack ? exitingStackRec.y : 0
+    }
+    const stillInside = currentContainerId === animStackId
+    const ox = stillInside ? animStackRec.x : 0
+    const oy = stillInside ? animStackRec.y : 0
     return stacks
-      .filter((s) => s.parentId === exitParentId && s.id !== exitingStackId)
+      .filter((s) => s.parentId === animParentId && s.id !== animStackId)
       .map((stack) => {
         const worldBounds = collapsedStackFolderBounds(stack, items, stacks)
+        const fanCards = collapsedStackFanCards(stack, items, stacks)
         const leafItems = collectItemsInStackTree(items, stacks, stack.id)
         const leafZ = leafItems.map((item) => item.zIndex)
         const folderZ =
@@ -1620,24 +1668,45 @@ export function InfiniteCanvas() {
             width: worldBounds.width,
             height: worldBounds.height,
           },
+          fanItems: fanCards
+            .map((c) => {
+              const m = items.find((i) => i.id === c.id)
+              if (!m || m.type === 'embed') return null
+              return {
+                ...m,
+                x: c.x - ox,
+                y: c.y - oy,
+                rotation: c.rotation,
+                stacked: true,
+                stackGroupId: stack.id,
+              } as CanvasItem
+            })
+            .filter(Boolean) as CanvasItem[],
           count: leafItems.length,
           folderZ,
           countZ,
         }
       })
   }, [
+    isEnterAnim,
     isExitAnim,
-    exitingStackRec,
-    exitParentId,
-    exitingStackId,
+    animStackRec,
+    animParentId,
+    animStackId,
     currentContainerId,
     items,
     stacks,
   ])
-  const exitParentPeerStackIds = useMemo(
-    () => new Set(exitParentPeerStacks.map((peer) => peer.stack.id)),
-    [exitParentPeerStacks],
+  const parentPeerGhostStackIds = useMemo(
+    () => new Set(parentPeerGhostStacks.map((peer) => peer.stack.id)),
+    [parentPeerGhostStacks],
   )
+  const exitParentPeerStackIds = parentPeerGhostStackIds
+  const navPeerOpacity = isEnterAnim
+    ? enterPeerOpacity
+    : isExitAnim
+      ? exitPeerOpacity
+      : 1
 
   return (
     <div
@@ -1715,6 +1784,7 @@ export function InfiniteCanvas() {
             count={countN}
             countZIndex={countZ}
             onEnter={() => {
+              if (isInteractionLocked()) return
               const st = useCanvasStore.getState()
               const vp = st.viewport
               // Ensure stack exists as a record (legacy migrate path)
@@ -1736,9 +1806,13 @@ export function InfiniteCanvas() {
             onPointerDown={(e) => {
               if (e.button !== 0) return
               const store = useCanvasStore.getState()
+              if (isInteractionLocked()) {
+                e.preventDefault()
+                e.stopPropagation()
+                return
+              }
               dismissStackNameEdit()
               blurChrome()
-              cancelLayoutAnimation()
               flushDragWrite()
               if (store.spaceHeld || store.tool === 'pan') return
               if (store.tool === 'scribble' || store.tool === 'erase') return
@@ -1804,9 +1878,12 @@ export function InfiniteCanvas() {
           </Fragment>
           )
         })}
-        {/* Parent peers while still inside exiting stack (stack-local coords) */}
-        {exitParentPeerStacks.map((peer) => (
-          <Fragment key={`exit-peer-stack-${peer.stack.id}`}>
+        {/*
+          Parent peers (enter fade-out / exit fade-in): continuous ghost layer
+          so container switch never pops same-level items off instantly.
+        */}
+        {parentPeerGhostStacks.map((peer) => (
+          <Fragment key={`peer-ghost-stack-${peer.stack.id}`}>
             <StackFolder
               groupId={peer.stack.id}
               members={[]}
@@ -1814,12 +1891,12 @@ export function InfiniteCanvas() {
               selected={false}
               zIndex={peer.folderZ}
               name={peer.stack.name}
-              styleOpacity={exitPeerContentOpacity}
+              styleOpacity={navPeerOpacity}
               count={peer.count}
               countZIndex={peer.countZ}
               onPointerDown={() => {}}
             />
-            {peer.count > 0 && exitPeerContentOpacity > 0.05 && (
+            {peer.count > 0 && navPeerOpacity > 0.05 && (
               <span
                 className="stack-folder-label stack-count-float"
                 style={{
@@ -1827,21 +1904,38 @@ export function InfiniteCanvas() {
                     peer.bounds.y + peer.bounds.height - 10
                   }px) translate(-100%, -100%)`,
                   zIndex: peer.countZ,
-                  opacity: exitPeerContentOpacity,
+                  opacity: navPeerOpacity,
                   pointerEvents: 'none',
                 }}
               >
                 {peer.count}
               </span>
             )}
+            {peer.fanItems.map((item) => (
+              <div
+                key={`peer-ghost-fan-${item.id}`}
+                className="stack-preview-wrap"
+                style={{
+                  opacity: navPeerOpacity,
+                  pointerEvents: 'none',
+                }}
+              >
+                <CanvasItemView
+                  item={item}
+                  selected={false}
+                  onPointerDown={() => {}}
+                  onResizePointerDown={() => {}}
+                />
+              </div>
+            ))}
           </Fragment>
         ))}
-        {exitParentPeerItems.map((item) => (
+        {parentPeerGhostItems.map((item) => (
           <div
-            key={`exit-peer-${item.id}`}
+            key={`peer-ghost-item-${item.id}`}
             className="peer-fade-wrap"
             style={{
-              opacity: exitPeerOpacity,
+              opacity: navPeerOpacity,
               pointerEvents: 'none',
             }}
           >
@@ -1854,18 +1948,16 @@ export function InfiniteCanvas() {
           </div>
         ))}
         {stackPreviewItems.map((item) => {
-          const isExitPeerPreview =
+          // Ghost layer owns peer-stack fan cards during enter/exit — hide real ones
+          const isPeerGhostPreview =
             item.stackGroupId != null &&
-            exitParentPeerStackIds.has(item.stackGroupId)
+            parentPeerGhostStackIds.has(item.stackGroupId)
+          if (isPeerGhostPreview) return null
           return (
             <div
               key={item.id}
               className="stack-preview-wrap"
-              style={{
-                opacity: isExitPeerPreview
-                  ? exitPeerContentOpacity
-                  : 1,
-              }}
+              style={{ opacity: 1 }}
             >
               <CanvasItemView
                 item={item}
@@ -1882,9 +1974,13 @@ export function InfiniteCanvas() {
                   const gid = it.stackGroupId
                   if (!gid) return
                   const store = useCanvasStore.getState()
+                  if (isInteractionLocked()) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    return
+                  }
                   dismissStackNameEdit()
                   blurChrome()
-                  cancelLayoutAnimation()
                   flushDragWrite()
                   if (store.spaceHeld || store.tool === 'pan') return
                   if (store.tool === 'scribble' || store.tool === 'erase') return
@@ -1973,44 +2069,44 @@ export function InfiniteCanvas() {
             currentContainerId,
             stacks,
           )
-          // Early exit: also show free embeds living on the parent (ghost)
+          // Enter/exit: also show free embeds living on the parent (ghost)
           if (
-            exitGhostParent &&
-            exitingStackRec &&
-            exitParentId &&
+            (exitGhostParent || enterGhostParent) &&
+            animStackRec &&
+            animParentId &&
             !pose.visible
           ) {
             const parentPose = resolveEmbedWorldPose(
               item,
-              exitParentId,
+              animParentId,
               stacks,
             )
             if (parentPose.visible) {
               pose = {
                 ...parentPose,
-                x: parentPose.x - exitingStackRec.x,
-                y: parentPose.y - exitingStackRec.y,
+                x: parentPose.x - animStackRec.x,
+                y: parentPose.y - animStackRec.y,
               }
             }
           }
           const display = embedDisplayItem(item, pose)
           const isExitingFan =
             pose.asPreview && pose.stackGroupId === exitingStackId
-          const isExitPeerPreview =
+          const isPeerGhostPreview =
             pose.asPreview &&
             pose.stackGroupId != null &&
-            exitParentPeerStackIds.has(pose.stackGroupId)
+            parentPeerGhostStackIds.has(pose.stackGroupId)
           const embedOp = !pose.visible
             ? 0
             : isExitingFan
               ? 1
-              : isExitPeerPreview
-                ? exitPeerContentOpacity
-              : exitGhostParent || exitAfterHandoff
+              : isPeerGhostPreview
+                ? navPeerOpacity
+              : exitGhostParent || enterGhostParent || exitAfterHandoff
                 ? // Free on current stack (inner members): full; parent ghosts: peer fade
                   containerOf(item) === currentContainerId && !pose.asPreview
                   ? 1
-                  : exitPeerOpacity
+                  : navPeerOpacity
                 : 1
           return (
             <div
