@@ -7,7 +7,16 @@ import { LogicalPosition } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { ask, open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog'
-import { readFile, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import {
+  copyFile,
+  exists,
+  readFile,
+  readTextFile,
+  remove,
+  rename,
+  stat,
+  writeTextFile,
+} from '@tauri-apps/plugin-fs'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ICANVAS_EXT } from './boardFile'
 
@@ -52,6 +61,8 @@ export async function openMediaDialog(): Promise<string[]> {
         extensions: [
           'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'avif',
           'mp4', 'webm', 'mov', 'mkv', 'avi', 'ogv', 'm4v',
+          'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'oga', 'opus',
+          'wma', 'aiff', 'aif',
         ],
       },
     ],
@@ -102,6 +113,79 @@ export async function getLaunchFilePath(): Promise<string | null> {
 
 export async function writeText(path: string, content: string): Promise<void> {
   await writeTextFile(path, content)
+}
+
+/** Read file size before loading a potentially huge project into the WebView. */
+export async function fileSize(path: string): Promise<number | null> {
+  if (!isDesktop()) return null
+  const info = await stat(path)
+  return Number(info.size)
+}
+
+/**
+ * Persist text without ever writing directly over the only good copy.
+ *
+ * The sibling temp file is verified before rename. Existing projects keep one
+ * `.bak` recovery copy, and a failed final verification restores that backup.
+ */
+export async function writeTextAtomic(
+  path: string,
+  content: string,
+  verify: (written: string) => void,
+): Promise<void> {
+  const suffix =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const tempPath = `${path}.${suffix}.tmp`
+  const backupPath = `${path}.bak`
+  let hadOriginal = false
+  let originalMoved = false
+  let replaced = false
+
+  try {
+    await writeTextFile(tempPath, content)
+    verify(await readTextFile(tempPath))
+
+    hadOriginal = await exists(path)
+    if (hadOriginal) {
+      if (await exists(backupPath)) await remove(backupPath)
+      // Moving the current file aside avoids platform-specific rename-overwrite
+      // behavior (notably Windows) and guarantees one verified copy survives.
+      await rename(path, backupPath)
+      originalMoved = true
+    }
+
+    await rename(tempPath, path)
+    replaced = true
+    verify(await readTextFile(path))
+  } catch (error) {
+    if (await exists(tempPath)) {
+      try {
+        await remove(tempPath)
+      } catch {
+        /* best effort temp cleanup */
+      }
+    }
+
+    if (originalMoved) {
+      try {
+        if (replaced && (await exists(path))) await remove(path)
+        if (await exists(backupPath)) {
+          await copyFile(backupPath, path)
+        }
+      } catch {
+        /* preserve the original failure; .bak remains available */
+      }
+    } else if (!hadOriginal && replaced) {
+      try {
+        if (await exists(path)) await remove(path)
+      } catch {
+        /* best effort cleanup for a failed first save */
+      }
+    }
+    throw error
+  }
 }
 
 /** Read file bytes (for packing media into .icanvas) */

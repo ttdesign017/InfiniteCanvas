@@ -22,7 +22,7 @@ PureRef-inspired infinite canvas for Windows — **Tauri 2 + React + TypeScript*
 
 ### Content types
 
-- **Media** — images, GIF, video (custom player: play control + hover progress scrubber)
+- **Media** — images, GIF, video, and common audio formats (MP3/WAV/M4A/AAC/FLAC/OGG/Opus/WMA/AIFF). Audio rests as a compact island and expands to playback controls on hover or keyboard focus.
 - **Notes & free text** — Notion-style cards; free-floating text with color / font / size / background
 - **Links** — bookmark cards with OG/Twitter previews (desktop: Rust fetch + X/YouTube providers; SSRF mitigations); **double-click** opens externally
 - **Embeds** — iframe apps stay mounted across stack navigation (keep-alive cache)
@@ -87,7 +87,7 @@ Nested stack **B inside A**:
 - Stack surface previews are not selectable; only the folder is
 - Paste / Alt-drag / copy respect nested trees and unique stack names
 
-Core helpers: `src/utils/stacks.ts`, `src/utils/zOrder.ts`, enter/exit in `src/store/useCanvasStore.ts`, path UI in `src/components/CanvasPath.tsx`.
+Core helpers: `src/utils/stacks.ts`, `src/utils/zOrder.ts`, enter/exit in `src/store/actions/stackActions.ts`, path UI in `src/components/CanvasPath.tsx`.
 
 #### Current limitation
 
@@ -99,7 +99,7 @@ Core helpers: `src/utils/stacks.ts`, `src/utils/zOrder.ts`, enter/exit in `src/s
 - **Ctrl+Shift+O** — open `.icanvas` or legacy JSON
 - **Ctrl+O** — open media files
 - **Open with** — file association for `.icanvas`; launch path via `get_launch_file_path`
-- **Clipboard** — OS paste (links, images, video, paths, text → note); in-app **Ctrl+X/C/V** for free items + nested stack trees
+- **Clipboard** — OS paste (links, images, video, audio, paths, text → note); in-app **Ctrl+X/C/V** for free items + nested stack trees
 - In-app copy buffer is cleared when the window **blurs** (so an external OS copy can take priority on paste)
 - Drag-and-drop import of media, URLs, and text
 
@@ -110,7 +110,8 @@ Portable JSON document (`magic: ICNV`, `format: InfiniteCanvas`, `formatVersion:
 - Embeds media (and link thumbs when possible) as base64 under `assets`
 - Runtime uses `icanvas-asset://…` refs expanded to `data:` URLs on load
 - Legacy plain `BoardSnapshot` JSON (`version: 1`) still opens for migration
-- Save path re-reads the file and checks **item count** before reporting success
+- Saves are written to a sibling temporary file, verified, then atomically renamed; the previous valid project remains as a `.bak` recovery copy
+- Open rejects oversized JSON before reading/parsing it; save verification checks document header, item/stack counts, and packed asset references
 
 Media paths that fail to pack keep the original `src` rather than dropping the item.
 
@@ -162,20 +163,22 @@ InfiniteCanvas2/
   src/
     App.tsx                 # Shell: keyboard, menus, close guard, launch-file open
     components/
-      InfiniteCanvas.tsx    # Pointer tools, crop, marquee, G/R/S, group scale
+      InfiniteCanvas.tsx    # Canvas rendering layer
       CanvasPath.tsx        # Breadcrumb
       StackFolder.tsx       # Nested folder chrome
       CloseSaveDialog.tsx   # Save / Discard / Cancel on exit
       Toolbar.tsx · WindowChrome.tsx · EmptyState.tsx · SaveToast.tsx
-      items/                # Media, text, note, link, scribble, embed views
+      items/                # Image/video/audio, text, note, link, scribble, embed views
       style/                # Style inspector for selection
     hooks/
       useKeyboard.ts        # Global shortcuts
       useCloseGuard.ts      # Unsaved close prompt
       useHistoryOnce.ts     # One history push per gesture
+      useInfiniteCanvasController.ts # Gesture state machine, crop, marquee, G/R/S
       useDesktopMenu.ts · useWindowDrag.ts
     store/
-      useCanvasStore.ts     # Zustand surface (canvas, stacks, layout, I/O)
+      useCanvasStore.ts     # Small Zustand composition root
+      actions/              # document / selection / viewport / stack / history actions
       types.ts              # HistoryEntry, StackEnterAnim, ItemPatchOptions
       itemPatch.ts          # Pure item-list patch helpers
       cloneDocument.ts      # Deep clone for clipboard / Alt-drag stacks
@@ -215,7 +218,7 @@ InfiniteCanvas2/
 | **Alt+S** | Restore media to natural pixel size |
 | **G / R / S** | Modal move / rotate / scale (LMB confirm · RMB cancel) |
 | **R + Shift** | While rotating: snap angle to 15° |
-| **Space** | Enter selected stack · play/pause selected video · else hold to pan |
+| **Space** | Enter selected stack · play/pause selected video or audio · else hold to pan |
 | **Escape** | Exit text/rename edit → leave nested stack → clear selection |
 | **Delete / Backspace** | Remove selection |
 | **Alt + drag** | Duplicate items or stack trees |
@@ -233,9 +236,9 @@ Current packaging is convenient for a personal media tool; review before wider d
 | Setting | Current | Risk |
 |---------|---------|------|
 | FS scope | User folders (`$HOME` and common paths) | Media on other volumes may need copy or wider scope |
-| CSP | `null` | No Content-Security-Policy on the WebView |
+| CSP | Restricted | Local app resources plus an explicit trusted frame allowlist for supported media/design providers |
 | Asset protocol | Broad local asset loading | Local file exposure depends on protocol config |
-| Embed sandbox | scripts + same-origin + popups | Arbitrary pasted embeds are relatively powerful |
+| Embed sandbox | Fixed reduced permissions; HTTPS trusted hosts only | Provider content still executes inside its sandboxed frame |
 | Link preview | Public-IP / host checks, redirect re-validation, size caps | Residual DNS rebinding TOCTOU |
 
 ## Known issues / residual risks
@@ -243,7 +246,7 @@ Current packaging is convenient for a personal media tool; review before wider d
 1. **FS scope** is limited to home and common user folders — media on other volumes may fail until copied or scope is expanded  
 2. Embed iframes still need `allow-scripts` + `allow-same-origin` for many players (sandbox is tighter but not zero-trust)  
 3. **Ctrl+G** does not yet nest selected stack folders as atomic bodies in one gesture  
-4. Product backlog (local): multi-scale boards, audio items, richer rotation UI  
+4. Product backlog (local): multi-scale boards and richer rotation UI
 
 ## License
 

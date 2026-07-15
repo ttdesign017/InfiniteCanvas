@@ -10,20 +10,11 @@
  * Chromium/WebView2 preserves iframe browsing context across same-document moves.
  */
 
-const EMBED_ALLOW =
-  'autoplay *; encrypted-media *; fullscreen *; clipboard-write *'
-/**
- * Sandbox for third-party embeds (podcasts etc.).
- * Keep scripts + same-origin so players can run; drop top-navigation and
- * popups-to-escape-sandbox so embeds cannot break out of the frame as easily.
- */
-const EMBED_SANDBOX = [
-  'allow-forms',
-  'allow-popups',
-  'allow-same-origin',
-  'allow-scripts',
-  'allow-presentation',
-].join(' ')
+import {
+  EMBED_ALLOW,
+  EMBED_SANDBOX,
+  isTrustedEmbedSrc,
+} from './embed'
 
 const cache = new Map<string, HTMLIFrameElement>()
 
@@ -54,7 +45,7 @@ function applyChrome(iframe: HTMLIFrameElement, title?: string) {
   iframe.title = title || 'Embed'
   iframe.setAttribute('allow', EMBED_ALLOW)
   iframe.setAttribute('sandbox', EMBED_SANDBOX)
-  iframe.setAttribute('referrerpolicy', 'no-referrer-when-downgrade')
+  iframe.setAttribute('referrerpolicy', 'no-referrer')
   iframe.setAttribute('loading', 'eager')
   // Layout fills the host; pointer-events toggled by the view
   iframe.style.cssText = [
@@ -77,21 +68,22 @@ export function attachEmbedIframe(
   title?: string,
 ): HTMLIFrameElement {
   let iframe = cache.get(id)
+  const safeSrc = isTrustedEmbedSrc(src) ? src : 'about:blank'
 
   if (!iframe) {
     iframe = document.createElement('iframe')
     iframe.dataset.embedId = id
-    iframe.dataset.embedSrc = src
+    iframe.dataset.embedSrc = safeSrc
     applyChrome(iframe, title)
     // Assign src only on create — re-setting the same src reloads in some engines
-    iframe.src = src
+    iframe.src = safeSrc
     cache.set(id, iframe)
   } else {
     applyChrome(iframe, title)
     // Src change (rare): must reload
-    if (iframe.dataset.embedSrc !== src) {
-      iframe.dataset.embedSrc = src
-      iframe.src = src
+    if (iframe.dataset.embedSrc !== safeSrc) {
+      iframe.dataset.embedSrc = safeSrc
+      iframe.src = safeSrc
     }
   }
 

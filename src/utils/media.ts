@@ -1,4 +1,4 @@
-import type { MediaItem } from '../types/canvas'
+import type { AudioItem, MediaItem } from '../types/canvas'
 import { isDesktop, localPathToSrc, readBinaryFile } from './desktop'
 import { trackBlobUrl } from './blobUrls'
 import { uid } from './id'
@@ -6,6 +6,12 @@ import { uid } from './id'
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg', 'avif', 'ico', 'heic'])
 const GIF_EXT = new Set(['gif'])
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'ogv', 'm4v'])
+const AUDIO_EXT = new Set([
+  'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'oga', 'opus',
+  'wma', 'aiff', 'aif',
+])
+
+export type MediaKind = 'image' | 'gif' | 'video' | 'audio'
 
 /** Max bytes to load into a blob for image/gif parity with browser File drops */
 const MAX_BLOB_EMBED_BYTES = 40 * 1024 * 1024
@@ -15,10 +21,11 @@ export function getExtension(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
-export function classifyMedia(fileName: string, mime?: string): 'image' | 'gif' | 'video' | null {
+export function classifyMedia(fileName: string, mime?: string): MediaKind | null {
   const ext = getExtension(fileName)
   if (GIF_EXT.has(ext) || mime === 'image/gif') return 'gif'
   if (VIDEO_EXT.has(ext) || mime?.startsWith('video/')) return 'video'
+  if (AUDIO_EXT.has(ext) || mime?.startsWith('audio/')) return 'audio'
   if (IMAGE_EXT.has(ext) || mime?.startsWith('image/')) return 'image'
   if (mime?.startsWith('video/')) return 'video'
   return null
@@ -28,7 +35,7 @@ export function pathToFileUrl(filePath: string): string {
   return localPathToSrc(filePath)
 }
 
-function mimeFromFileName(fileName: string, kind: 'image' | 'gif' | 'video'): string {
+function mimeFromFileName(fileName: string, kind: MediaKind): string {
   const ext = getExtension(fileName)
   const map: Record<string, string> = {
     png: 'image/png',
@@ -48,9 +55,21 @@ function mimeFromFileName(fileName: string, kind: 'image' | 'gif' | 'video'): st
     avi: 'video/x-msvideo',
     m4v: 'video/mp4',
     ogv: 'video/ogg',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    flac: 'audio/flac',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    opus: 'audio/opus',
+    wma: 'audio/x-ms-wma',
+    aiff: 'audio/aiff',
+    aif: 'audio/aiff',
   }
   if (map[ext]) return map[ext]
   if (kind === 'video') return 'video/mp4'
+  if (kind === 'audio') return 'audio/mpeg'
   if (kind === 'gif') return 'image/gif'
   return 'image/png'
 }
@@ -153,11 +172,25 @@ function fitSize(w: number, h: number): { width: number; height: number } {
 export async function createMediaItemFromSrc(
   src: string,
   fileName: string,
-  kind: 'image' | 'gif' | 'video',
+  kind: MediaKind,
   x: number,
   y: number,
   zIndex: number,
-): Promise<MediaItem> {
+): Promise<MediaItem | AudioItem> {
+  if (kind === 'audio') {
+    return {
+      id: uid(kind),
+      type: 'audio',
+      src,
+      fileName,
+      x,
+      y,
+      width: 324,
+      height: 84,
+      rotation: 0,
+      zIndex,
+    }
+  }
   const size =
     kind === 'video' ? await loadVideoSize(src).catch(() => ({ width: 640, height: 360 })) : await loadImageSize(src).catch(() => ({ width: 400, height: 300 }))
 
@@ -184,7 +217,7 @@ export async function createMediaFromFile(
   x: number,
   y: number,
   zIndex: number,
-): Promise<MediaItem | null> {
+): Promise<MediaItem | AudioItem | null> {
   const kind = classifyMedia(file.name, file.type)
   if (!kind) {
     // WebView2 can yield empty type + size-0 File stubs; fall back to path
@@ -217,7 +250,7 @@ export async function createMediaFromPath(
   x: number,
   y: number,
   zIndex: number,
-): Promise<MediaItem | null> {
+): Promise<MediaItem | AudioItem | null> {
   const normalized = fileUrlToPath(filePath) || filePath
   const fileName = normalized.split(/[/\\]/).pop() || 'media'
   const kind = classifyMedia(fileName)
@@ -225,7 +258,7 @@ export async function createMediaFromPath(
 
   // Images/gifs: read bytes → blob URL (same display path as browser File drops).
   // Videos: prefer asset protocol so large files are not fully buffered.
-  if (isDesktop() && kind !== 'video') {
+  if (isDesktop() && kind !== 'video' && kind !== 'audio') {
     try {
       const bytes = await readBinaryFile(normalized)
       if (bytes?.length && bytes.length <= MAX_BLOB_EMBED_BYTES) {

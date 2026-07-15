@@ -12,6 +12,8 @@ import { LinkCardView } from './LinkCardView'
 import { ScribbleView } from './ScribbleView'
 import { TextItemView } from './TextItemView'
 import { EmbedItemView } from './EmbedItemView'
+import { AudioItemView } from './AudioItemView'
+import { openExternal } from '../../utils/desktop'
 
 interface Props {
   item: CanvasItem
@@ -46,8 +48,11 @@ function CanvasItemViewInner({
     selected &&
     item.type !== 'scribble' &&
     item.type !== 'embed' &&
+    item.type !== 'audio' &&
     editingId !== item.id &&
     !stacked
+  const showAudioSelectionMarkers =
+    selected && item.type === 'audio' && !stacked
   const editable = !stacked && (item.type === 'text' || item.type === 'textcard')
 
   const isTextPreview =
@@ -119,9 +124,7 @@ function CanvasItemViewInner({
         }
         // Link cards: open URL (also handled in InfiniteCanvas detail>=2)
         if (item.type === 'link' && item.url?.trim()) {
-          void import('../../utils/desktop').then((d) =>
-            d.openExternal(item.url.trim()),
-          )
+          void openExternal(item.url.trim())
           return
         }
         if (!editable) return
@@ -135,6 +138,8 @@ function CanvasItemViewInner({
     >
       {item.type === 'image' || item.type === 'gif' || item.type === 'video' ? (
         <MediaItemView item={item} selected={selected} />
+      ) : item.type === 'audio' ? (
+        <AudioItemView item={item} selected={selected} />
       ) : item.type === 'text' ? (
         <TextItemView item={displayItem as typeof item & { type: 'text' }} selected={selected} />
       ) : item.type === 'textcard' ? (
@@ -193,6 +198,14 @@ function CanvasItemViewInner({
             data-handle="sw"
             onPointerDown={startResize('sw')}
           />
+        </>
+      )}
+      {showAudioSelectionMarkers && (
+        <>
+          <span className="audio-selection-handle nw" aria-hidden />
+          <span className="audio-selection-handle ne" aria-hidden />
+          <span className="audio-selection-handle se" aria-hidden />
+          <span className="audio-selection-handle sw" aria-hidden />
         </>
       )}
     </div>

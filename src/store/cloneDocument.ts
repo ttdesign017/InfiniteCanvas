@@ -19,6 +19,8 @@ export function cloneItemsForHistory(items: CanvasItem[]): CanvasItem[] {
           ...item,
           crop: item.crop ? { ...item.crop } : undefined,
         }
+      case 'audio':
+        return { ...item }
       case 'link':
         return { ...item }
       case 'scribble':

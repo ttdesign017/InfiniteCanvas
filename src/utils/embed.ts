@@ -13,6 +13,37 @@ export interface ParsedEmbed {
 const DEFAULT_W = 660
 const DEFAULT_H = 175
 
+const TRUSTED_EMBED_HOSTS = new Set([
+  'www.youtube.com',
+  'www.youtube-nocookie.com',
+  'player.vimeo.com',
+  'open.spotify.com',
+  'embed.podcasts.apple.com',
+  'embed.music.apple.com',
+  'w.soundcloud.com',
+  'www.figma.com',
+  'codepen.io',
+  'player.twitch.tv',
+])
+
+export const EMBED_ALLOW =
+  'autoplay; encrypted-media; fullscreen; picture-in-picture'
+
+export const EMBED_SANDBOX = [
+  'allow-same-origin',
+  'allow-scripts',
+  'allow-presentation',
+].join(' ')
+
+export function isTrustedEmbedSrc(src: string): boolean {
+  try {
+    const url = new URL(src)
+    return url.protocol === 'https:' && TRUSTED_EMBED_HOSTS.has(url.hostname)
+  } catch {
+    return false
+  }
+}
+
 /** Detect and parse an iframe embed from clipboard text */
 export function parseEmbedHtml(raw: string): ParsedEmbed | null {
   const text = raw.trim()
@@ -25,7 +56,7 @@ export function parseEmbedHtml(raw: string): ParsedEmbed | null {
     // Some snippets use srcdoc only — skip those for now
     null
   if (!src) return null
-  if (!/^https?:\/\//i.test(src)) return null
+  if (!isTrustedEmbedSrc(src)) return null
 
   const width = parseSize(matchAttr(text, 'width'), DEFAULT_W)
   const height = parseSize(matchAttr(text, 'height'), DEFAULT_H)
@@ -37,31 +68,6 @@ export function parseEmbedHtml(raw: string): ParsedEmbed | null {
   const w = Math.min(900, Math.max(200, styleW || maxW || width || DEFAULT_W))
   const h = Math.min(900, Math.max(80, styleH || height || DEFAULT_H))
 
-  // Prefer source allow/sandbox; defaults match Apple Podcast embeds (audio + play)
-  const allow =
-    matchAttr(text, 'allow') ||
-    'autoplay *; encrypted-media *; fullscreen *; clipboard-write *'
-  // Prefer source sandbox, but strip breakout flags if the paste included them
-  const rawSandbox =
-    matchAttr(text, 'sandbox') ||
-    [
-      'allow-forms',
-      'allow-popups',
-      'allow-same-origin',
-      'allow-scripts',
-      'allow-presentation',
-    ].join(' ')
-  const sandbox = rawSandbox
-    .split(/\s+/)
-    .filter(
-      (tok) =>
-        tok &&
-        tok !== 'allow-top-navigation' &&
-        tok !== 'allow-top-navigation-by-user-activation' &&
-        tok !== 'allow-popups-to-escape-sandbox' &&
-        tok !== 'allow-top-navigation-to-custom-protocols',
-    )
-    .join(' ')
   const title = matchAttr(text, 'title') || undefined
 
   const html = [
@@ -70,10 +76,10 @@ export function parseEmbedHtml(raw: string): ParsedEmbed | null {
     ` width="100%"`,
     ` height="100%"`,
     ` style="width:100%;height:100%;border:0;border-radius:10px;overflow:hidden;"`,
-    ` allow="${escapeAttr(allow)}"`,
-    ` sandbox="${escapeAttr(sandbox)}"`,
+    ` allow="${escapeAttr(EMBED_ALLOW)}"`,
+    ` sandbox="${escapeAttr(EMBED_SANDBOX)}"`,
     ` loading="eager"`,
-    ` referrerpolicy="no-referrer-when-downgrade"`,
+    ` referrerpolicy="no-referrer"`,
     title ? ` title="${escapeAttr(title)}"` : '',
     '></iframe>',
   ].join('')

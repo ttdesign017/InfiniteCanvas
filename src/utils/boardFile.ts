@@ -7,6 +7,7 @@
 
 import type {
   BoardSnapshot,
+  AudioItem,
   CanvasItem,
   MediaItem,
   StackRecord,
@@ -21,10 +22,10 @@ export const ICANVAS_EXT = 'icanvas'
 /** Current on-disk format version */
 export const ICANVAS_FORMAT_VERSION = 3
 /**
- * Hard cap on raw JSON text size (~512 MiB). Prevents accidental / malicious
+ * Hard cap on raw JSON text size (~192 MiB). Prevents accidental / malicious
  * multi-GB files from OOMing the WebView during JSON.parse.
  */
-export const ICANVAS_MAX_TEXT_BYTES = 512 * 1024 * 1024
+export const ICANVAS_MAX_TEXT_BYTES = 192 * 1024 * 1024
 
 export interface ICanvasAsset {
   mime: string
@@ -69,6 +70,17 @@ function mimeFromName(name?: string): string {
     avi: 'video/x-msvideo',
     m4v: 'video/mp4',
     ogv: 'video/ogg',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    flac: 'audio/flac',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    opus: 'audio/opus',
+    wma: 'audio/x-ms-wma',
+    aiff: 'audio/aiff',
+    aif: 'audio/aiff',
   }
   return map[ext] || 'application/octet-stream'
 }
@@ -175,8 +187,13 @@ async function loadSrcAsAsset(
   return null
 }
 
-function isMediaItem(item: CanvasItem): item is MediaItem {
-  return item.type === 'image' || item.type === 'gif' || item.type === 'video'
+function isMediaItem(item: CanvasItem): item is MediaItem | AudioItem {
+  return (
+    item.type === 'image' ||
+    item.type === 'gif' ||
+    item.type === 'video' ||
+    item.type === 'audio'
+  )
 }
 
 /**
@@ -391,7 +408,8 @@ export function assertICanvasIntegrity(
     if (
       item.type === 'image' ||
       item.type === 'gif' ||
-      item.type === 'video'
+      item.type === 'video' ||
+      item.type === 'audio'
     ) {
       const src = item.src
       if (typeof src === 'string' && src.startsWith(ASSET_PREFIX)) {

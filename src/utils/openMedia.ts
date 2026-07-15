@@ -44,7 +44,7 @@ export async function openMediaDialog() {
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-  input.accept = 'image/*,video/*,.gif,.mp4,.webm,.mov,.mkv,.avi'
+  input.accept = 'image/*,video/*,audio/*,.gif,.mp4,.webm,.mov,.mkv,.avi,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus'
   input.onchange = async () => {
     const files = [...(input.files || [])]
     if (!files.length) return
@@ -83,7 +83,8 @@ export function collectClipboardMedia(data: DataTransfer | null): File[] {
     const isMedia =
       f.type.startsWith('image/') ||
       f.type.startsWith('video/') ||
-      /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|m4v|ogv)$/i.test(
+      f.type.startsWith('audio/') ||
+      /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|m4v|ogv|mp3|wav|m4a|aac|flac|ogg|oga|opus|wma|aiff?|aif)$/i.test(
         f.name || anyFile.path || '',
       )
     if (!isMedia) return

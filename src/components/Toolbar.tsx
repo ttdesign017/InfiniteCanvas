@@ -152,6 +152,8 @@ export function Toolbar() {
               type="button"
               className={`tool-btn ${tool === t.id ? 'active' : ''}`}
               title={`${t.label} (${t.hint})`}
+              aria-label={`${t.label} tool (${t.hint})`}
+              aria-pressed={tool === t.id}
               onClick={() => setTool(t.id)}
             >
               <Icon name={t.icon} />
@@ -171,6 +173,8 @@ export function Toolbar() {
             type="button"
             className={`tool-btn ${snapEnabled ? 'active' : ''}`}
             onClick={toggleSnap}
+            aria-label={snapEnabled ? 'Disable snapping' : 'Enable snapping'}
+            aria-pressed={snapEnabled}
             title={snapEnabled ? 'Snap on — click to disable' : 'Snap off — click to enable'}
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -183,6 +187,7 @@ export function Toolbar() {
             className="tool-btn"
             disabled={!hasMulti}
             onClick={quickStack}
+            aria-label="Stack selection"
             title="Stack (Ctrl+G)"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -196,6 +201,7 @@ export function Toolbar() {
             className="tool-btn"
             disabled={!hasMulti}
             onClick={() => smoothLayout()}
+            aria-label="Unstack and arrange selection"
             title="Unstack / Layout (Alt+G)"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -210,6 +216,7 @@ export function Toolbar() {
             className="tool-btn"
             disabled={!hasMulti}
             onClick={rowLayout}
+            aria-label="Arrange selection in a row"
             title="Row layout"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -232,6 +239,7 @@ export function Toolbar() {
                 key={b.mode}
                 type="button"
                 className="tool-btn"
+                aria-label={b.title}
                 onClick={(e) => {
                   e.stopPropagation()
                   e.preventDefault()
@@ -257,6 +265,7 @@ export function Toolbar() {
               : 'Immersive mode (Ctrl+F)'
           }
           aria-pressed={immersiveMode}
+          aria-label={immersiveMode ? 'Exit immersive mode' : 'Enter immersive mode'}
           onClick={() => toggleImmersiveMode()}
         >
           {immersiveMode ? (

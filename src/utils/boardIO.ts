@@ -6,12 +6,42 @@ import { useCanvasStore } from '../store/useCanvasStore'
 import * as desktop from './desktop'
 import {
   ICANVAS_EXT,
+  ICANVAS_MAX_TEXT_BYTES,
   assertICanvasIntegrity,
   isICanvasDocument,
   packICanvasDocument,
   parseICanvasFile,
   serializeICanvas,
 } from './boardFile'
+
+function verifySerializedBoard(
+  written: string,
+  snapshot: ReturnType<ReturnType<typeof useCanvasStore.getState>['exportBoard']>,
+): void {
+  let writtenJson: unknown
+  try {
+    writtenJson = JSON.parse(written)
+  } catch {
+    throw new Error('Save verification failed: written file is not valid JSON')
+  }
+  if (isICanvasDocument(writtenJson)) {
+    assertICanvasIntegrity(writtenJson, {
+      itemCount: snapshot.items.length,
+      stackCount: snapshot.stacks?.length ?? 0,
+    })
+    return
+  }
+
+  const verified = parseICanvasFile(written)
+  if (verified.items.length !== snapshot.items.length) {
+    throw new Error(
+      `Save verification failed: expected ${snapshot.items.length} items, found ${verified.items.length}`,
+    )
+  }
+  if ((verified.stacks?.length ?? 0) !== (snapshot.stacks?.length ?? 0)) {
+    throw new Error('Save verification failed: stack count mismatch after write')
+  }
+}
 
 function ensureExt(path: string): string {
   const lower = path.toLowerCase()
@@ -54,35 +84,9 @@ export async function saveCurrentBoard(options?: {
       stackCount: snapshot.stacks?.length ?? 0,
     })
     const text = serializeICanvas(doc)
-    await desktop.writeText(path, text)
-    // Verify the persisted document before reporting success. This catches a
-    // truncated/empty portable write immediately instead of failing on reopen.
-    const written = await desktop.readText(path)
-    let writtenJson: unknown
-    try {
-      writtenJson = JSON.parse(written)
-    } catch {
-      throw new Error('Save verification failed: written file is not valid JSON')
-    }
-    if (isICanvasDocument(writtenJson)) {
-      assertICanvasIntegrity(writtenJson, {
-        itemCount: snapshot.items.length,
-        stackCount: snapshot.stacks?.length ?? 0,
-      })
-    } else {
-      // Legacy plain snapshot path (should not happen for new packs)
-      const verified = parseICanvasFile(written)
-      if (verified.items.length !== snapshot.items.length) {
-        throw new Error(
-          `Save verification failed: expected ${snapshot.items.length} items, found ${verified.items.length}`,
-        )
-      }
-      if ((verified.stacks?.length ?? 0) !== (snapshot.stacks?.length ?? 0)) {
-        throw new Error(
-          `Save verification failed: stack count mismatch after write`,
-        )
-      }
-    }
+    await desktop.writeTextAtomic(path, text, (written) =>
+      verifySerializedBoard(written, snapshot),
+    )
     store.setBoardFilePath(path)
     const live = useCanvasStore.getState()
     const unchangedSinceSnapshot =
@@ -112,6 +116,12 @@ export async function saveCurrentBoard(options?: {
 export async function openBoardFromPath(path: string): Promise<boolean> {
   const store = useCanvasStore.getState()
   try {
+    const size = await desktop.fileSize(path)
+    if (size !== null && size > ICANVAS_MAX_TEXT_BYTES) {
+      throw new Error(
+        `Project is too large to open safely (${Math.ceil(size / (1024 * 1024))} MB; limit ${Math.floor(ICANVAS_MAX_TEXT_BYTES / (1024 * 1024))} MB)`,
+      )
+    }
     const text = await desktop.readText(path)
     const board = parseICanvasFile(text)
     store.importBoard(board)

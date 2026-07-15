@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CanvasItem } from '../types/canvas'
 import { useCanvasStore } from '../store/useCanvasStore'
+import { stackLabelName } from '../utils/stacks'
 
 interface Props {
   groupId: string
@@ -41,8 +42,9 @@ export function StackFolder({
   const setEditingStackGroupId = useCanvasStore((s) => s.setEditingStackGroupId)
   const commitStackName = useCanvasStore((s) => s.commitStackName)
 
-  const stackName =
-    name || members.find((m) => m.stackName)?.stackName || ''
+  const stackName = stackLabelName(
+    name || members.find((m) => m.stackName)?.stackName,
+  )
   const editing = editingStackGroupId === groupId
   /** Expanded tab only when named or actively typing a name */
   const expanded = editing || stackName.trim().length > 0

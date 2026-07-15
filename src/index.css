@@ -854,6 +854,14 @@ body,
   box-shadow: none !important;
 }
 
+.tool-btn:focus-visible,
+.win-btn:focus-visible,
+.close-save-btn:focus-visible,
+.immersive-toggle:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+
 .workspace:focus,
 .workspace:focus-visible,
 .app-shell:focus,
@@ -960,7 +968,8 @@ body,
   box-shadow: none !important;
 }
 .canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-handle,
-.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-edge {
+.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-edge,
+.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .audio-selection-handle {
   display: none !important;
 }
 .canvas-surface.is-group-select .stack-folder.is-selected .stack-folder-body {
@@ -1096,12 +1105,12 @@ body,
 
 /* Empty name — original small tab */
 .stack-folder-tab.is-compact {
-  width: 28%;
-  min-width: 48px;
-  max-width: 110px;
-  height: 14px;
+  width: 24%;
+  min-width: 42px;
+  max-width: 92px;
+  height: 12px;
   padding: 0;
-  border-radius: 8px 8px 0 0;
+  border-radius: 7px 7px 0 0;
   cursor: grab;
 }
 
@@ -1198,7 +1207,7 @@ body,
 
 /* Compact tab → body closer to top (original geometry) */
 .stack-folder.is-compact .stack-folder-body {
-  top: 12px;
+  top: 10px;
 }
 
 /* Expanded name tab → body tucks 2px over the taller tab */
@@ -1290,6 +1299,24 @@ body,
 .resize-handle.ne { right: -5px; top: -5px; cursor: nesw-resize; }
 .resize-handle.sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
 .resize-handle.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+
+/* Audio selection is visual only: show familiar card corners without resize. */
+.audio-selection-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border: 1.5px solid var(--accent);
+  border-radius: 1px;
+  z-index: 50;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  pointer-events: none !important;
+}
+
+.audio-selection-handle.nw { left: -5px; top: -5px; }
+.audio-selection-handle.ne { right: -5px; top: -5px; }
+.audio-selection-handle.sw { left: -5px; bottom: -5px; }
+.audio-selection-handle.se { right: -5px; bottom: -5px; }
 
 /* Edge hit zones */
 .resize-edge {
@@ -1564,6 +1591,186 @@ body,
   color: rgba(255, 255, 255, 0.92);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   font-variant-numeric: tabular-nums;
+}
+
+/* Audio island — compact at rest, playback controls on hover/focus */
+
+.canvas-item.type-audio {
+  overflow: visible;
+}
+
+.audio-island-shell {
+  --audio-accent: #68727d;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  color: var(--text);
+  isolation: isolate;
+}
+
+.audio-island-shell audio {
+  display: none;
+}
+
+.audio-island-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+}
+
+.audio-island-shell.is-selected .audio-island-surface {
+  border-color: rgba(13, 153, 255, 0.45);
+}
+
+.audio-island-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 15px;
+  pointer-events: auto;
+}
+
+.audio-play-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #59636e;
+  background: #f5f6f7;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  transition:
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 180ms ease,
+    border-color 180ms ease;
+}
+
+.audio-play-button:hover {
+  transform: scale(1.055);
+  background: #edf0f2;
+  border-color: rgba(15, 23, 42, 0.16);
+}
+
+.audio-play-button:active {
+  transform: scale(0.95);
+}
+
+.audio-play-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.audio-play-button:disabled {
+  color: var(--text-faint);
+  background: #f5f5f5;
+  box-shadow: none;
+}
+
+.audio-play-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.audio-island-content {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.audio-island-meta,
+.audio-island-timeline {
+  display: flex;
+  align-items: center;
+}
+
+.audio-island-meta {
+  min-width: 0;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.audio-island-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 560;
+  color: #535d68;
+  letter-spacing: -0.01em;
+}
+
+.audio-island-format {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.audio-island-timeline {
+  gap: 7px;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-island-timeline input[type='range'] {
+  min-width: 0;
+  flex: 1;
+  height: 14px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.audio-island-timeline input[type='range']::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: #e4e7eb;
+}
+
+.audio-island-timeline input[type='range']::-webkit-slider-thumb {
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px;
+  appearance: none;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: var(--audio-accent);
+  box-shadow: 0 0 0 1px rgba(104, 114, 125, 0.25);
+  transition: transform 140ms ease;
+}
+
+.audio-island-timeline input[type='range']:hover::-webkit-slider-thumb,
+.audio-island-timeline input[type='range']:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.22);
+}
+
+.audio-island-timeline input[type='range']:focus-visible {
+  outline: 1px solid rgba(13, 153, 255, 0.72);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audio-play-button {
+    transition-duration: 0.01ms;
+  }
 }
 
 /* Notion-style cards */

@@ -19,13 +19,14 @@ import {
   fileSystemPathFromFile,
   fileUrlToPath,
   getExtension,
+  type MediaKind,
 } from './media'
 import { normalizeUrl } from './linkMeta'
 import { collectClipboardMedia } from './openMedia'
 import { trackBlobUrl } from './blobUrls'
 
 const MEDIA_EXT_RE =
-  /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|ogv|m4v)(\?|#|$)/i
+  /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|ogv|m4v|mp3|wav|m4a|aac|flac|ogg|oga|opus|wma|aiff?|aif)(\?|#|$)/i
 
 export function looksLikeUrl(text: string): boolean {
   const t = text.trim()
@@ -46,7 +47,7 @@ export function looksLikeMediaFilePath(text: string): boolean {
   return false
 }
 
-export function mediaKindFromUrl(url: string): 'image' | 'gif' | 'video' | null {
+export function mediaKindFromUrl(url: string): MediaKind | null {
   try {
     const path = new URL(url).pathname
     const kind = classifyMedia(path)
@@ -104,14 +105,14 @@ function extractAttr(tag: string, attr: string): string | null {
 
 /** Pull image/video/src URLs and anchor hrefs from dropped HTML fragments */
 function parseHtmlDrop(html: string): {
-  mediaUrls: Array<{ url: string; kind: 'image' | 'gif' | 'video'; name?: string }>
+  mediaUrls: Array<{ url: string; kind: MediaKind; name?: string }>
   hrefs: string[]
 } {
-  const mediaUrls: Array<{ url: string; kind: 'image' | 'gif' | 'video'; name?: string }> = []
+  const mediaUrls: Array<{ url: string; kind: MediaKind; name?: string }> = []
   const hrefs: string[] = []
   const seen = new Set<string>()
 
-  const addMedia = (url: string | null, fallback: 'image' | 'gif' | 'video') => {
+  const addMedia = (url: string | null, fallback: MediaKind) => {
     if (!url) return
     const absolute = absolutize(url)
     if (!absolute || seen.has(absolute)) return
@@ -136,11 +137,25 @@ function parseHtmlDrop(html: string): {
     )
   }
 
-  // <video ...> and <source ...>
-  for (const m of html.matchAll(/<(?:video|source)\b[^>]*>/gi)) {
+  // <video ...>
+  for (const m of html.matchAll(/<video\b[^>]*>/gi)) {
     const tag = m[0]
     const src = extractAttr(tag, 'src')
     if (src) addMedia(src, 'video')
+  }
+
+  // <audio ...> and typed <source ...>
+  for (const m of html.matchAll(/<audio\b[^>]*>/gi)) {
+    const tag = m[0]
+    const src = extractAttr(tag, 'src')
+    if (src) addMedia(src, 'audio')
+  }
+  for (const m of html.matchAll(/<source\b[^>]*>/gi)) {
+    const tag = m[0]
+    const src = extractAttr(tag, 'src')
+    if (!src) continue
+    const mime = extractAttr(tag, 'type') || undefined
+    addMedia(src, classifyMedia(src, mime) || (mime?.startsWith('audio/') ? 'audio' : 'video'))
   }
 
   // <a href>
@@ -179,7 +194,7 @@ export type DropImportPayload =
   | { type: 'media-paths'; paths: string[] }
   | {
       type: 'media-urls'
-      urls: Array<{ url: string; kind: 'image' | 'gif' | 'video'; name?: string }>
+      urls: Array<{ url: string; kind: MediaKind; name?: string }>
     }
   | { type: 'link'; url: string }
   | { type: 'text'; text: string }
@@ -258,6 +273,7 @@ export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
         classifyMedia(d.name, d.mime) ||
         mediaKindFromUrl(d.url) ||
         (d.mime.startsWith('video/') ? ('video' as const) : null) ||
+        (d.mime.startsWith('audio/') ? ('audio' as const) : null) ||
         (d.mime.startsWith('image/') ? (d.mime === 'image/gif' ? ('gif' as const) : ('image' as const)) : null)
       if (!kind) return null
       return { url: d.url, kind, name: d.name || fileNameFromUrl(d.url) }
@@ -324,7 +340,7 @@ export function parseDropDataTransfer(dt: DataTransfer): DropImportPayload {
 }
 
 function dedupeMediaUrls(
-  list: Array<{ url: string; kind: 'image' | 'gif' | 'video'; name?: string }>,
+  list: Array<{ url: string; kind: MediaKind; name?: string }>,
 ) {
   const seen = new Set<string>()
   const out: typeof list = []
@@ -339,10 +355,10 @@ function dedupeMediaUrls(
 /** Download remote media for display (PureRef-style embed). */
 async function resolveRemoteMediaSrc(
   url: string,
-  kind: 'image' | 'gif' | 'video',
+  kind: MediaKind,
 ): Promise<string> {
   // Videos: prefer direct URL (data URLs are too large); try blob fetch first
-  if (kind === 'video') {
+  if (kind === 'video' || kind === 'audio') {
     try {
       const res = await fetch(url, { mode: 'cors' })
       if (res.ok) {
@@ -455,7 +471,7 @@ export async function importDropAt(
         const name =
           m.name ||
           fileNameFromUrl(m.url) ||
-          `dropped.${getExtension(m.url) || (m.kind === 'video' ? 'mp4' : 'png')}`
+          `dropped.${getExtension(m.url) || (m.kind === 'video' ? 'mp4' : m.kind === 'audio' ? 'mp3' : 'png')}`
         const item = await createMediaItemFromSrc(
           src,
           name,

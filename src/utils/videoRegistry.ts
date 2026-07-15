@@ -2,36 +2,41 @@ type ToggleFn = () => void
 
 const toggles = new Map<string, ToggleFn>()
 
-export function registerVideoToggle(id: string, toggle: ToggleFn) {
+export function registerPlaybackToggle(id: string, toggle: ToggleFn) {
   toggles.set(id, toggle)
   return () => {
     if (toggles.get(id) === toggle) toggles.delete(id)
   }
 }
 
-function toggleDomVideo(id: string): boolean {
+function toggleDomMedia(id: string): boolean {
   const el = document.querySelector(
-    `video[data-video-id="${CSS.escape(id)}"]`,
-  ) as HTMLVideoElement | null
+    `[data-playback-id="${CSS.escape(id)}"]`,
+  ) as HTMLMediaElement | null
   if (!el) return false
   if (el.paused) void el.play()
   else el.pause()
   return true
 }
 
-export function toggleVideo(id: string): boolean {
+export function togglePlayback(id: string): boolean {
   const fn = toggles.get(id)
   if (fn) {
     fn()
     return true
   }
-  return toggleDomVideo(id)
+  return toggleDomMedia(id)
 }
 
-export function toggleVideos(ids: string[]): boolean {
+export function togglePlaybacks(ids: string[]): boolean {
   let any = false
   for (const id of ids) {
-    if (toggleVideo(id)) any = true
+    if (togglePlayback(id)) any = true
   }
   return any
 }
+
+/** Backwards-compatible names for the existing video player. */
+export const registerVideoToggle = registerPlaybackToggle
+export const toggleVideo = togglePlayback
+export const toggleVideos = togglePlaybacks

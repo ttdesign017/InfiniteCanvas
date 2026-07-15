@@ -111,6 +111,12 @@ export function stackDisplayName(
   return n || fallback
 }
 
+/** Auto-generated legacy names are treated as unnamed in visual stack chrome. */
+export function stackLabelName(name: string | undefined): string {
+  const trimmed = (name || '').trim()
+  return /^untitled(?:_\d+)?$/i.test(trimmed) ? '' : trimmed
+}
+
 /**
  * Unique default stack name: first `Untitled`, then `Untitled_1`, `Untitled_2`, …
  * Case-insensitive against existing names.

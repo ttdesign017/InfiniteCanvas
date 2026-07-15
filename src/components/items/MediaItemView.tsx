@@ -118,7 +118,7 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     >
       <video
         ref={videoRef}
-        data-video-id={item.id}
+        data-playback-id={item.id}
         src={item.src}
         loop
         playsInline

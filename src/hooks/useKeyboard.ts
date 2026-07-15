@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
-import { toggleVideos } from '../utils/videoRegistry'
+import { togglePlaybacks } from '../utils/videoRegistry'
 import { normalizeUrl } from '../utils/linkMeta'
 import { looksLikeMediaFilePath, looksLikeUrl } from '../utils/dropImport'
 import { parseEmbedHtml } from '../utils/embed'
@@ -13,6 +13,7 @@ import {
 } from '../utils/openMedia'
 import { createMediaFromPath, fileUrlToPath } from '../utils/media'
 import * as desktop from '../utils/desktop'
+import { requestAppClose } from './useCloseGuard'
 
 /** Only real text editing — NOT color/range/checkbox inputs */
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -59,12 +60,12 @@ export function useKeyboard() {
           store.enterStack(store.selectedStackIds[0])
           return
         }
-        const videoIds = store
+        const playableIds = store
           .getSelectedItems()
-          .filter((i) => i.type === 'video')
+          .filter((i) => i.type === 'video' || i.type === 'audio')
           .map((i) => i.id)
-        if (videoIds.length > 0) {
-          toggleVideos(videoIds)
+        if (playableIds.length > 0) {
+          togglePlaybacks(playableIds)
           return
         }
         store.setSpaceHeld(true)
@@ -172,7 +173,7 @@ export function useKeyboard() {
       if (mod && !e.altKey && !e.shiftKey && key === 'q') {
         e.preventDefault()
         if (desktop.isDesktop()) {
-          void import('./useCloseGuard').then((m) => m.requestAppClose())
+          void requestAppClose()
         }
         return
       }
@@ -238,7 +239,7 @@ export function useKeyboard() {
         }
       }
 
-      // Pack / 靠拢: Ctrl+Arrow (closes gaps toward that side — NOT the same as align buttons)
+      // Pack: Ctrl+Arrow (closes gaps toward that side — NOT the same as align buttons)
       if (mod && !e.altKey && !e.shiftKey) {
         const code = e.code
         if (

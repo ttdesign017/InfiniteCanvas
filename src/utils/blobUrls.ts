@@ -38,7 +38,7 @@ export function collectBlobUrlsFromItems(items: Blobish[]): Set<string> {
   const out = new Set<string>()
   for (const item of items) {
     if (
-      (item.type === 'image' || item.type === 'gif' || item.type === 'video') &&
+      (item.type === 'image' || item.type === 'gif' || item.type === 'video' || item.type === 'audio') &&
       item.src?.startsWith('blob:')
     ) {
       out.add(item.src)
@@ -53,7 +53,7 @@ export function collectBlobUrlsFromItems(items: Blobish[]): Set<string> {
 
 /** Revoke media / link image blobs on a canvas item (best-effort). */
 export function revokeItemBlobUrls(item: Blobish): void {
-  if (item.type === 'image' || item.type === 'gif' || item.type === 'video') {
+  if (item.type === 'image' || item.type === 'gif' || item.type === 'video' || item.type === 'audio') {
     revokeBlobUrl(item.src)
   }
   if (item.type === 'link') {
@@ -74,7 +74,7 @@ export function revokeUnreferencedBlobs(
   for (const item of candidates) {
     const urls: string[] = []
     if (
-      (item.type === 'image' || item.type === 'gif' || item.type === 'video') &&
+      (item.type === 'image' || item.type === 'gif' || item.type === 'video' || item.type === 'audio') &&
       item.src?.startsWith('blob:')
     ) {
       urls.push(item.src)

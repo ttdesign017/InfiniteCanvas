@@ -23,6 +23,7 @@ export function WindowChrome() {
           type="button"
           className="win-btn"
           title="Minimize"
+          aria-label="Minimize window"
           onClick={() => void desktop.windowMinimize()}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -33,6 +34,7 @@ export function WindowChrome() {
           type="button"
           className="win-btn"
           title={maximized ? 'Restore' : 'Maximize'}
+          aria-label={maximized ? 'Restore window' : 'Maximize window'}
           onClick={async () => {
             const next = await desktop.windowToggleMaximize()
             setMaximized(next)
@@ -65,6 +67,7 @@ export function WindowChrome() {
           type="button"
           className="win-btn win-btn-close"
           title="Close"
+          aria-label="Close window"
           onClick={() => void requestAppClose()}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">

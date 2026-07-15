@@ -11,6 +11,7 @@ export type ItemType =
   | 'image'
   | 'gif'
   | 'video'
+  | 'audio'
   | 'text'
   | 'textcard'
   | 'link'
@@ -127,6 +128,13 @@ export interface MediaItem extends BaseItem {
   clipPolygon?: Point[]
 }
 
+/** Audio reference rendered as a compact, expanding playback island. */
+export interface AudioItem extends BaseItem {
+  type: 'audio'
+  src: string
+  fileName?: string
+}
+
 /** Free-floating text (no card chrome) */
 export interface TextItem extends BaseItem {
   type: 'text'
@@ -185,6 +193,7 @@ export interface EmbedItem extends BaseItem {
 
 export type CanvasItem =
   | MediaItem
+  | AudioItem
   | TextItem
   | TextCardItem
   | LinkCardItem

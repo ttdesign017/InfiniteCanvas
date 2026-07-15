@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; media-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https: http:; frame-src https: http: data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; media-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost https: http:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https: http:; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://open.spotify.com https://embed.podcasts.apple.com https://embed.music.apple.com https://w.soundcloud.com https://www.figma.com https://codepen.io https://player.twitch.tv; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": [
