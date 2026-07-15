@@ -871,6 +871,16 @@ body,
   cursor: crosshair !important;
 }
 
+/* Hold C: let crop marquee start anywhere — items / group chrome don't steal drag */
+.canvas-surface.crop-mode .canvas-item:not(.is-stacked),
+.canvas-surface.crop-mode .canvas-item:not(.is-stacked) *,
+.canvas-surface.crop-mode .group-selection-box,
+.canvas-surface.crop-mode .group-selection-box *,
+.canvas-surface.crop-mode .stack-folder,
+.canvas-surface.crop-mode .stack-folder * {
+  pointer-events: none !important;
+}
+
 .canvas-world {
   position: absolute;
   left: 0;
@@ -942,6 +952,106 @@ body,
   outline: 1px solid rgba(13, 153, 255, 0.75);
   outline-offset: 0;
   box-shadow: none;
+}
+
+/* Multi-select (2+ bodies): hide per-item / per-stack chrome — use group bbox */
+.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-handle,
+.canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-edge {
+  display: none !important;
+}
+.canvas-surface.is-group-select .stack-folder.is-selected .stack-folder-body {
+  outline: none;
+  box-shadow: none;
+}
+.canvas-surface.is-group-select .notion-card.is-selected,
+.canvas-surface.is-group-select .bookmark-card.is-selected,
+.canvas-surface.is-group-select .embed-item.is-selected,
+.canvas-surface.is-group-select .scribble-item.is-selected {
+  outline: none;
+  box-shadow: none;
+}
+
+.group-selection-box {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent);
+  background: rgba(13, 153, 255, 0.04);
+  pointer-events: auto;
+  cursor: move;
+  transform-origin: top left;
+}
+.group-scale-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  pointer-events: auto;
+  z-index: 3;
+}
+.group-scale-handle.handle-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.group-scale-handle.handle-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.group-scale-handle.handle-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.group-scale-handle.handle-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+/* Edge hit strips (same idea as single-item .resize-edge) */
+.group-scale-edge {
+  position: absolute;
+  pointer-events: auto;
+  z-index: 2;
+  background: transparent;
+}
+.group-scale-edge.edge-n {
+  left: 8px;
+  right: 8px;
+  top: -4px;
+  height: 8px;
+  cursor: ns-resize;
+}
+.group-scale-edge.edge-s {
+  left: 8px;
+  right: 8px;
+  bottom: -4px;
+  height: 8px;
+  cursor: ns-resize;
+}
+.group-scale-edge.edge-e {
+  top: 8px;
+  bottom: 8px;
+  right: -4px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.group-scale-edge.edge-w {
+  top: 8px;
+  bottom: 8px;
+  left: -4px;
+  width: 8px;
+  cursor: ew-resize;
 }
 
 /* While CSS-transform scaling text — GPU path, no layout thrash */
@@ -1273,14 +1383,24 @@ body,
   inset: 0;
   overflow: hidden;
 }
+/* Non-rect crop (rotated marquee ∩ image) */
+.media-item.has-poly-clip .media-crop-viewport {
+  /* clip-path set inline; keep overflow hidden as fallback */
+  overflow: hidden;
+}
 
 .media-content {
   width: 100%;
   height: 100%;
   object-fit: fill;
   display: block;
-  background: #f0f0f0;
+  /* Transparent so polygon / PNG alpha crops never show a white pad */
+  background: transparent;
   pointer-events: none;
+}
+.media-item,
+.media-crop-viewport {
+  background: transparent;
 }
 
 .media-badge {
@@ -2093,6 +2213,14 @@ body,
   line-height: 1;
 }
 
+.save-toast.is-hint {
+  max-width: min(92vw, 420px);
+  border-radius: 12px;
+  font-weight: 500;
+  text-align: center;
+  line-height: 1.35;
+}
+
 @keyframes save-toast-in {
   from {
     opacity: 0;
@@ -2102,6 +2230,30 @@ body,
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+}
+
+/* Blender-style G/R/S modal transform HUD */
+.modal-xform-hud {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(30, 30, 30, 0.88);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+}
+
+.canvas-surface.modal-xform {
+  /* Prefer modal transform over window right-drag */
+  user-select: none;
 }
 
 /* Empty state */

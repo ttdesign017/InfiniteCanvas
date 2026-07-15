@@ -1,5 +1,6 @@
 import type { CanvasItem, StackRecord } from '../types/canvas'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
+import { itemWorldAABB } from './geometry'
 import {
   stackCollapsedSnapBounds,
   stackFolderBodyBounds,
@@ -101,12 +102,14 @@ export function collectAlignBodies(
     }
 
     seen.add(id)
+    // Use visual rotated AABB so align edges match what you see
+    const box = itemWorldAABB(item)
     bodies.push({
       ids: [id],
-      x: item.x,
-      y: item.y,
-      width: item.width,
-      height: item.height,
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
     })
   }
 

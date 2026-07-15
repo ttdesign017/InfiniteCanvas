@@ -1,5 +1,6 @@
 import type { CanvasItem, StackRecord } from '../types/canvas'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
+import { itemWorldAABB } from './geometry'
 import {
   stackCollapsedSnapBounds,
   stackFolderBodyBounds,
@@ -85,12 +86,8 @@ export function collectSnapBodies(
       continue
     }
 
-    bodies.push({
-      x: item.x,
-      y: item.y,
-      width: item.width,
-      height: item.height,
-    })
+    // Rotation-aware visual AABB (matches canvas transform-origin: center)
+    bodies.push(itemWorldAABB(item))
   }
 
   return bodies
@@ -130,7 +127,8 @@ export function movingSnapBounds(
     if (b) rects.push(b)
   }
   for (const f of free) {
-    rects.push({ x: f.x, y: f.y, width: f.width, height: f.height })
+    // Group snap uses visual AABB of each free body, then unions them
+    rects.push(itemWorldAABB(f))
   }
   for (const st of movingStacks) {
     rects.push(stackRecordBodyBounds(st))
@@ -152,6 +150,7 @@ export function movingSnapBounds(
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
 }
 
+/** Target bodies: edges + midlines (richer snap destinations). */
 function edgesFromBodies(bodies: RectLike[]) {
   const targetsV: number[] = []
   const targetsH: number[] = []
@@ -160,6 +159,17 @@ function edgesFromBodies(bodies: RectLike[]) {
     targetsH.push(b.y, b.y + b.height / 2, b.y + b.height)
   }
   return { targetsV, targetsH }
+}
+
+/**
+ * Moving selection: only the **group bounding-box four edges**
+ * (left / right / top / bottom) — never per-item edges inside the selection.
+ */
+function selectionBBoxEdges(bounds: RectLike) {
+  return {
+    selV: [bounds.x, bounds.x + bounds.width],
+    selH: [bounds.y, bounds.y + bounds.height],
+  }
 }
 
 export function guidesEqual(a: SnapGuide[], b: SnapGuide[]): boolean {
@@ -173,7 +183,9 @@ export function guidesEqual(a: SnapGuide[], b: SnapGuide[]): boolean {
 }
 
 /**
- * Snap a selection as a group to other bodies' edges and centers.
+ * Snap a selection as **one** group bounding box to other bodies.
+ * - Moving side: only bbox four edges (not individual selected items / midlines)
+ * - Targets: other free items + stacks on the canvas (excluded selection)
  */
 export function computeSnapDelta(
   moving: CanvasItem[],
@@ -195,6 +207,7 @@ export function computeSnapDelta(
   }
 
   const moveIds = new Set(moving.map((i) => i.id))
+  // Also exclude stack tree leaves if stacks are moving (already via excludeStackIds on folder)
   const bounds = movingSnapBounds(moving, movingStacks)
   if (!bounds) return { dx: 0, dy: 0, guides: [] }
 
@@ -206,9 +219,8 @@ export function computeSnapDelta(
   if (bodies.length === 0) return { dx: 0, dy: 0, guides: [] }
 
   const { targetsV, targetsH } = edgesFromBodies(bodies)
-
-  const selV = [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width]
-  const selH = [bounds.y, bounds.y + bounds.height / 2, bounds.y + bounds.height]
+  // Selection references: group bbox edges only (L/R/T/B)
+  const { selV, selH } = selectionBBoxEdges(bounds)
 
   let bestDx = 0
   let bestAbsX = threshold + 1
@@ -302,21 +314,27 @@ export function enforceAspectFromHandle(
 /**
  * Snap free edges of a resized rect to nearby bodies.
  * Root cause of "guides but no snap": aspect re-lock must run AFTER snap.
+ *
+ * `selfId` may be one id or many (group-scale excludes whole selection).
  */
 export function snapResizeRect(
   rect: RectLike,
   handle: string,
-  selfId: string,
+  selfId: string | Iterable<string>,
   allItems: CanvasItem[],
   threshold = DEFAULT_THRESHOLD,
   aspect?: number,
   ctx: SnapContext = {},
 ): { rect: RectLike; guides: SnapGuide[] } {
-  const exclude = new Set<string>([selfId])
-  const self = allItems.find((i) => i.id === selfId)
-  if (self?.stackGroupId) {
-    for (const i of allItems) {
-      if (i.stackGroupId === self.stackGroupId) exclude.add(i.id)
+  const exclude = new Set<string>(
+    typeof selfId === 'string' ? [selfId] : [...selfId],
+  )
+  for (const id of [...exclude]) {
+    const self = allItems.find((i) => i.id === id)
+    if (self?.stackGroupId) {
+      for (const i of allItems) {
+        if (i.stackGroupId === self.stackGroupId) exclude.add(i.id)
+      }
     }
   }
 

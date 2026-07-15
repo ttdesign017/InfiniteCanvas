@@ -41,17 +41,27 @@ export function parseEmbedHtml(raw: string): ParsedEmbed | null {
   const allow =
     matchAttr(text, 'allow') ||
     'autoplay *; encrypted-media *; fullscreen *; clipboard-write *'
-  const sandbox =
+  // Prefer source sandbox, but strip breakout flags if the paste included them
+  const rawSandbox =
     matchAttr(text, 'sandbox') ||
     [
       'allow-forms',
       'allow-popups',
-      'allow-popups-to-escape-sandbox',
       'allow-same-origin',
       'allow-scripts',
       'allow-presentation',
-      'allow-top-navigation-by-user-activation',
     ].join(' ')
+  const sandbox = rawSandbox
+    .split(/\s+/)
+    .filter(
+      (tok) =>
+        tok &&
+        tok !== 'allow-top-navigation' &&
+        tok !== 'allow-top-navigation-by-user-activation' &&
+        tok !== 'allow-popups-to-escape-sandbox' &&
+        tok !== 'allow-top-navigation-to-custom-protocols',
+    )
+    .join(' ')
   const title = matchAttr(text, 'title') || undefined
 
   const html = [

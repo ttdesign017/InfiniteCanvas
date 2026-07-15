@@ -9,17 +9,27 @@ export function SaveToast() {
 
   useEffect(() => {
     if (!saveNotice) return
-    const t = window.setTimeout(() => clearSaveNotice(), 1600)
+    // Longer for instructional hints (e.g. crop + rotation)
+    const ms = saveNotice.length > 12 ? 2800 : 1600
+    const t = window.setTimeout(() => clearSaveNotice(), ms)
     return () => window.clearTimeout(t)
   }, [saveNotice, saveNoticeSeq, clearSaveNotice])
 
   if (!saveNotice) return null
 
+  const isHint = saveNotice !== 'Saved' && !saveNotice.startsWith('Saved')
+
   return (
-    <div className="save-toast" role="status" aria-live="polite">
-      <span className="save-toast-check" aria-hidden>
-        ✓
-      </span>
+    <div
+      className={`save-toast ${isHint ? 'is-hint' : ''}`}
+      role="status"
+      aria-live="polite"
+    >
+      {!isHint && (
+        <span className="save-toast-check" aria-hidden>
+          ✓
+        </span>
+      )}
       {saveNotice}
     </div>
   )

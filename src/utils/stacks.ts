@@ -111,6 +111,20 @@ export function stackDisplayName(
   return n || fallback
 }
 
+/**
+ * Unique default stack name: first `Untitled`, then `Untitled_1`, `Untitled_2`, …
+ * Case-insensitive against existing names.
+ */
+export function nextUniqueStackName(stacks: StackRecord[]): string {
+  const taken = new Set(
+    stacks.map((s) => (s.name || '').trim().toLowerCase()).filter(Boolean),
+  )
+  if (!taken.has('untitled')) return 'Untitled'
+  let n = 1
+  while (taken.has(`untitled_${n}`)) n += 1
+  return `Untitled_${n}`
+}
+
 /** All stack ids nested under `stackId` (including itself) */
 export function collectDescendantStackIds(
   stacks: StackRecord[],

@@ -39,7 +39,7 @@ export function CloseSaveDialog() {
             className="close-save-btn danger"
             onClick={() => answerClosePrompt('discard')}
           >
-            Don't Save
+            Discard
           </button>
           <button
             type="button"

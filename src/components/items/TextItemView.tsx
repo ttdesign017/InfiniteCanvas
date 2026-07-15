@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { TextItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
+import { useHistoryOnce } from '../../hooks/useHistoryOnce'
 
 const PLACEHOLDERS = new Set(['Text', 'Double-click to edit'])
 
@@ -17,13 +18,18 @@ export function TextItemView({ item, selected }: Props) {
   const areaRef = useRef<HTMLTextAreaElement>(null)
   const isEmpty = !item.content.trim()
   const isLegacyPlaceholder = PLACEHOLDERS.has(item.content.trim())
+  // One undo snapshot for the whole edit session (placeholder clear + typing)
+  const pushHistoryOnce = useHistoryOnce(editing ? item.id : null)
 
   useEffect(() => {
     if (!editing) return
     const el = areaRef.current
     if (!el) return
     if (!item.content.trim() || PLACEHOLDERS.has(item.content.trim())) {
-      if (item.content) updateItem(item.id, { content: '' })
+      if (item.content) {
+        pushHistoryOnce()
+        updateItem(item.id, { content: '' })
+      }
     }
     el.focus()
   }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -53,7 +59,10 @@ export function TextItemView({ item, selected }: Props) {
           className="plain-text-input"
           value={PLACEHOLDERS.has(item.content.trim()) ? '' : item.content}
           style={{ color: item.color || '#1e1e1e' }}
-          onChange={(e) => updateItem(item.id, { content: e.target.value })}
+          onChange={(e) => {
+            pushHistoryOnce()
+            updateItem(item.id, { content: e.target.value })
+          }}
           onBlur={() => setEditingId(null)}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {

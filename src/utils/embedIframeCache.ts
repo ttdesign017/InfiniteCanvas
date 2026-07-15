@@ -12,14 +12,17 @@
 
 const EMBED_ALLOW =
   'autoplay *; encrypted-media *; fullscreen *; clipboard-write *'
+/**
+ * Sandbox for third-party embeds (podcasts etc.).
+ * Keep scripts + same-origin so players can run; drop top-navigation and
+ * popups-to-escape-sandbox so embeds cannot break out of the frame as easily.
+ */
 const EMBED_SANDBOX = [
   'allow-forms',
   'allow-popups',
-  'allow-popups-to-escape-sandbox',
   'allow-same-origin',
   'allow-scripts',
   'allow-presentation',
-  'allow-top-navigation-by-user-activation',
 ].join(' ')
 
 const cache = new Map<string, HTMLIFrameElement>()

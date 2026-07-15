@@ -1,5 +1,6 @@
 import type { MediaItem } from '../types/canvas'
 import { isDesktop, localPathToSrc, readBinaryFile } from './desktop'
+import { trackBlobUrl } from './blobUrls'
 import { uid } from './id'
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg', 'avif', 'ico', 'heic'])
@@ -194,7 +195,7 @@ export async function createMediaFromFile(
 
   // Prefer blob when content is present (browser parity)
   if (file.size > 0) {
-    const src = URL.createObjectURL(file)
+    const src = trackBlobUrl(URL.createObjectURL(file))
     return createMediaItemFromSrc(src, file.name || 'media', kind, x, y, zIndex)
   }
 
@@ -204,7 +205,7 @@ export async function createMediaFromFile(
 
   // Last resort: try blob anyway (some webviews fill content lazily)
   try {
-    const src = URL.createObjectURL(file)
+    const src = trackBlobUrl(URL.createObjectURL(file))
     return createMediaItemFromSrc(src, file.name || 'media', kind, x, y, zIndex)
   } catch {
     return null
@@ -232,7 +233,7 @@ export async function createMediaFromPath(
         const copy = new Uint8Array(bytes.byteLength)
         copy.set(bytes)
         const blob = new Blob([copy], { type: mimeFromFileName(fileName, kind) })
-        const src = URL.createObjectURL(blob)
+        const src = trackBlobUrl(URL.createObjectURL(blob))
         return createMediaItemFromSrc(src, fileName, kind, x, y, zIndex)
       }
     } catch (e) {

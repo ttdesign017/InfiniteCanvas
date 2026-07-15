@@ -6,6 +6,8 @@ import { useCanvasStore } from '../store/useCanvasStore'
 import * as desktop from './desktop'
 import {
   ICANVAS_EXT,
+  assertICanvasIntegrity,
+  isICanvasDocument,
   packICanvasDocument,
   parseICanvasFile,
   serializeICanvas,
@@ -47,16 +49,39 @@ export async function saveCurrentBoard(options?: {
       path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || snapshot.name
     snapshot.name = savedName
     const doc = await packICanvasDocument(snapshot)
+    assertICanvasIntegrity(doc, {
+      itemCount: snapshot.items.length,
+      stackCount: snapshot.stacks?.length ?? 0,
+    })
     const text = serializeICanvas(doc)
     await desktop.writeText(path, text)
     // Verify the persisted document before reporting success. This catches a
     // truncated/empty portable write immediately instead of failing on reopen.
     const written = await desktop.readText(path)
-    const verified = parseICanvasFile(written)
-    if (verified.items.length !== snapshot.items.length) {
-      throw new Error(
-        `Save verification failed: expected ${snapshot.items.length} items, found ${verified.items.length}`,
-      )
+    let writtenJson: unknown
+    try {
+      writtenJson = JSON.parse(written)
+    } catch {
+      throw new Error('Save verification failed: written file is not valid JSON')
+    }
+    if (isICanvasDocument(writtenJson)) {
+      assertICanvasIntegrity(writtenJson, {
+        itemCount: snapshot.items.length,
+        stackCount: snapshot.stacks?.length ?? 0,
+      })
+    } else {
+      // Legacy plain snapshot path (should not happen for new packs)
+      const verified = parseICanvasFile(written)
+      if (verified.items.length !== snapshot.items.length) {
+        throw new Error(
+          `Save verification failed: expected ${snapshot.items.length} items, found ${verified.items.length}`,
+        )
+      }
+      if ((verified.stacks?.length ?? 0) !== (snapshot.stacks?.length ?? 0)) {
+        throw new Error(
+          `Save verification failed: stack count mismatch after write`,
+        )
+      }
     }
     store.setBoardFilePath(path)
     const live = useCanvasStore.getState()

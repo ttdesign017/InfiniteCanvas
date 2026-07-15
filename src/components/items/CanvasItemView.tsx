@@ -40,9 +40,12 @@ function CanvasItemViewInner({
   )
 
   const stacked = !!(item.stacked && item.stackGroupId)
+  // Selection chrome unchanged: media/text/note/link get handles; scribble/embed no.
+  // G/R/S modal only restricts keyboard shortcuts — not resize handles.
   const showResize =
     selected &&
     item.type !== 'scribble' &&
+    item.type !== 'embed' &&
     editingId !== item.id &&
     !stacked
   const editable = !stacked && (item.type === 'text' || item.type === 'textcard')
@@ -50,11 +53,12 @@ function CanvasItemViewInner({
   const isTextPreview =
     item.type === 'text' && preview && preview.id === item.id
 
+  // Free items rotate/scale around geometric center (not top-left)
   const origin = isTextPreview
     ? preview.origin
     : stacked
       ? 'bottom left'
-      : 'top left'
+      : 'center center'
 
   const x = isTextPreview ? preview.baseX : item.x
   const y = isTextPreview ? preview.baseY : item.y
@@ -111,6 +115,13 @@ function CanvasItemViewInner({
             editingStackGroupId: item.stackGroupId,
             editingId: null,
           })
+          return
+        }
+        // Link cards: open URL (also handled in InfiniteCanvas detail>=2)
+        if (item.type === 'link' && item.url?.trim()) {
+          void import('../../utils/desktop').then((d) =>
+            d.openExternal(item.url.trim()),
+          )
           return
         }
         if (!editable) return

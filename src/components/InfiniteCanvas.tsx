@@ -22,6 +22,7 @@ import {
   hitStackGroupAt,
   placeItemsTight,
   screenToWorld,
+  stackCollapsedSnapBounds,
   stackGroupBounds,
 } from '../utils/layout'
 import {
@@ -47,7 +48,7 @@ import {
   snapResizeRect,
   type SnapGuide,
 } from '../utils/snap'
-import { isDesktop, onNativeFileDrop } from '../utils/desktop'
+import { isDesktop, onNativeFileDrop, openExternal } from '../utils/desktop'
 import {
   clearTextScalePreview,
   getTextScalePreview,
@@ -55,6 +56,23 @@ import {
   scaledBoxFromPreview,
   setTextScalePreview,
 } from '../utils/textScalePreview'
+import {
+  applyModalTransform,
+  beginModalTransform,
+  type ModalTransformSession,
+} from '../utils/modalTransform'
+import {
+  applyGroupScale,
+  computeSelectionBounds,
+  groupFactorFromSnappedBox,
+  groupScaleFactor,
+  groupScaledBounds,
+  isGroupScalableType,
+  type GroupBodyOrigin,
+  type GroupScaleHandle,
+} from '../utils/selectionBounds'
+import { marqueeHitsRotatedItem, pointInRotatedItem } from '../utils/geometry'
+import { isAxisAlignedForCrop } from '../utils/crop'
 
 /** Screen px before a press becomes a real drag (preserves double-click edit) */
 const DRAG_THRESHOLD_PX = 5
@@ -69,6 +87,9 @@ type DragMode =
       isStacked: boolean
       stackGroupId?: string
       canEditText: boolean
+      /** Link double-click open (pointer-capture often kills native dblclick) */
+      canOpenLink?: boolean
+      linkUrl?: string
       startClientX: number
       startClientY: number
       lastX: number
@@ -125,11 +146,19 @@ type DragMode =
       /** True if last move used text live CSS scale path */
       textScaleActive?: boolean
     }
+  | {
+      /** Multi-selection proportional scale from a corner of the group bbox */
+      kind: 'group-scale'
+      handle: GroupScaleHandle
+      bounds: { x: number; y: number; width: number; height: number }
+      bodies: GroupBodyOrigin[]
+    }
   | { kind: 'scribble'; id: string }
   | { kind: 'erase'; erased: boolean }
   | {
       kind: 'crop'
-      id: string
+      /** One or more free media (non-rotated) to crop with the same marquee */
+      ids: string[]
       startWorld: { x: number; y: number }
       currentWorld: { x: number; y: number }
     }
@@ -143,39 +172,124 @@ type DragMode =
       h: number
     }
 
+/** Free items + stacks currently selected on the active canvas, for joint drag. */
+function captureJointMoveSelection(store: {
+  items: import('../types/canvas').CanvasItem[]
+  stacks: import('../types/canvas').StackRecord[]
+  selectedIds: string[]
+  selectedStackIds: string[]
+  currentContainerId: string
+}): {
+  ids: string[]
+  origins: Record<string, { x: number; y: number }>
+  stackIds: string[]
+  stackOrigins: Record<string, { x: number; y: number }>
+} {
+  const ids = expandStackSelection(store.selectedIds, store.items).filter(
+    (id) => {
+      const it = store.items.find((i) => i.id === id)
+      if (!it || it.stacked) return false
+      return containerOf(it) === store.currentContainerId
+    },
+  )
+  const origins: Record<string, { x: number; y: number }> = {}
+  for (const id of ids) {
+    const it = store.items.find((i) => i.id === id)
+    if (it) origins[id] = { x: it.x, y: it.y }
+  }
+  const stackIds = store.selectedStackIds.filter((sid) => {
+    const st = store.stacks.find((s) => s.id === sid)
+    return !!st && st.parentId === store.currentContainerId
+  })
+  const stackOrigins: Record<string, { x: number; y: number }> = {}
+  for (const sid of stackIds) {
+    const st = store.stacks.find((s) => s.id === sid)
+    if (st) stackOrigins[sid] = { x: st.x, y: st.y }
+  }
+  return { ids, origins, stackIds, stackOrigins }
+}
+
 function isMedia(item: CanvasItem): item is MediaItem {
   return item.type === 'image' || item.type === 'gif' || item.type === 'video'
 }
 
-function hitMediaAt(world: { x: number; y: number }, items: CanvasItem[]): MediaItem | null {
-  const media = items.filter(isMedia).sort((a, b) => b.zIndex - a.zIndex)
-  for (const m of media) {
-    if (
-      world.x >= m.x &&
-      world.y >= m.y &&
-      world.x <= m.x + m.width &&
-      world.y <= m.y + m.height
-    ) {
-      return m
-    }
-  }
-  return null
+/**
+ * Free media on the *current* canvas only.
+ * Critical: nested stack members keep free poses in their own container space —
+ * treating those x/y as world would hit the wrong image and crop stacks.
+ */
+function freeMediaOnCanvas(
+  items: CanvasItem[],
+  containerId: string,
+): MediaItem[] {
+  return items
+    .filter(isMedia)
+    .filter((m) => !m.stacked && containerOf(m) === containerId)
+    .sort((a, b) => b.zIndex - a.zIndex)
 }
 
-/** Crop target: media under cursor, else topmost selected media */
-function resolveCropTarget(
+/**
+ * Crop targets: free image/gif/video on current canvas only.
+ * - Multi-select free media → all selected free media (rotated ones filtered out)
+ * - Single / none → media under cursor, else the single selected free media
+ * Rotated media cannot crop; if every candidate is rotated, rotatedOnly=true for toast.
+ */
+function resolveCropTargets(
   world: { x: number; y: number },
   items: CanvasItem[],
   selectedIds: string[],
-): MediaItem | null {
-  const hit = hitMediaAt(world, items)
-  if (hit) return hit
-  const selected = items
-    .filter(isMedia)
-    .filter((i) => selectedIds.includes(i.id))
-    .sort((a, b) => b.zIndex - a.zIndex)
-  return selected[0] ?? null
+  selectedStackIds: string[],
+  containerId: string,
+): { ids: string[]; rotatedOnly: boolean } {
+  const free = freeMediaOnCanvas(items, containerId)
+  const selectedMedia = free.filter((i) => selectedIds.includes(i.id))
+
+  let candidates: MediaItem[] = []
+
+  if (selectedMedia.length >= 2) {
+    // Multi free-media selection: crop all of them together (ignore rotated later)
+    candidates = selectedMedia
+  } else {
+    // Prefer hit under cursor (selected first, then any free media)
+    let hit: MediaItem | null = null
+    for (const m of selectedMedia) {
+      if (pointInRotatedItem(world, m)) {
+        hit = m
+        break
+      }
+    }
+    if (!hit) {
+      for (const m of free) {
+        if (pointInRotatedItem(world, m)) {
+          hit = m
+          break
+        }
+      }
+    }
+    if (hit) {
+      candidates = [hit]
+    } else if (selectedMedia.length === 1) {
+      // Crop-from-outside with one selected free media
+      candidates = selectedMedia
+    } else {
+      // Only stacks / non-media / empty
+      return { ids: [], rotatedOnly: false }
+    }
+  }
+
+  const axis = candidates.filter(isAxisAlignedForCrop)
+  if (axis.length > 0) {
+    return { ids: axis.map((m) => m.id), rotatedOnly: false }
+  }
+  // All candidates are rotated
+  if (candidates.length > 0) {
+    return { ids: [], rotatedOnly: true }
+  }
+  void selectedStackIds
+  return { ids: [], rotatedOnly: false }
 }
+
+const CROP_ROTATED_HINT = "Can't crop while rotated — Alt+R first"
 
 export function InfiniteCanvas() {
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -216,6 +330,11 @@ export function InfiniteCanvas() {
     setStackDropTargetId(gid)
   }, [])
 
+  /** Blender-style G/R/S modal transform (null when inactive) */
+  const modalXformRef = useRef<ModalTransformSession | null>(null)
+  const [modalXformKind, setModalXformKind] = useState<string | null>(null)
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+
   const items = useCanvasStore((s) => s.items)
   const stacks = useCanvasStore((s) => s.stacks)
   const currentContainerId = useCanvasStore((s) => s.currentContainerId)
@@ -246,6 +365,160 @@ export function InfiniteCanvas() {
     pruneEmbedIframes(live)
   }, [items])
 
+  // Blender-style G / R / S modal transforms
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      if (!t || !(t instanceof HTMLElement)) return false
+      if (t.isContentEditable) return true
+      const tag = t.tagName
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (tag === 'INPUT') {
+        const type = ((t as HTMLInputElement).type || 'text').toLowerCase()
+        return !(
+          type === 'color' ||
+          type === 'range' ||
+          type === 'checkbox' ||
+          type === 'radio' ||
+          type === 'button' ||
+          type === 'submit'
+        )
+      }
+      return false
+    }
+
+    const cancelModal = () => {
+      const session = modalXformRef.current
+      if (!session) return
+      useCanvasStore.setState({
+        items: session.cancelItems,
+        stacks: session.cancelStacks,
+      })
+      modalXformRef.current = null
+      setModalXformKind(null)
+      setSnapGuides([])
+    }
+
+    const confirmModal = () => {
+      if (!modalXformRef.current) return
+      modalXformRef.current = null
+      setModalXformKind(null)
+      setSnapGuides([])
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return
+      const store = useCanvasStore.getState()
+      if (store.animating) return
+
+      // Active modal: Esc cancels, Enter confirms
+      if (modalXformRef.current) {
+        if (e.key === 'Escape' || e.code === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          cancelModal()
+          return
+        }
+        if (e.key === 'Enter' || e.code === 'Enter') {
+          e.preventDefault()
+          confirmModal()
+          return
+        }
+        // Swallow tool keys while modal is active
+        return
+      }
+
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const key = e.key.toLowerCase()
+      if (key !== 'g' && key !== 'r' && key !== 's') return
+      // Alt+G is unstack — handled elsewhere with altKey
+      if (store.selectedIds.length === 0 && store.selectedStackIds.length === 0)
+        return
+
+      const kind = key === 'g' ? 'grab' : key === 'r' ? 'rotate' : 'scale'
+      const cx = lastPointerRef.current?.x ?? window.innerWidth / 2
+      const cy = lastPointerRef.current?.y ?? window.innerHeight / 2
+      const session = beginModalTransform(
+        kind,
+        store.items,
+        store.stacks,
+        store.selectedIds,
+        store.selectedStackIds,
+        cx,
+        cy,
+        store.viewport,
+      )
+      if (!session) return
+      e.preventDefault()
+      e.stopPropagation()
+      store.pushHistory()
+      // Snapshot after history push for RMB cancel
+      session.cancelItems = useCanvasStore
+        .getState()
+        .items.map((i) => ({ ...i }))
+      session.cancelStacks = useCanvasStore
+        .getState()
+        .stacks.map((s) => ({ ...s }))
+      modalXformRef.current = session
+      setModalXformKind(kind)
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      lastPointerRef.current = { x: e.clientX, y: e.clientY }
+      const session = modalXformRef.current
+      if (!session) return
+      const store = useCanvasStore.getState()
+      const { itemPatches, stackPatches, guides } = applyModalTransform(
+        session,
+        e.clientX,
+        e.clientY,
+        store.viewport,
+        {
+          snapEnabled: session.kind === 'grab' && store.snapEnabled,
+          // R + Shift: 15° angle snap, no reference guides
+          angleSnap: session.kind === 'rotate' && e.shiftKey,
+          allItems: store.items,
+          allStacks: store.stacks,
+          containerId: store.currentContainerId,
+        },
+      )
+      if (itemPatches.length) store.updateItems(itemPatches)
+      if (stackPatches.length) store.updateStacks(stackPatches)
+      // Never show guides for rotate (angle snap is silent)
+      setSnapGuides(session.kind === 'rotate' ? [] : guides)
+    }
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!modalXformRef.current) return
+      if (e.button === 0) {
+        e.preventDefault()
+        e.stopPropagation()
+        confirmModal()
+      } else if (e.button === 2) {
+        e.preventDefault()
+        e.stopPropagation()
+        cancelModal()
+      }
+    }
+
+    const onContextMenu = (e: Event) => {
+      if (modalXformRef.current) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('pointermove', onPointerMove, true)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('contextmenu', onContextMenu, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('pointermove', onPointerMove, true)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('contextmenu', onContextMenu, true)
+    }
+  }, [])
+
   const sortedItems = useMemo(
     () => [...visibleItems].sort((a, b) => a.zIndex - b.zIndex),
     [visibleItems],
@@ -268,6 +541,40 @@ export function InfiniteCanvas() {
     () => new Set(selectedStackIds),
     [selectedStackIds],
   )
+  /** Free selected items on the current canvas (not stacked fan cards) */
+  const freeSelectedCount = useMemo(() => {
+    return items.filter(
+      (i) =>
+        selectedIds.includes(i.id) &&
+        !i.stacked &&
+        containerOf(i) === currentContainerId,
+    ).length
+  }, [items, selectedIds, currentContainerId])
+  const selectedStackCount = useMemo(() => {
+    return stacks.filter(
+      (s) =>
+        selectedStackIds.includes(s.id) && s.parentId === currentContainerId,
+    ).length
+  }, [stacks, selectedStackIds, currentContainerId])
+  const multiBodyCount = freeSelectedCount + selectedStackCount
+  const isGroupSelect = multiBodyCount >= 2
+  const groupBounds = useMemo(() => {
+    if (!isGroupSelect) return null
+    return computeSelectionBounds(
+      items,
+      stacks,
+      selectedIds,
+      selectedStackIds,
+      currentContainerId,
+    )
+  }, [
+    isGroupSelect,
+    items,
+    stacks,
+    selectedIds,
+    selectedStackIds,
+    currentContainerId,
+  ])
   const effectiveTool = spaceHeld ? 'pan' : cHeld ? 'crop' : tool
 
   // Drive enter-stack folder expand only (exit is store-driven; cards use animateToLayout)
@@ -517,6 +824,69 @@ export function InfiniteCanvas() {
    * Resize starts ONLY from handle onPointerDown (CanvasItemView).
    * Isolated from move path so handle clicks never become a pan/move.
    */
+  const onGroupScalePointerDown = useCallback(
+    (e: React.PointerEvent, handle: GroupScaleHandle) => {
+      if (e.button !== 0) return
+      e.stopPropagation()
+      e.preventDefault()
+      const store = useCanvasStore.getState()
+      if (isInteractionLocked()) return
+      if (store.spaceHeld || store.tool === 'pan') return
+      const bounds = computeSelectionBounds(
+        store.items,
+        store.stacks,
+        store.selectedIds,
+        store.selectedStackIds,
+        store.currentContainerId,
+      )
+      if (!bounds) return
+      const bodies: GroupBodyOrigin[] = []
+      for (const id of store.selectedIds) {
+        const it = store.items.find((i) => i.id === id)
+        if (!it || it.stacked) continue
+        if (containerOf(it) !== store.currentContainerId) continue
+        bodies.push({
+          id: it.id,
+          kind: 'item',
+          x: it.x,
+          y: it.y,
+          width: it.width,
+          height: it.height,
+          rotation: it.rotation ?? 0,
+          scalable: isGroupScalableType(it.type),
+        })
+      }
+      for (const sid of store.selectedStackIds) {
+        const st = store.stacks.find((s) => s.id === sid)
+        if (!st || st.parentId !== store.currentContainerId) continue
+        const leaves = collectItemsInStackTree(store.items, store.stacks, sid)
+        const b = stackCollapsedSnapBounds(st, leaves)
+        bodies.push({
+          id: sid,
+          kind: 'stack',
+          x: st.x,
+          y: st.y,
+          width: b.width,
+          height: b.height,
+          scalable: false,
+        })
+      }
+      if (bodies.length < 2) return
+      dismissStackNameEdit()
+      blurChrome()
+      flushDragWrite()
+      store.pushHistory()
+      dragRef.current = {
+        kind: 'group-scale',
+        handle,
+        bounds,
+        bodies,
+      }
+      surfaceRef.current?.setPointerCapture(e.pointerId)
+    },
+    [flushDragWrite],
+  )
+
   const onResizePointerDown = useCallback(
     (e: React.PointerEvent, item: CanvasItem, handle: string) => {
       if (e.button !== 0) return
@@ -524,6 +894,19 @@ export function InfiniteCanvas() {
       if (item.stacked && item.stackGroupId) return
       // Block resize while stack/layout animations run
       if (isInteractionLocked()) return
+      // Multi-select uses group bbox handles instead of per-item resize
+      const multi =
+        store.selectedIds.filter((id) => {
+          const it = store.items.find((i) => i.id === id)
+          return it && !it.stacked && containerOf(it) === store.currentContainerId
+        }).length +
+          store.selectedStackIds.filter((sid) =>
+            store.stacks.some(
+              (s) => s.id === sid && s.parentId === store.currentContainerId,
+            ),
+          ).length >=
+        2
+      if (multi) return
 
       dismissStackNameEdit()
       blurChrome()
@@ -533,6 +916,8 @@ export function InfiniteCanvas() {
       if (store.tool === 'scribble' || store.tool === 'erase') return
 
       const live = store.items.find((i) => i.id === item.id) ?? item
+      // Scribble / embed: no resize handles (notes & links keep edge/corner resize)
+      if (live.type === 'scribble' || live.type === 'embed') return
       const h = (handle || 'se').toLowerCase()
       const edgeMode: 'scale' | 'edge' = isEdgeResizeType(live.type)
         ? 'edge'
@@ -614,14 +999,25 @@ export function InfiniteCanvas() {
         e.preventDefault()
         const local = getLocalPoint(e)
         const world = screenToWorld(local.x, local.y, store.viewport)
-        const target = resolveCropTarget(world, store.items, store.selectedIds)
-        if (!target) return
-        if (!store.selectedIds.includes(target.id)) {
-          store.select([target.id])
+        const { ids, rotatedOnly } = resolveCropTargets(
+          world,
+          store.items,
+          store.selectedIds,
+          store.selectedStackIds,
+          store.currentContainerId,
+        )
+        if (ids.length === 0) {
+          if (rotatedOnly) store.flashSaveNotice(CROP_ROTATED_HINT)
+          return
+        }
+        // Keep multi-selection; add crop targets if missing (no toggle)
+        const needSelect = ids.filter((id) => !store.selectedIds.includes(id))
+        if (needSelect.length > 0) {
+          store.select([...store.selectedIds, ...needSelect])
         }
         dragRef.current = {
           kind: 'crop',
-          id: target.id,
+          ids,
           startWorld: { ...world },
           currentWorld: { ...world },
         }
@@ -632,10 +1028,18 @@ export function InfiniteCanvas() {
 
       e.stopPropagation()
 
-      // Double-click (detail>=2): text edit, or enter stack (not rename)
+      // Double-click (detail>=2): text edit, open link, or enter stack
       if (e.detail >= 2) {
         if (canEditText) {
           enterTextEdit(item.id)
+          return
+        }
+        if (item.type === 'link' && !isStacked) {
+          const url = (item as { url?: string }).url?.trim()
+          if (url) {
+            e.preventDefault()
+            void openExternal(url)
+          }
           return
         }
         if (isStacked && item.stackGroupId) {
@@ -695,30 +1099,36 @@ export function InfiniteCanvas() {
         if (ids.length !== store.selectedIds.length) store.select(ids)
       }
 
-      let moveIds = expandStackSelection(ids, useCanvasStore.getState().items)
-      if (moveIds.length === 0) return
-
-      const live = useCanvasStore.getState().items
-      const origins: Record<string, { x: number; y: number }> = {}
-      for (const id of moveIds) {
-        const it = live.find((i) => i.id === id)
-        if (it) origins[id] = { x: it.x, y: it.y }
+      // Joint move: free items + selected stacks together
+      const joint = captureJointMoveSelection(useCanvasStore.getState())
+      // Ensure the clicked free item is included
+      if (!joint.ids.includes(item.id) && !isStacked) {
+        joint.ids = [...joint.ids, item.id]
+        const it = useCanvasStore.getState().items.find((i) => i.id === item.id)
+        if (it) joint.origins[item.id] = { x: it.x, y: it.y }
       }
-      if (Object.keys(origins).length === 0) return
+      if (joint.ids.length === 0 && joint.stackIds.length === 0) return
 
       // Pending until movement exceeds threshold — preserves double-click edit
+      const canOpenLink = !isStacked && item.type === 'link'
+      const linkUrl =
+        canOpenLink && item.type === 'link' ? item.url?.trim() || '' : undefined
       dragRef.current = {
         kind: 'pending-move',
         itemId: item.id,
         isStacked,
         stackGroupId: item.stackGroupId,
         canEditText,
+        canOpenLink,
+        linkUrl,
         startClientX: e.clientX,
         startClientY: e.clientY,
         lastX: e.clientX,
         lastY: e.clientY,
-        ids: moveIds,
-        origins,
+        ids: joint.ids,
+        origins: joint.origins,
+        stackIds: joint.stackIds,
+        stackOrigins: joint.stackOrigins,
         duplicated: false,
         altHeld: e.altKey,
       }
@@ -766,21 +1176,31 @@ export function InfiniteCanvas() {
 
       // PureRef-style crop: hold C + drag anywhere (uses selected media if start is outside)
       if (holdingC) {
-        const media = resolveCropTarget(world, store.items, store.selectedIds)
-        if (media) {
+        const { ids, rotatedOnly } = resolveCropTargets(
+          world,
+          store.items,
+          store.selectedIds,
+          store.selectedStackIds,
+          store.currentContainerId,
+        )
+        if (ids.length > 0) {
           // Preserve selection — never clear while cropping
-          if (!store.selectedIds.includes(media.id)) {
-            store.select([media.id])
+          const needSelect = ids.filter((id) => !store.selectedIds.includes(id))
+          if (needSelect.length > 0) {
+            store.select([...store.selectedIds, ...needSelect])
           }
           dragRef.current = {
             kind: 'crop',
-            id: media.id,
+            ids,
             startWorld: { ...world },
             currentWorld: { ...world },
           }
           setCropOverlay({ x: local.x, y: local.y, w: 0, h: 0 })
           surfaceRef.current?.setPointerCapture(e.pointerId)
           return
+        }
+        if (rotatedOnly) {
+          store.flashSaveNotice(CROP_ROTATED_HINT)
         }
         // Holding C with no crop target: do nothing (do not marquee / deselect)
         return
@@ -875,14 +1295,23 @@ export function InfiniteCanvas() {
         store.pushHistory()
         let moveIds = drag.ids
         let origins = drag.origins
+        let stackIds = drag.stackIds
+        let stackOrigins = drag.stackOrigins
         let duplicated = false
         if (e.altKey) {
-          moveIds = store.duplicateItems(moveIds)
-          const live = useCanvasStore.getState().items
+          const dup = store.duplicateBodies(moveIds, stackIds ?? [])
+          moveIds = dup.itemIds
+          stackIds = dup.stackIds
+          const live = useCanvasStore.getState()
           origins = {}
           for (const id of moveIds) {
-            const item = live.find((candidate) => candidate.id === id)
+            const item = live.items.find((candidate) => candidate.id === id)
             if (item) origins[id] = { x: item.x, y: item.y }
+          }
+          stackOrigins = {}
+          for (const sid of stackIds) {
+            const st = live.stacks.find((s) => s.id === sid)
+            if (st) stackOrigins[sid] = { x: st.x, y: st.y }
           }
           duplicated = true
         }
@@ -893,8 +1322,8 @@ export function InfiniteCanvas() {
         dragRef.current = {
           kind: 'move',
           ids: moveIds,
-          stackIds: drag.stackIds,
-          stackOrigins: drag.stackOrigins,
+          stackIds,
+          stackOrigins,
           lastX: e.clientX,
           lastY: e.clientY,
           moved: false,
@@ -911,15 +1340,21 @@ export function InfiniteCanvas() {
 
       if (drag.kind === 'move') {
         if (e.altKey && !drag.duplicated && !drag.moved) {
-          const newIds = store.duplicateItems(drag.ids)
-          drag.ids = newIds
+          const dup = store.duplicateBodies(drag.ids, drag.stackIds ?? [])
+          drag.ids = dup.itemIds
+          drag.stackIds = dup.stackIds
           drag.duplicated = true
           drag.altHeld = true
-          const live = store.items
+          const live = useCanvasStore.getState()
           drag.origins = {}
-          for (const id of newIds) {
-            const it = live.find((i) => i.id === id)
+          for (const id of dup.itemIds) {
+            const it = live.items.find((i) => i.id === id)
             if (it) drag.origins[id] = { x: it.x, y: it.y }
+          }
+          drag.stackOrigins = {}
+          for (const sid of dup.stackIds) {
+            const st = live.stacks.find((s) => s.id === sid)
+            if (st) drag.stackOrigins![sid] = { x: st.x, y: st.y }
           }
           drag.accDx = 0
           drag.accDy = 0
@@ -1195,6 +1630,90 @@ export function InfiniteCanvas() {
         return
       }
 
+      if (drag.kind === 'group-scale') {
+        const local = getLocalPoint(e)
+        const world = screenToWorld(local.x, local.y, store.viewport)
+        const zoom = Math.max(0.01, store.viewport.zoom || 1)
+        let factor = groupScaleFactor(
+          drag.bounds,
+          drag.handle,
+          world.x,
+          world.y,
+        )
+        // Propose scaled group box, then snap free edges like single-media resize
+        let guides: SnapGuide[] = []
+        if (store.snapEnabled) {
+          const proposed = groupScaledBounds(
+            drag.bounds,
+            drag.handle,
+            factor,
+          )
+          const aspect = drag.bounds.width / Math.max(1e-6, drag.bounds.height)
+          const excludeIds = [
+            ...drag.bodies.map((b) => b.id),
+            // stack folder ids already in bodies; leaves excluded via stackGroup if any
+          ]
+          const threshold = 12 / zoom
+          const snapped = snapResizeRect(
+            proposed,
+            drag.handle,
+            excludeIds,
+            store.items,
+            threshold,
+            aspect,
+            {
+              stacks: store.stacks,
+              containerId: store.currentContainerId,
+              excludeStackIds: drag.bodies
+                .filter((b) => b.kind === 'stack')
+                .map((b) => b.id),
+            },
+          )
+          guides = snapped.guides
+          factor = groupFactorFromSnappedBox(
+            drag.bounds,
+            snapped.rect,
+            drag.handle,
+          )
+        }
+        const results = applyGroupScale(
+          drag.bodies,
+          drag.bounds,
+          drag.handle,
+          factor,
+        )
+        const itemPatches: Array<{
+          id: string
+          patch: Partial<CanvasItem>
+        }> = []
+        const stackPatches: Array<{
+          id: string
+          patch: Partial<import('../types/canvas').StackRecord>
+        }> = []
+        for (const r of results) {
+          if (r.kind === 'item') {
+            itemPatches.push({
+              id: r.id,
+              patch: {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+              },
+            })
+          } else {
+            stackPatches.push({
+              id: r.id,
+              patch: { x: r.x, y: r.y },
+            })
+          }
+        }
+        if (itemPatches.length) store.updateItems(itemPatches)
+        if (stackPatches.length) store.updateStacks(stackPatches)
+        setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
+        return
+      }
+
       if (drag.kind === 'marquee') {
         const local = getLocalPoint(e)
         const x = Math.min(drag.startX, local.x)
@@ -1251,6 +1770,9 @@ export function InfiniteCanvas() {
         if (isDbl) {
           if (drag.canEditText) {
             enterTextEdit(drag.itemId)
+          } else if (drag.canOpenLink && drag.linkUrl) {
+            // pointer-capture often suppresses native dblclick — open here
+            void openExternal(drag.linkUrl)
           } else if (drag.isStacked && drag.stackGroupId) {
             const st = useCanvasStore.getState()
             const folder = st.stacks.find((s) => s.id === drag.stackGroupId)
@@ -1278,6 +1800,13 @@ export function InfiniteCanvas() {
       }
 
       dragRef.current = null
+      eraseHistoryPushed.current = false
+      return
+    }
+
+    if (drag?.kind === 'group-scale') {
+      dragRef.current = null
+      setSnapGuides([])
       eraseHistoryPushed.current = false
       return
     }
@@ -1347,8 +1876,8 @@ export function InfiniteCanvas() {
       const y = Math.min(drag.startWorld.y, drag.currentWorld.y)
       const width = Math.abs(drag.currentWorld.x - drag.startWorld.x)
       const height = Math.abs(drag.currentWorld.y - drag.startWorld.y)
-      if (width > 8 && height > 8) {
-        store.applyCrop(drag.id, { x, y, width, height })
+      if (width > 8 && height > 8 && drag.ids.length > 0) {
+        store.applyCrop(drag.ids, { x, y, width, height })
       }
       setCropOverlay(null)
     }
@@ -1363,27 +1892,38 @@ export function InfiniteCanvas() {
           w: w / vp.zoom,
           h: h / vp.zoom,
         }
+        const marqueeBox = {
+          x: worldRect.x,
+          y: worldRect.y,
+          width: worldRect.w,
+          height: worldRect.h,
+        }
+        // Free items only on this canvas — rotation-aware visual hit
         const hit = store.items
-          .filter((item) => containerOf(item) === store.currentContainerId)
-          .filter((item) => {
-            return (
-              item.x < worldRect.x + worldRect.w &&
-              item.x + item.width > worldRect.x &&
-              item.y < worldRect.y + worldRect.h &&
-              item.y + item.height > worldRect.y
-            )
-          })
+          .filter(
+            (item) =>
+              containerOf(item) === store.currentContainerId && !item.stacked,
+          )
+          .filter((item) => marqueeHitsRotatedItem(marqueeBox, item))
           .map((i) => i.id)
 
         const hitStacks = store.stacks
           .filter((s) => s.parentId === store.currentContainerId)
-          .filter(
-            (s) =>
-              s.x < worldRect.x + worldRect.w &&
-              s.x + s.width > worldRect.x &&
-              s.y < worldRect.y + worldRect.h &&
-              s.y + s.height > worldRect.y,
-          )
+          .filter((s) => {
+            const leaves = collectItemsInStackTree(
+              store.items,
+              store.stacks,
+              s.id,
+            )
+            // Use folder+fan visual hull (same as snap/align)
+            const b = stackCollapsedSnapBounds(s, leaves)
+            return (
+              b.x < marqueeBox.x + marqueeBox.width &&
+              b.x + b.width > marqueeBox.x &&
+              b.y < marqueeBox.y + marqueeBox.height &&
+              b.y + b.height > marqueeBox.y
+            )
+          })
           .map((s) => s.id)
 
         const nextIds = additive
@@ -1541,8 +2081,13 @@ export function InfiniteCanvas() {
     [getLocalPoint, placeMediaAt],
   )
 
-  const cursor =
-    effectiveTool === 'pan' || isPanning
+  const cursor = modalXformKind
+    ? modalXformKind === 'grab'
+      ? 'move'
+      : modalXformKind === 'rotate'
+        ? 'crosshair'
+        : 'nwse-resize'
+    : effectiveTool === 'pan' || isPanning
       ? isPanning
         ? 'grabbing'
         : 'grab'
@@ -1711,7 +2256,7 @@ export function InfiniteCanvas() {
   return (
     <div
       ref={surfaceRef}
-      className={`canvas-surface ${dropActive ? 'drop-active' : ''} ${cHeld ? 'crop-mode' : ''}`}
+      className={`canvas-surface ${dropActive ? 'drop-active' : ''} ${cHeld ? 'crop-mode' : ''} ${modalXformKind ? 'modal-xform' : ''} ${isGroupSelect ? 'is-group-select' : ''}`}
       style={{ cursor }}
       tabIndex={0}
       onPointerDown={onPointerDown}
@@ -1724,6 +2269,14 @@ export function InfiniteCanvas() {
       onDrop={onDrop}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {modalXformKind && (
+        <div className="modal-xform-hud" aria-live="polite">
+          {modalXformKind === 'grab' && 'Move (G) — LMB confirm · RMB cancel'}
+          {modalXformKind === 'rotate' &&
+            'Rotate (R) — Shift 15° · LMB confirm · RMB cancel'}
+          {modalXformKind === 'scale' && 'Scale (S) — LMB confirm · RMB cancel'}
+        </div>
+      )}
       <div
         className="canvas-world"
         style={{
@@ -1820,19 +2373,20 @@ export function InfiniteCanvas() {
 
               const additive = e.shiftKey || e.ctrlKey || e.metaKey
               if (f.isRecord) {
-                if (additive) store.selectStacks([f.gid], true)
-                else if (!store.selectedStackIds.includes(f.gid)) {
+                if (additive) {
+                  store.selectStacks([f.gid], true)
+                } else if (!store.selectedStackIds.includes(f.gid)) {
+                  // New primary stack selection (clears free items)
                   store.selectStacks([f.gid])
                 }
-                const stackIds = additive
-                  ? useCanvasStore.getState().selectedStackIds
-                  : [f.gid]
-                const origins: Record<string, { x: number; y: number }> = {}
-                const stackOrigins: Record<string, { x: number; y: number }> =
-                  {}
-                for (const sid of stackIds) {
-                  const st = store.stacks.find((s) => s.id === sid)
-                  if (st) stackOrigins[sid] = { x: st.x, y: st.y }
+                // Already multi-selected: keep free items + all selected stacks
+                const joint = captureJointMoveSelection(
+                  useCanvasStore.getState(),
+                )
+                if (!joint.stackIds.includes(f.gid)) {
+                  joint.stackIds = [...joint.stackIds, f.gid]
+                  const st = store.stacks.find((s) => s.id === f.gid)
+                  if (st) joint.stackOrigins[f.gid] = { x: st.x, y: st.y }
                 }
                 dragRef.current = {
                   kind: 'pending-move',
@@ -1844,12 +2398,12 @@ export function InfiniteCanvas() {
                   startClientY: e.clientY,
                   lastX: e.clientX,
                   lastY: e.clientY,
-                  ids: [],
-                  origins,
-                  stackIds,
-                  stackOrigins,
+                  ids: joint.ids,
+                  origins: joint.origins,
+                  stackIds: joint.stackIds,
+                  stackOrigins: joint.stackOrigins,
                   duplicated: false,
-                  altHeld: false,
+                  altHeld: e.altKey,
                 }
                 surfaceRef.current?.setPointerCapture(e.pointerId)
                 return
@@ -2005,17 +2559,13 @@ export function InfiniteCanvas() {
                   else if (!store.selectedStackIds.includes(gid)) {
                     store.selectStacks([gid])
                   }
-                  const stackIds = additive
-                    ? useCanvasStore.getState().selectedStackIds
-                    : [gid]
-                  const origins: Record<string, { x: number; y: number }> = {}
-                  const stackOrigins: Record<
-                    string,
-                    { x: number; y: number }
-                  > = {}
-                  for (const sid of stackIds) {
-                    const st = store.stacks.find((s) => s.id === sid)
-                    if (st) stackOrigins[sid] = { x: st.x, y: st.y }
+                  const joint = captureJointMoveSelection(
+                    useCanvasStore.getState(),
+                  )
+                  if (!joint.stackIds.includes(gid)) {
+                    joint.stackIds = [...joint.stackIds, gid]
+                    const st = store.stacks.find((s) => s.id === gid)
+                    if (st) joint.stackOrigins[gid] = { x: st.x, y: st.y }
                   }
                   dragRef.current = {
                     kind: 'pending-move',
@@ -2027,12 +2577,12 @@ export function InfiniteCanvas() {
                     startClientY: e.clientY,
                     lastX: e.clientX,
                     lastY: e.clientY,
-                    ids: [],
-                    origins,
-                    stackIds,
-                    stackOrigins,
+                    ids: joint.ids,
+                    origins: joint.origins,
+                    stackIds: joint.stackIds,
+                    stackOrigins: joint.stackOrigins,
                     duplicated: false,
-                    altHeld: false,
+                    altHeld: e.altKey,
                   }
                   surfaceRef.current?.setPointerCapture(e.pointerId)
                 }}
@@ -2059,6 +2609,72 @@ export function InfiniteCanvas() {
             />
           </div>
         ))}
+        {/* Multi-select group bounding box (2+ free items and/or stacks) */}
+        {isGroupSelect && groupBounds && !stackEnterAnim && (
+          <div
+            className="group-selection-box"
+            style={{
+              transform: `translate(${groupBounds.x}px, ${groupBounds.y}px)`,
+              width: groupBounds.width,
+              height: groupBounds.height,
+              zIndex: 100000,
+              // Hold C for crop: let events pass through to canvas surface
+              pointerEvents: cHeld ? 'none' : 'auto',
+            }}
+            onPointerDown={(e) => {
+              // Drag the group by grabbing the box fill (not corners/edges)
+              if (e.button !== 0) return
+              const store = useCanvasStore.getState()
+              // Never steal crop / pan gestures
+              if (store.cHeld || store.spaceHeld || store.tool === 'pan') return
+              if (
+                (e.target as HTMLElement).closest?.(
+                  '.group-scale-handle, .group-scale-edge',
+                )
+              )
+                return
+              e.stopPropagation()
+              if (isInteractionLocked()) return
+              dismissStackNameEdit()
+              blurChrome()
+              flushDragWrite()
+              const joint = captureJointMoveSelection(store)
+              if (joint.ids.length === 0 && joint.stackIds.length === 0) return
+              dragRef.current = {
+                kind: 'pending-move',
+                itemId: joint.ids[0] || joint.stackIds[0] || 'group',
+                isStacked: false,
+                canEditText: false,
+                startClientX: e.clientX,
+                startClientY: e.clientY,
+                lastX: e.clientX,
+                lastY: e.clientY,
+                ids: joint.ids,
+                origins: joint.origins,
+                stackIds: joint.stackIds,
+                stackOrigins: joint.stackOrigins,
+                duplicated: false,
+                altHeld: e.altKey,
+              }
+              surfaceRef.current?.setPointerCapture(e.pointerId)
+            }}
+          >
+            {(['n', 'e', 's', 'w'] as GroupScaleHandle[]).map((h) => (
+              <div
+                key={h}
+                className={`group-scale-edge edge-${h}`}
+                onPointerDown={(e) => onGroupScalePointerDown(e, h)}
+              />
+            ))}
+            {(['nw', 'ne', 'sw', 'se'] as GroupScaleHandle[]).map((h) => (
+              <div
+                key={h}
+                className={`group-scale-handle handle-${h}`}
+                onPointerDown={(e) => onGroupScalePointerDown(e, h)}
+              />
+            ))}
+          </div>
+        )}
         {/*
           Embed keepalive: every embed stays mounted for the board lifetime.
           Only pose/visibility change on stack enter/exit — iframe never remounts.

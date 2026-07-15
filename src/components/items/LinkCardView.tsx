@@ -134,14 +134,19 @@ export function LinkCardView({ item, selected }: Props) {
         (current.siteName || '') === (merged.siteName || '')
 
       if (!same || current.previewStatus !== 'complete') {
-        updateItem(item.id, {
-          title: merged.title,
-          description: merged.description,
-          favicon: stableFavicon,
-          image: merged.image,
-          siteName: merged.siteName,
-          previewStatus: 'complete',
-        })
+        // Automatic metadata — do not mark the board dirty (reopen clean boards)
+        updateItem(
+          item.id,
+          {
+            title: merged.title,
+            description: merged.description,
+            favicon: stableFavicon,
+            image: merged.image,
+            siteName: merged.siteName,
+            previewStatus: 'complete',
+          },
+          { dirty: false },
+        )
       }
       setLoading(false)
     })()
@@ -194,15 +199,20 @@ export function LinkCardView({ item, selected }: Props) {
   const commit = () => {
     const url = normalizeUrl(draft)
     const place = placeholderPreview(url)
-    updateItem(item.id, {
-      url,
-      title: place.title,
-      description: place.description,
-      favicon: place.favicon,
-      image: undefined,
-      siteName: undefined,
-      previewStatus: url ? 'pending' : undefined,
-    })
+    // User-edited URL — one undo step for the whole card field change
+    updateItem(
+      item.id,
+      {
+        url,
+        title: place.title,
+        description: place.description,
+        favicon: place.favicon,
+        image: undefined,
+        siteName: undefined,
+        previewStatus: url ? 'pending' : undefined,
+      },
+      { history: true },
+    )
     setEditing(false)
   }
 
@@ -237,7 +247,9 @@ export function LinkCardView({ item, selected }: Props) {
       onDoubleClick={(e) => {
         e.stopPropagation()
         e.preventDefault()
-        void openLink()
+        // Open immediately (also mirrored in InfiniteCanvas pending-move dbl-click
+        // because pointer-capture often suppresses native dblclick).
+        if (item.url?.trim()) void openExternal(item.url.trim())
       }}
     >
       <div className="bookmark-body">
@@ -304,13 +316,13 @@ export function LinkCardView({ item, selected }: Props) {
                     })
                     .then((data) => {
                       if (data?.startsWith('data:')) {
-                        updateItem(item.id, { image: data })
+                        updateItem(item.id, { image: data }, { dirty: false })
                         setImgBroken(false)
                         return
                       }
                       const proxied = proxiedImageUrl(src)
                       if (proxied !== src) {
-                        updateItem(item.id, { image: proxied })
+                        updateItem(item.id, { image: proxied }, { dirty: false })
                         setImgBroken(false)
                         return
                       }
@@ -322,7 +334,7 @@ export function LinkCardView({ item, selected }: Props) {
                 // Browser: re-route blocked CDNs through wsrv.nl once
                 const proxied = proxiedImageUrl(src)
                 if (proxied !== src) {
-                  updateItem(item.id, { image: proxied })
+                  updateItem(item.id, { image: proxied }, { dirty: false })
                   setImgBroken(false)
                   return
                 }

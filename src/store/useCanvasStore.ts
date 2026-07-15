@@ -28,6 +28,7 @@ import {
   type LayoutTarget,
 } from '../utils/layout'
 import {
+  allocateNestedStackTreeZ,
   allocateStackZBlock,
   buildRaiseZMap,
   freezeStackSurfaceZ,
@@ -44,6 +45,7 @@ import {
   freeFanRelFromLocalFan,
   itemsInContainer,
   migrateLegacyStacks,
+  nextUniqueStackName,
   resolveNestedFreeFan,
   stackDisplayName,
   stackPath,
@@ -52,13 +54,32 @@ import {
 } from '../utils/stacks'
 import { faviconFor, guessTitleFromUrl, normalizeUrl } from '../utils/linkMeta'
 import { eraseFromPaths, recomputeScribbleBounds } from '../utils/scribble'
-import { applyWorldCrop } from '../utils/crop'
+import {
+  applyWorldCrop,
+  isAxisAlignedForCrop,
+  uncropFrame,
+} from '../utils/crop'
 import {
   computeAlignPatches,
   computePackPatches,
   type AlignMode,
   type PackDir,
 } from '../utils/align'
+import { applyItemPatch, applyItemPatches } from './itemPatch'
+import type { HistoryEntry, ItemPatchOptions, StackEnterAnim } from './types'
+import {
+  cloneItemsDeep,
+  cloneItemsForHistory,
+  cloneStacksDeep,
+  cloneStacksForHistory,
+} from './cloneDocument'
+import {
+  collectBlobUrlsFromItems,
+  revokeAllTrackedBlobUrls,
+  revokeUnreferencedBlobs,
+} from '../utils/blobUrls'
+
+export type { HistoryEntry, ItemPatchOptions, StackEnterAnim } from './types'
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 }
 
@@ -71,63 +92,6 @@ const FONT_STACKS = [
 ] as const
 
 export { FONT_STACKS }
-
-interface HistoryEntry {
-  items: CanvasItem[]
-  stacks: StackRecord[]
-  nextZ: number
-  currentContainerId: string
-}
-
-/** Screen-space folder morph for enter (expand) / exit (shrink + settle) */
-export interface StackEnterAnim {
-  stackId: string
-  /** enter: folder→screen; exit: screen→folder then settle onto real chrome */
-  mode: 'enter' | 'exit'
-  /** Screen-space rect at t=0 */
-  start: { x: number; y: number; w: number; h: number }
-  /** Screen-space rect at t=1 (defaults to fullscreen for enter) */
-  end?: { x: number; y: number; w: number; h: number }
-  /** 0..1 morph progress */
-  t: number
-  /**
-   * Exit only: after morph, crossfade overlay → real StackFolder (0..1).
-   * Real folder fades in while overlay fades out — no pop-in.
-   */
-  settle?: number
-  /**
-   * Parent-canvas peer visibility (0 = hidden, 1 = full).
-   * Exit: 0 → 1 (fade in, starts ~200ms after exit begins).
-   * Enter: 1 → 0 (fade out, reverse of exit appear curve).
-   */
-  peerReveal?: number
-  /**
-   * Nested child-stack folder chrome opacity while entering/exiting this stack.
-   * Exit: 1 → 0 (B folder dissolves into the fan). Enter: 0 → 1 (B reappears).
-   */
-  nestedChromeOpacity?: number
-  /**
-   * Enter only: nested-stack leaf cards animating on the parent stack canvas
-   * (fan → free pose inside nested folder) while nested chrome fades in.
-   */
-  nestedLeafAnims?: Array<{
-    id: string
-    start: { x: number; y: number; rotation: number }
-    end: { x: number; y: number; rotation: number }
-    width: number
-    height: number
-    zIndex: number
-  }>
-  /** Folder tab label (empty = compact tab) */
-  name?: string
-  /** Count badge on folder */
-  memberCount?: number
-  /**
-   * Exit only: container the path should show during the exit anim
-   * (parent/home). Breadcrumb switches immediately; canvas handoff stays later.
-   */
-  targetContainerId?: string
-}
 
 interface CanvasState {
   items: CanvasItem[]
@@ -170,6 +134,8 @@ interface CanvasState {
   saveNoticeSeq: number
   /** Enter-stack folder expand animation (screen space) */
   stackEnterAnim: StackEnterAnim | null
+  /** Pending navigation target after current exit animation finishes (multi-level jump) */
+  pendingNavigation: string | null
   history: HistoryEntry[]
   future: HistoryEntry[]
 
@@ -213,8 +179,24 @@ interface CanvasState {
     stackId: string,
     screenRect?: { x: number; y: number; w: number; h: number },
   ) => void
-  /** Navigate to a container on the path (`root` or stack id) */
-  navigateToContainer: (containerId: string) => void
+  /**
+   * Navigate to a container on the path (`root` or stack id).
+   * Multi-level jumps play **one** exit animation from the current level, then
+   * silently fold intermediate parents so fans stay correct without stepwise UX.
+   * `animate: false` applies gather handoff with no RAF (used for the silent tail).
+   */
+  navigateToContainer: (
+    containerId: string,
+    options?: { animate?: boolean },
+  ) => void
+  /**
+   * Deep-clone free items and/or stack trees (with remapped ids).
+   * Returns new free item ids + top-level stack ids. Does not push history.
+   */
+  duplicateBodies: (
+    itemIds: string[],
+    stackIds: string[],
+  ) => { itemIds: string[]; stackIds: string[] }
   setStackEnterAnim: (anim: StackEnterAnim | null) => void
   updateStacks: (
     patches: Array<{ id: string; patch: Partial<StackRecord> }>,
@@ -222,8 +204,19 @@ interface CanvasState {
   moveStacks: (ids: string[], dx: number, dy: number) => void
 
   addItems: (items: CanvasItem[], select?: boolean) => void
-  updateItem: (id: string, patch: Partial<CanvasItem>) => void
-  updateItems: (patches: Array<{ id: string; patch: Partial<CanvasItem> }>) => void
+  /**
+   * Patch one item. Options control dirty flag and optional history push.
+   * Prefer `useHistoryOnce` for continuous gestures instead of `history: true` each frame.
+   */
+  updateItem: (
+    id: string,
+    patch: Partial<CanvasItem>,
+    options?: ItemPatchOptions,
+  ) => void
+  updateItems: (
+    patches: Array<{ id: string; patch: Partial<CanvasItem> }>,
+    options?: ItemPatchOptions,
+  ) => void
   moveItems: (ids: string[], dx: number, dy: number) => void
   resizeItem: (id: string, width: number, height: number, x?: number, y?: number) => void
   deleteSelected: () => void
@@ -242,6 +235,8 @@ interface CanvasState {
   pasteClipboard: () => boolean
   /** Whether the in-app clipboard has content */
   hasClipboard: () => boolean
+  /** Clear the in-app clipboard (e.g. on window blur so external copies take priority) */
+  clearClipboard: () => void
 
   addText: (world: Point, options?: { content?: string; width?: number; height?: number }) => void
   addTextCard: (
@@ -259,11 +254,22 @@ interface CanvasState {
   appendScribblePoint: (id: string, world: Point) => void
   endScribble: () => void
   eraseAt: (world: Point, radius?: number) => void
+  /**
+   * Axis-aligned crop for one or more free media (image/gif/video).
+   * Rotated items are skipped. Returns how many items were cropped.
+   */
   applyCrop: (
-    id: string,
+    ids: string | string[],
     worldRect: { x: number; y: number; width: number; height: number },
-  ) => void
+  ) => number
   restoreCrop: (ids?: string[]) => void
+  /** Reset rotation of selected free items to 0° (Alt+R) */
+  restoreRotation: (ids?: string[]) => void
+  /**
+   * Restore selected media display size to source natural pixels
+   * (current crop region), keeping center fixed (Alt+S).
+   */
+  restoreNativeScale: (ids?: string[]) => void
 
   /** Align selected bodies (stack = one unit) */
   alignSelected: (mode: import('../utils/align').AlignMode) => void
@@ -312,12 +318,57 @@ interface CanvasState {
   setBoardName: (name: string) => void
 }
 
+/** Undo snapshots: share media string refs (see cloneDocument.ts). */
 function cloneItems(items: CanvasItem[]): CanvasItem[] {
-  return structuredClone(items)
+  return cloneItemsForHistory(items)
 }
 
 function cloneStacks(stacks: StackRecord[]): StackRecord[] {
-  return structuredClone(stacks)
+  return cloneStacksForHistory(stacks)
+}
+
+/** True when any id in zMap actually changes zIndex on the document. */
+function itemZChanged(
+  items: CanvasItem[],
+  zMap: Map<string, number>,
+): boolean {
+  if (zMap.size === 0) return false
+  for (const [id, z] of zMap) {
+    const it = items.find((i) => i.id === id)
+    if (it && it.zIndex !== z) return true
+  }
+  return false
+}
+
+function stackZChanged(
+  stacks: StackRecord[],
+  zMap: Map<string, number>,
+): boolean {
+  if (zMap.size === 0) return false
+  for (const [id, z] of zMap) {
+    const st = stacks.find((s) => s.id === id)
+    if (st && st.zIndex !== z) return true
+  }
+  return false
+}
+
+/**
+ * Blob URLs still needed by live board + undo/redo stacks.
+ * Call before revoking anything removed from the live document.
+ */
+function blobUrlsStillReachable(
+  liveItems: CanvasItem[],
+  history: HistoryEntry[],
+  future: HistoryEntry[],
+): Set<string> {
+  const set = collectBlobUrlsFromItems(liveItems)
+  for (const h of history) {
+    for (const u of collectBlobUrlsFromItems(h.items)) set.add(u)
+  }
+  for (const f of future) {
+    for (const u of collectBlobUrlsFromItems(f.items)) set.add(u)
+  }
+  return set
 }
 
 /** In-app cut/copy buffer (not the OS clipboard) */
@@ -330,6 +381,265 @@ type CanvasClipboard = {
 }
 
 let canvasClipboard: CanvasClipboard | null = null
+
+type GetState = () => CanvasState
+type SetState = (
+  partial:
+    | Partial<CanvasState>
+    | ((s: CanvasState) => Partial<CanvasState>),
+) => void
+
+/**
+ * Remap and insert free items + stack trees onto the current canvas.
+ * - Remaps item/stack ids and freeFanRel references
+ * - Assigns contiguous z blocks per top-level stack (folder + fan atomic)
+ * - Preserves freeFanRel leaf order for fan z
+ */
+function cloneBodiesIntoCanvas(
+  get: GetState,
+  set: SetState,
+  srcItems: CanvasItem[],
+  srcStacks: StackRecord[],
+  options: {
+    recenter?: boolean
+    select?: boolean
+    dx?: number
+    dy?: number
+  },
+): { itemIds: string[]; stackIds: string[] } | null {
+  if (srcItems.length === 0 && srcStacks.length === 0) return null
+  const s = get()
+  const targetContainer = s.currentContainerId
+
+  const stackIdMap = new Map<string, string>()
+  for (const st of srcStacks) {
+    stackIdMap.set(st.id, uid('stack'))
+  }
+  const itemIdMap = new Map<string, string>()
+  for (const it of srcItems) {
+    itemIdMap.set(it.id, uid(it.type))
+  }
+
+  const isTopLevelStack = (st: StackRecord) => !stackIdMap.has(st.parentId)
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  const expand = (x: number, y: number, w: number, h: number) => {
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x + w)
+    maxY = Math.max(maxY, y + h)
+  }
+  for (const st of srcStacks) {
+    if (isTopLevelStack(st)) expand(st.x, st.y, st.width, st.height)
+  }
+  for (const it of srcItems) {
+    if (stackIdMap.has(containerOf(it))) continue
+    expand(it.x, it.y, it.width, it.height)
+  }
+  if (!Number.isFinite(minX)) {
+    minX = 0
+    minY = 0
+    maxX = 200
+    maxY = 200
+  }
+
+  let dx = options.dx ?? 0
+  let dy = options.dy ?? 0
+  if (options.recenter) {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1440
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 900
+    const vp = s.viewport
+    const centerWorldX = (vw / 2 - vp.x) / vp.zoom
+    const centerWorldY = (vh / 2 - vp.y) / vp.zoom
+    dx = centerWorldX - (minX + maxX) / 2
+    dy = centerWorldY - (minY + maxY) / 2
+  }
+
+  const topLevelOldStackIds = new Set(
+    srcStacks.filter(isTopLevelStack).map((st) => st.id),
+  )
+  const newStackIds: string[] = []
+
+  // Preserve original z within each stack for fan order, then re-block
+  const newStacks: StackRecord[] = srcStacks.map((st) => {
+    const newId = stackIdMap.get(st.id)!
+    const top = isTopLevelStack(st)
+    const parentId = top
+      ? targetContainer
+      : (stackIdMap.get(st.parentId) ?? targetContainer)
+    const freeFanRel = st.freeFanRel
+      ? st.freeFanRel
+          .map((r) => {
+            const nid = itemIdMap.get(r.id)
+            if (!nid) return null
+            return { ...r, id: nid }
+          })
+          .filter((r): r is NonNullable<typeof r> => r != null)
+      : undefined
+    const next: StackRecord = {
+      ...st,
+      id: newId,
+      parentId,
+      x: top ? st.x + dx : st.x,
+      y: top ? st.y + dy : st.y,
+      zIndex: st.zIndex,
+      viewport: st.viewport ? { ...st.viewport } : undefined,
+      ...(freeFanRel && freeFanRel.length > 0 ? { freeFanRel } : {}),
+    }
+    if (top) newStackIds.push(newId)
+    return next
+  })
+
+  const newItems: CanvasItem[] = srcItems.map((raw) => {
+    const oldId = raw.id
+    const src = structuredClone(raw) as CanvasItem
+    const oldContainer = containerOf(src)
+    src.id = itemIdMap.get(oldId) || uid(src.type)
+
+    if (src.type === 'scribble') {
+      src.paths = src.paths.map((p) => ({ ...p, id: uid('path') }))
+    }
+
+    if (stackIdMap.has(oldContainer)) {
+      const {
+        stacked: _s,
+        stackGroupId: _g,
+        stackName: _n,
+        ...rest
+      } = src
+      let stackPreview = src.stackPreview
+        ? { ...src.stackPreview }
+        : undefined
+      if (stackPreview && topLevelOldStackIds.has(oldContainer)) {
+        stackPreview = {
+          ...stackPreview,
+          x: stackPreview.x + dx,
+          y: stackPreview.y + dy,
+        }
+      }
+      return tagContainer(
+        {
+          ...(rest as CanvasItem),
+          ...(stackPreview ? { stackPreview } : {}),
+          zIndex: src.zIndex,
+        } as CanvasItem,
+        stackIdMap.get(oldContainer)!,
+      )
+    }
+
+    return asPasteFreeItem(
+      {
+        ...src,
+        x: src.x + dx,
+        y: src.y + dy,
+        zIndex: src.zIndex,
+      } as CanvasItem,
+      targetContainer,
+    )
+  })
+
+  // Seed relative z from freeFanRel order so fan order matches the source
+  for (const st of newStacks) {
+    if (!st.freeFanRel?.length) continue
+    let z = 1
+    // Assign increasing z by freeFanRel index so fan paint order matches source
+    const byId = new Map(newItems.map((i) => [i.id, i]))
+    for (const r of st.freeFanRel) {
+      const it = byId.get(r.id)
+      if (it) it.zIndex = z++
+    }
+    const listed = new Set(st.freeFanRel.map((r) => r.id))
+    const treeIds = collectDescendantStackIds(newStacks, st.id)
+    const rest = newItems
+      .filter((i) => treeIds.has(containerOf(i)) && !listed.has(i.id))
+      .sort((a, b) => a.zIndex - b.zIndex)
+    for (const it of rest) it.zIndex = z++
+  }
+
+  // Merge into board then allocate contiguous z blocks per top-level stack
+  let nextZ = s.nextZ
+  let mergedItems = [...s.items, ...newItems]
+  let mergedStacks = [...s.stacks, ...newStacks]
+
+  for (const sid of newStackIds) {
+    // Surface order: freeFanRel leaf order as item keys when available
+    const st = mergedStacks.find((x) => x.id === sid)
+    const surfaceOrder: string[] | undefined = st?.freeFanRel?.length
+      ? (() => {
+          // Build surface order for direct children only
+          const directItems = mergedItems.filter(
+            (i) => containerOf(i) === sid,
+          )
+          const directStacks = stacksInContainer(mergedStacks, sid)
+          const keys: string[] = []
+          const seen = new Set<string>()
+          // Prefer freeFanRel order for any direct free items present there
+          for (const r of st!.freeFanRel!) {
+            if (directItems.some((i) => i.id === r.id) && !seen.has(r.id)) {
+              keys.push(`item:${r.id}`)
+              seen.add(r.id)
+            }
+          }
+          for (const i of directItems.sort((a, b) => a.zIndex - b.zIndex)) {
+            if (!seen.has(i.id)) {
+              keys.push(`item:${i.id}`)
+              seen.add(i.id)
+            }
+          }
+          for (const cs of directStacks.sort(
+            (a, b) => a.zIndex - b.zIndex,
+          )) {
+            keys.push(`stack:${cs.id}`)
+          }
+          return keys
+        })()
+      : undefined
+
+    const { itemZMap, stackZMap, nextZ: nz } = allocateNestedStackTreeZ(
+      mergedItems,
+      mergedStacks,
+      sid,
+      nextZ,
+      surfaceOrder,
+    )
+    nextZ = nz
+    mergedItems = mergedItems.map((item) =>
+      itemZMap.has(item.id)
+        ? { ...item, zIndex: itemZMap.get(item.id)! }
+        : item,
+    )
+    mergedStacks = mergedStacks.map((st2) =>
+      stackZMap.has(st2.id)
+        ? { ...st2, zIndex: stackZMap.get(st2.id)! }
+        : st2,
+    )
+  }
+
+  // Free items not inside pasted stacks: place above everything
+  const freeNew = newItems.filter((i) => containerOf(i) === targetContainer)
+  for (const it of freeNew) {
+    const live = mergedItems.find((m) => m.id === it.id)
+    if (live) live.zIndex = nextZ++
+  }
+
+  const topLevelItemIds = freeNew.map((i) => i.id)
+
+  set({
+    items: mergedItems,
+    stacks: mergedStacks,
+    nextZ,
+    selectedIds: options.select ? topLevelItemIds : s.selectedIds,
+    selectedStackIds: options.select ? newStackIds : s.selectedStackIds,
+    editingId: null,
+    editingStackGroupId: null,
+    dirty: true,
+  })
+
+  return { itemIds: topLevelItemIds, stackIds: newStackIds }
+}
 
 /**
  * Snapshot selection for cut/copy: free items + selected stacks (with full trees).
@@ -368,12 +678,8 @@ function snapshotSelection(state: {
 
   if (itemIds.size === 0 && stackIds.size === 0) return null
 
-  const clipItems = items
-    .filter((i) => itemIds.has(i.id))
-    .map((i) => structuredClone(i) as CanvasItem)
-  const clipStacks = stacks
-    .filter((s) => stackIds.has(s.id))
-    .map((s) => structuredClone(s) as StackRecord)
+  const clipItems = cloneItemsDeep(items.filter((i) => itemIds.has(i.id)))
+  const clipStacks = cloneStacksDeep(stacks.filter((s) => stackIds.has(s.id)))
 
   return {
     mode: 'copy',
@@ -514,10 +820,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   editingId: null,
   editingStackGroupId: null,
   snapEnabled: true,
-  immersiveMode: false,
+  immersiveMode: true,
   saveNotice: null,
   saveNoticeSeq: 0,
   stackEnterAnim: null,
+  pendingNavigation: null,
   history: [],
   future: [],
 
@@ -709,6 +1016,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const { zMap, nextZ } = buildRaiseZMap(s.items, selectedIds, s.nextZ, {
         promoteFreeId,
       })
+      const dirtyZ = itemZChanged(s.items, zMap)
 
       return {
         selectedIds,
@@ -718,6 +1026,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         items: s.items.map((item) =>
           zMap.has(item.id) ? { ...item, zIndex: zMap.get(item.id)! } : item,
         ),
+        // Raise-on-select persists in the file — mark dirty when z actually moves
+        ...(dirtyZ ? { dirty: true as const } : {}),
       }
     }),
 
@@ -763,6 +1073,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         selectedStackIds,
         s.nextZ,
       )
+      const dirtyZ =
+        itemZChanged(s.items, itemZMap) || stackZChanged(s.stacks, stackZMap)
 
       return {
         selectedStackIds,
@@ -777,6 +1089,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             ? { ...item, zIndex: itemZMap.get(item.id)! }
             : item,
         ),
+        ...(dirtyZ ? { dirty: true as const } : {}),
       }
     }),
 
@@ -796,6 +1109,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         stackIds,
         s.nextZ,
       )
+      const dirtyZ =
+        itemZChanged(s.items, itemZMap) || stackZChanged(s.stacks, stackZMap)
       return {
         selectedIds: itemIds,
         selectedStackIds: stackIds,
@@ -809,6 +1124,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             ? { ...item, zIndex: itemZMap.get(item.id)! }
             : item,
         ),
+        ...(dirtyZ ? { dirty: true as const } : {}),
       }
     }),
 
@@ -1239,10 +1555,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     requestAnimationFrame(tickVp)
   },
 
-  navigateToContainer: (containerId) => {
+  navigateToContainer: (containerId, options) => {
     const s = get()
     if (containerId === s.currentContainerId) return
-    if (s.animating) return
+    // Silent folds may run while animating is still true at settle end —
+    // only block user-driven animated nav when another anim is in flight.
+    const wantAnim = options?.animate !== false
+    if (wantAnim && s.animating) return
 
     const leavingId = s.currentContainerId
     const leavingStack =
@@ -1267,13 +1586,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
      * - Lerp poses to exact fan targets; last frame IS the final pose
      * - Folder morphs fullscreen → fan bbox (enter run backwards)
      * - Handoff keeps the same world numbers (no remapping) → no end jump
+     *
+     * Multi-level jumps (e.g. C → Home): play **one** animated exit from the
+     * current level, then silently fold remaining parents (`animate: false`)
+     * so fans are correct without stepwise intermediate animations.
      */
-    if (
-      leavingStack &&
-      (containerId === leavingStack.parentId ||
-        containerId === ROOT_CONTAINER_ID ||
-        s.stacks.some((st) => st.id === containerId))
-    ) {
+    if (leavingStack) {
+      const immediateTarget = leavingStack.parentId
+      const needsChaining = containerId !== immediateTarget
+      /** After first animated exit, remaining levels fold silently */
+      const chainSilent = needsChaining && wantAnim
+      const runExitAnim = wantAnim
       const members = itemsInContainer(s.items, leavingId)
       // Nested stacks on this canvas are atomic bodies (same as free items for fan)
       const childStacks = stacksInContainer(s.stacks, leavingId)
@@ -1630,13 +1953,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           ]),
         )
 
-        const t0 = performance.now()
-        /** Parent peers: start ~200ms after exit begins, ease over ~500ms */
-        const peerRevealAt = (now: number) => {
-          const u = Math.max(0, Math.min(1, (now - t0 - 200) / 500))
-          return u * u * (3 - 2 * u)
-        }
-
         // Nested leaf id → unit for frame-0 seating
         const nestedRelByLeaf = new Map<
           string,
@@ -1651,6 +1967,198 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               rotation: r.rotation,
             })
           }
+        }
+
+        const leafCountExit = countLeafItemsInStack(
+          get().items,
+          get().stacks,
+          leavingId,
+        )
+
+        /** Final gather handoff (same as anim end). Used by silent multi-level fold. */
+        const applyExitHandoff = (opts?: {
+          keepAnimating?: boolean
+          pending?: string | null
+          /** Continue peer fade from this value — do NOT jump to 1 (causes flash) */
+          peerReveal?: number
+        }) => {
+          const liveForZ = get()
+          const surfaceBackToFront = mixedFan.map((t) =>
+            childStackIdSet.has(t.id)
+              ? ({ kind: 'stack' as const, id: t.id })
+              : ({ kind: 'item' as const, id: t.id }),
+          )
+          const frozenZ = freezeStackSurfaceZ(
+            liveForZ.items,
+            liveForZ.stacks,
+            leavingId,
+            surfaceBackToFront,
+            leavingStack.zIndex,
+          )
+          const peerAt = opts?.peerReveal ?? 1
+          set({
+            animating: opts?.keepAnimating ?? false,
+            nextZ: Math.max(liveForZ.nextZ, frozenZ.nextZ),
+            items: get().items.map((item) => {
+              const z = frozenZ.itemZMap.get(item.id)
+              if (memberIds.has(item.id)) {
+                const free = freeMap.get(item.id)
+                const f = fanMap.get(item.id)
+                if (!f) {
+                  return z != null ? { ...item, zIndex: z } : item
+                }
+                return {
+                  ...item,
+                  stacked: false,
+                  stackGroupId: undefined,
+                  x: free?.x ?? item.x,
+                  y: free?.y ?? item.y,
+                  rotation: free?.rotation ?? 0,
+                  zIndex: z ?? item.zIndex,
+                  stackPreview: {
+                    x: parentStackX + f.x,
+                    y: parentStackY + f.y,
+                    rotation: f.rotation ?? 0,
+                  },
+                } as CanvasItem
+              }
+              for (const [sid, endU] of stackFanMap) {
+                const nu = nestedUnitById.get(sid)
+                if (!nu) continue
+                const rel = nu.rel.find((r) => r.id === item.id)
+                if (!rel) continue
+                const direct = containerOf(item) === sid
+                return {
+                  ...item,
+                  zIndex: z ?? item.zIndex,
+                  stackPreview: direct
+                    ? {
+                        x: endU.x + rel.dx,
+                        y: endU.y + rel.dy,
+                        rotation: rel.rotation,
+                      }
+                    : {
+                        x: rel.dx,
+                        y: rel.dy,
+                        rotation: rel.rotation,
+                      },
+                } as CanvasItem
+              }
+              return z != null ? { ...item, zIndex: z } : item
+            }),
+            stacks: get().stacks.map((st) => {
+              const sz = frozenZ.stackZMap.get(st.id)
+              if (st.id === leavingId) {
+                const freeFanRel = freeFanRelFromLocalFan(
+                  members
+                    .map((m) => {
+                      const f = fanMap.get(m.id)
+                      if (!f) return null
+                      return {
+                        id: m.id,
+                        x: f.x,
+                        y: f.y,
+                        rotation: f.rotation,
+                      }
+                    })
+                    .filter(
+                      (
+                        c,
+                      ): c is {
+                        id: string
+                        x: number
+                        y: number
+                        rotation: number
+                      } => c != null,
+                    ),
+                )
+                for (const nu of nestedUnits) {
+                  const endU = stackFanMap.get(nu.stackId)
+                  if (!endU) continue
+                  for (const r of nu.rel) {
+                    if (freeFanRel.some((x) => x.id === r.id)) continue
+                    freeFanRel.push({
+                      id: r.id,
+                      dx: endU.x + r.dx,
+                      dy: endU.y + r.dy,
+                      rotation: r.rotation,
+                    })
+                  }
+                }
+                return {
+                  ...st,
+                  x: parentStackX,
+                  y: parentStackY,
+                  width: finalAW,
+                  height: finalAH,
+                  viewport: { ...exitVp0 },
+                  zIndex: sz ?? st.zIndex,
+                  ...(freeFanRel.length > 0 ? { freeFanRel } : {}),
+                }
+              }
+              const freePose = nestedFreePose.get(st.id)
+              if (freePose) {
+                const persistRel = nestedFreeFanRelPersist.get(st.id)
+                return {
+                  ...st,
+                  x: freePose.x,
+                  y: freePose.y,
+                  width: freePose.width,
+                  height: freePose.height,
+                  zIndex: sz ?? st.zIndex,
+                  ...(persistRel ? { freeFanRel: persistRel } : {}),
+                }
+              }
+              return sz != null ? { ...st, zIndex: sz } : st
+            }),
+            currentContainerId: immediateTarget,
+            selectedIds: [],
+            selectedStackIds: [],
+            editingId: null,
+            editingStackGroupId: null,
+            stackEnterAnim: opts?.keepAnimating
+              ? {
+                  stackId: leavingId,
+                  mode: 'exit' as const,
+                  start: fullScreen,
+                  end: folderScreen,
+                  t: 1,
+                  settle: 0,
+                  peerReveal: peerAt,
+                  nestedChromeOpacity: 0,
+                  name: stackName,
+                  memberCount: leafCountExit,
+                  targetContainerId: chainSilent
+                    ? containerId
+                    : immediateTarget,
+                }
+              : null,
+            viewport: continuousVp,
+            ...(immediateTarget === ROOT_CONTAINER_ID
+              ? { homeViewport: continuousVp }
+              : {}),
+            pendingNavigation: opts?.pending ?? null,
+          })
+        }
+
+        // Silent multi-level tail (or full silent jump): handoff only, no RAF
+        if (!runExitAnim) {
+          applyExitHandoff({
+            keepAnimating: false,
+            pending: null,
+            peerReveal: 1,
+          })
+          if (needsChaining) {
+            get().navigateToContainer(containerId, { animate: false })
+          }
+          return
+        }
+
+        const t0 = performance.now()
+        /** Parent peers: start ~200ms after exit begins, ease over ~500ms */
+        const peerRevealAt = (now: number) => {
+          const u = Math.max(0, Math.min(1, (now - t0 - 200) / 500))
+          return u * u * (3 - 2 * u)
         }
 
         set({
@@ -1711,22 +2219,74 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               get().stacks,
               leavingId,
             ),
-            // Path switches immediately with exit; canvas handoff stays at end
-            targetContainerId: containerId,
+            // Path: final multi-level target if chaining, else immediate parent
+            targetContainerId: chainSilent ? containerId : immediateTarget,
           },
         })
 
-        const leafCountExit = countLeafItemsInStack(
-          get().items,
-          get().stacks,
-          leavingId,
-        )
         const dur = 560
         const easeOut = (t: number) => 1 - Math.pow(1 - t, 3)
         const folderPhase = (t: number) => easeOut(t)
         // Nested folder chrome dissolves during gather (slightly leads the end)
         const nestedChromeAt = (eFolder: number) =>
           Math.max(0, 1 - Math.min(1, eFolder / 0.85))
+
+        const finishAfterExitAnim = () => {
+          const pending = chainSilent ? containerId : null
+          // Keep peer fade continuous across handoff (no opacity jump / flash)
+          const peerNow = peerRevealAt(performance.now())
+          applyExitHandoff({
+            keepAnimating: true,
+            pending: null,
+            peerReveal: peerNow,
+          })
+          // Settle overlay + finish peer fade, then silent-fold remaining parents
+          const settleT0 = performance.now()
+          const settleDur = 160
+          const settleTick = (now: number) => {
+            const st = Math.min(1, (now - settleT0) / settleDur)
+            const e = st * st * (3 - 2 * st)
+            const anim = get().stackEnterAnim
+            const peer = peerRevealAt(now)
+            if (!anim || anim.mode !== 'exit') {
+              set({
+                animating: false,
+                stackEnterAnim: null,
+                pendingNavigation: null,
+              })
+              if (pending) {
+                queueMicrotask(() =>
+                  get().navigateToContainer(pending, { animate: false }),
+                )
+              }
+              return
+            }
+            set({
+              stackEnterAnim: {
+                ...anim,
+                t: 1,
+                settle: e,
+                peerReveal: peer,
+                targetContainerId: chainSilent ? containerId : immediateTarget,
+              },
+            })
+            if (st < 1 || peer < 0.999) {
+              requestAnimationFrame(settleTick)
+            } else {
+              set({
+                animating: false,
+                stackEnterAnim: null,
+                pendingNavigation: null,
+              })
+              if (pending) {
+                queueMicrotask(() =>
+                  get().navigateToContainer(pending, { animate: false }),
+                )
+              }
+            }
+          }
+          requestAnimationFrame(settleTick)
+        }
 
         const tick = (now: number) => {
           if (get().currentContainerId !== leavingId) {
@@ -1825,7 +2385,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               nestedChromeOpacity,
               name: stackName,
               memberCount: leafCountExit,
-              targetContainerId: containerId,
+              targetContainerId: chainSilent ? containerId : immediateTarget,
             },
           }))
 
@@ -1834,201 +2394,40 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             return
           }
 
-          const peerAtHandoff = peerRevealAt(performance.now())
-          // Final poses: nested member stackPreview stays A-local (parent of B = A).
-          // Direct A members get parent-of-A absolute stackPreview.
-          // Nested StackRecord free pose on A is restored so re-enter keeps place;
-          // home fan uses leaf stackPreview (not B.x/y) when previews exist.
-          // Freeze surface z to exit fan order (back→front).
-          const liveForZ = get()
-          const surfaceBackToFront = mixedFan.map((t) =>
-            childStackIdSet.has(t.id)
-              ? ({ kind: 'stack' as const, id: t.id })
-              : ({ kind: 'item' as const, id: t.id }),
-          )
-          const frozenZ = freezeStackSurfaceZ(
-            liveForZ.items,
-            liveForZ.stacks,
-            leavingId,
-            surfaceBackToFront,
-            leavingStack.zIndex,
-          )
-          set({
-            animating: true,
-            nextZ: Math.max(liveForZ.nextZ, frozenZ.nextZ),
-            items: get().items.map((item) => {
-              const z = frozenZ.itemZMap.get(item.id)
-              if (memberIds.has(item.id)) {
-                const free = freeMap.get(item.id)
-                const f = fanMap.get(item.id)
-                if (!f) {
-                  return z != null ? { ...item, zIndex: z } : item
-                }
-                return {
-                  ...item,
-                  stacked: false,
-                  stackGroupId: undefined,
-                  x: free?.x ?? item.x,
-                  y: free?.y ?? item.y,
-                  rotation: free?.rotation ?? 0,
-                  zIndex: z ?? item.zIndex,
-                  stackPreview: {
-                    x: parentStackX + f.x,
-                    y: parentStackY + f.y,
-                    rotation: f.rotation ?? 0,
-                  },
-                } as CanvasItem
-              }
-              // Nested unit leaves: keep B-local offsets for deep (C); direct B
-              // get A-local gather. Home pile places C via freeFanRel + visual origin.
-              for (const [sid, endU] of stackFanMap) {
-                const nu = nestedUnitById.get(sid)
-                if (!nu) continue
-                const rel = nu.rel.find((r) => r.id === item.id)
-                if (!rel) continue
-                const direct = containerOf(item) === sid
-                return {
-                  ...item,
-                  zIndex: z ?? item.zIndex,
-                  stackPreview: direct
-                    ? {
-                        x: endU.x + rel.dx,
-                        y: endU.y + rel.dy,
-                        rotation: rel.rotation,
-                      }
-                    : {
-                        x: rel.dx,
-                        y: rel.dy,
-                        rotation: rel.rotation,
-                      },
-                } as CanvasItem
-              }
-              return z != null ? { ...item, zIndex: z } : item
-            }),
-            stacks: get().stacks.map((st) => {
-              const sz = frozenZ.stackZMap.get(st.id)
-              if (st.id === leavingId) {
-                // Cache collapsed fan of THIS stack (folder-local), including deep
-                // leaves (A⊃B⊃C). Must use GATHER end poses for nested units —
-                // freePose+rel left C at free layout far from the pile while
-                // direct free members used fanMap gather, so C sat bottom-right.
-                const freeFanRel = freeFanRelFromLocalFan(
-                  members
-                    .map((m) => {
-                      const f = fanMap.get(m.id)
-                      if (!f) return null
-                      return {
-                        id: m.id,
-                        x: f.x,
-                        y: f.y,
-                        rotation: f.rotation,
-                      }
-                    })
-                    .filter(
-                      (
-                        c,
-                      ): c is {
-                        id: string
-                        x: number
-                        y: number
-                        rotation: number
-                      } => c != null,
-                    ),
-                )
-                // Nested child trees: same gather-local space as direct free fan
-                for (const nu of nestedUnits) {
-                  const endU = stackFanMap.get(nu.stackId)
-                  if (!endU) continue
-                  for (const r of nu.rel) {
-                    if (freeFanRel.some((x) => x.id === r.id)) continue
-                    freeFanRel.push({
-                      id: r.id,
-                      dx: endU.x + r.dx,
-                      dy: endU.y + r.dy,
-                      rotation: r.rotation,
-                    })
-                  }
-                }
-                return {
-                  ...st,
-                  x: parentStackX,
-                  y: parentStackY,
-                  width: finalAW,
-                  height: finalAH,
-                  viewport: { ...exitVp0 },
-                  zIndex: sz ?? st.zIndex,
-                  ...(freeFanRel.length > 0 ? { freeFanRel } : {}),
-                }
-              }
-              // Nested B: restore free pose on A (fixed shell; freeFanRel with deep leaves)
-              const freePose = nestedFreePose.get(st.id)
-              if (freePose) {
-                const persistRel = nestedFreeFanRelPersist.get(st.id)
-                return {
-                  ...st,
-                  x: freePose.x,
-                  y: freePose.y,
-                  width: freePose.width,
-                  height: freePose.height,
-                  zIndex: sz ?? st.zIndex,
-                  ...(persistRel ? { freeFanRel: persistRel } : {}),
-                }
-              }
-              return sz != null ? { ...st, zIndex: sz } : st
-            }),
-            currentContainerId: containerId,
-            selectedIds: [],
-            selectedStackIds: [],
-            editingId: null,
-            editingStackGroupId: null,
-            stackEnterAnim: {
-              stackId: leavingId,
-              mode: 'exit',
-              start: fullScreen,
-              end: folderScreen,
-              t: 1,
-              settle: 0,
-              peerReveal: peerAtHandoff,
-              nestedChromeOpacity: 0,
-              name: stackName,
-              memberCount: leafCountExit,
-              targetContainerId: containerId,
-            },
-            viewport: continuousVp,
-            ...(containerId === ROOT_CONTAINER_ID
-              ? { homeViewport: continuousVp }
-              : {}),
-          })
-
-          const settleT0 = performance.now()
-          const settleDur = 160
-          const settleTick = (now: number) => {
-            const st = Math.min(1, (now - settleT0) / settleDur)
-            const e = st * st * (3 - 2 * st)
-            const anim = get().stackEnterAnim
-            if (!anim || anim.mode !== 'exit') {
-              set({ animating: false, stackEnterAnim: null })
-              return
-            }
-            set({
-              stackEnterAnim: {
-                ...anim,
-                t: 1,
-                settle: e,
-                peerReveal: peerRevealAt(now),
-              },
-            })
-            if (st < 1 || peerRevealAt(now) < 0.999) {
-              requestAnimationFrame(settleTick)
-            } else {
-              set({ animating: false, stackEnterAnim: null })
-            }
-          }
-          requestAnimationFrame(settleTick)
+          finishAfterExitAnim()
         }
         requestAnimationFrame(tick)
         return
       }
+
+      // Empty stack — exit immediately without animation
+      const emptyTargetVp =
+        immediateTarget === ROOT_CONTAINER_ID
+          ? { ...get().homeViewport }
+          : (() => {
+              const parentStack = get().stacks.find(
+                (st) => st.id === immediateTarget,
+              )
+              return parentStack?.viewport
+                ? { ...parentStack.viewport }
+                : { ...get().viewport }
+            })()
+      set({
+        currentContainerId: immediateTarget,
+        selectedIds: [],
+        selectedStackIds: [],
+        editingId: null,
+        editingStackGroupId: null,
+        stackEnterAnim: null,
+        animating: false,
+        viewport: emptyTargetVp,
+        pendingNavigation: null,
+      })
+      if (needsChaining) {
+        // Silent fold remaining levels (one shot, no stepwise anim)
+        get().navigateToContainer(containerId, { animate: false })
+      }
+      return
     }
 
     if (containerId === ROOT_CONTAINER_ID) {
@@ -2111,18 +2510,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   pushHistory: () => {
-    const { items, stacks, nextZ, currentContainerId, history } = get()
+    const { items, stacks, nextZ, currentContainerId, history, future } = get()
     const entry: HistoryEntry = {
       items: cloneItems(items),
       stacks: cloneStacks(stacks),
       nextZ,
       currentContainerId,
     }
+    // Cap ~50 entries; dropping oldest / clearing redo may orphan blob URLs
+    const nextHistory = [...history.slice(-49), entry]
+    const droppedHistory =
+      history.length > 49 ? history.slice(0, history.length - 49) : []
+    const droppedFuture = future
     set({
-      history: [...history.slice(-49), entry],
+      history: nextHistory,
       future: [],
       dirty: true,
     })
+    if (droppedHistory.length > 0 || droppedFuture.length > 0) {
+      const live = get()
+      const keep = blobUrlsStillReachable(live.items, live.history, live.future)
+      for (const d of droppedHistory) revokeUnreferencedBlobs(d.items, keep)
+      for (const d of droppedFuture) revokeUnreferencedBlobs(d.items, keep)
+    }
   },
 
   markDirty: () => set({ dirty: true }),
@@ -2152,6 +2562,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       currentContainerId: prev.currentContainerId ?? ROOT_CONTAINER_ID,
       selectedIds: [],
       selectedStackIds: [],
+      editingId: null,
+      editingStackGroupId: null,
+      animating: false,
+      stackEnterAnim: null,
+      pendingNavigation: null,
       dirty: true,
     })
   },
@@ -2178,6 +2593,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       currentContainerId: next.currentContainerId ?? ROOT_CONTAINER_ID,
       selectedIds: [],
       selectedStackIds: [],
+      editingId: null,
+      editingStackGroupId: null,
+      animating: false,
+      stackEnterAnim: null,
+      pendingNavigation: null,
       dirty: true,
     })
   },
@@ -2195,23 +2615,45 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }))
   },
 
-  updateItem: (id, patch) =>
-    set((s) => ({
-      dirty: true,
-      items: s.items.map((item) =>
-        item.id === id ? ({ ...item, ...patch } as CanvasItem) : item,
-      ),
-    })),
+  updateItem: (id, patch, options) => {
+    if (options?.history) get().pushHistory()
+    const markDirty = options?.dirty !== false
+    set((s) => {
+      const prev = s.items.find((i) => i.id === id)
+      const items = applyItemPatch(s.items, id, patch)
+      if (items === s.items) return {}
+      // Revoke replaced blob URLs only when no history entry still needs them
+      if (prev) {
+        const next = items.find((i) => i.id === id)
+        const mediaSrcChanged =
+          (prev.type === 'image' ||
+            prev.type === 'gif' ||
+            prev.type === 'video') &&
+          next &&
+          'src' in next &&
+          prev.src !== (next as { src: string }).src
+        const linkImgChanged =
+          prev.type === 'link' &&
+          next?.type === 'link' &&
+          (prev.image !== next.image || prev.favicon !== next.favicon)
+        if (mediaSrcChanged || linkImgChanged) {
+          const keep = blobUrlsStillReachable(items, s.history, s.future)
+          revokeUnreferencedBlobs([prev], keep)
+        }
+      }
+      return markDirty ? { items, dirty: true } : { items }
+    })
+  },
 
-  updateItems: (patches) => {
-    const map = new Map(patches.map((p) => [p.id, p.patch]))
-    set((s) => ({
-      dirty: true,
-      items: s.items.map((item) => {
-        const patch = map.get(item.id)
-        return patch ? ({ ...item, ...patch } as CanvasItem) : item
-      }),
-    }))
+  updateItems: (patches, options) => {
+    if (patches.length === 0) return
+    if (options?.history) get().pushHistory()
+    const markDirty = options?.dirty !== false
+    set((s) => {
+      const items = applyItemPatches(s.items, patches)
+      if (items === s.items) return {}
+      return markDirty ? { items, dirty: true } : { items }
+    })
   },
 
   moveItems: (ids, dx, dy) => {
@@ -2262,17 +2704,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       }
     }
 
-    set((s) => ({
-      items: s.items.filter((i) => !removeItemIds.has(i.id)),
-      stacks: s.stacks.filter((st) => !removeStackIds.has(st.id)),
-      selectedIds: [],
-      selectedStackIds: [],
-      editingStackGroupId:
-        editingStackGroupId && removeStackIds.has(editingStackGroupId)
-          ? null
-          : s.editingStackGroupId,
-      dirty: true,
-    }))
+    set((s) => {
+      const remaining = s.items.filter((i) => !removeItemIds.has(i.id))
+      // pushHistory already ran — history holds pre-delete items with blob srcs
+      const keep = blobUrlsStillReachable(remaining, s.history, s.future)
+      revokeUnreferencedBlobs(s.items, keep)
+      return {
+        items: remaining,
+        stacks: s.stacks.filter((st) => !removeStackIds.has(st.id)),
+        selectedIds: [],
+        selectedStackIds: [],
+        editingStackGroupId:
+          editingStackGroupId && removeStackIds.has(editingStackGroupId)
+            ? null
+            : s.editingStackGroupId,
+        dirty: true,
+      }
+    })
   },
 
   hasClipboard: () =>
@@ -2280,6 +2728,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       canvasClipboard &&
       (canvasClipboard.items.length > 0 || canvasClipboard.stacks.length > 0)
     ),
+
+  clearClipboard: () => {
+    canvasClipboard = null
+  },
 
   copySelection: () => {
     const s = get()
@@ -2304,18 +2756,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     canvasClipboard = { ...snap, mode: 'cut' }
 
     const { editingStackGroupId } = get()
-    set((st) => ({
-      items: st.items.filter((i) => !removeItemIds.has(i.id)),
-      stacks: st.stacks.filter((rec) => !removeStackIds.has(rec.id)),
-      selectedIds: [],
-      selectedStackIds: [],
-      editingId: null,
-      editingStackGroupId:
-        editingStackGroupId && removeStackIds.has(editingStackGroupId)
-          ? null
-          : st.editingStackGroupId,
-      dirty: true,
-    }))
+    set((st) => {
+      const remaining = st.items.filter((i) => !removeItemIds.has(i.id))
+      const keep = blobUrlsStillReachable(remaining, st.history, st.future)
+      revokeUnreferencedBlobs(st.items, keep)
+      return {
+        items: remaining,
+        stacks: st.stacks.filter((rec) => !removeStackIds.has(rec.id)),
+        selectedIds: [],
+        selectedStackIds: [],
+        editingId: null,
+        editingStackGroupId:
+          editingStackGroupId && removeStackIds.has(editingStackGroupId)
+            ? null
+            : st.editingStackGroupId,
+        dirty: true,
+      }
+    })
     return true
   },
 
@@ -2329,154 +2786,52 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     get().pushHistory()
 
-    const targetContainer = s.currentContainerId
-
-    // Remap stack ids first
-    const stackIdMap = new Map<string, string>()
-    for (const st of clip.stacks) {
-      stackIdMap.set(st.id, uid('stack'))
-    }
-
-    // Top-level stacks = parent is not another stack in this clipboard
-    const isTopLevelStack = (st: StackRecord) => !stackIdMap.has(st.parentId)
-
-    // Bounds of free items + top-level stacks for re-centering on paste
-    let minX = Infinity
-    let minY = Infinity
-    let maxX = -Infinity
-    let maxY = -Infinity
-    const expand = (x: number, y: number, w: number, h: number) => {
-      minX = Math.min(minX, x)
-      minY = Math.min(minY, y)
-      maxX = Math.max(maxX, x + w)
-      maxY = Math.max(maxY, y + h)
-    }
-
-    for (const st of clip.stacks) {
-      if (isTopLevelStack(st)) expand(st.x, st.y, st.width, st.height)
-    }
-    for (const it of clip.items) {
-      // Nested inside a cut stack → local to that stack, not world bounds
-      if (stackIdMap.has(containerOf(it))) continue
-      expand(it.x, it.y, it.width, it.height)
-    }
-
-    if (!Number.isFinite(minX)) {
-      minX = 0
-      minY = 0
-      maxX = 200
-      maxY = 200
-    }
-
-    // Place group near viewport center (current canvas world coords)
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 1440
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 900
-    const vp = s.viewport
-    const centerWorldX = (vw / 2 - vp.x) / vp.zoom
-    const centerWorldY = (vh / 2 - vp.y) / vp.zoom
-    const cx = (minX + maxX) / 2
-    const cy = (minY + maxY) / 2
-    const dx = centerWorldX - cx
-    const dy = centerWorldY - cy
-
-    let z = s.nextZ
-    const newStackIds: string[] = []
-
-    const newStacks: StackRecord[] = clip.stacks.map((st) => {
-      const newId = stackIdMap.get(st.id)!
-      const top = isTopLevelStack(st)
-      const parentId = top
-        ? targetContainer
-        : (stackIdMap.get(st.parentId) ?? targetContainer)
-      const next: StackRecord = {
-        ...st,
-        id: newId,
-        parentId,
-        x: top ? st.x + dx : st.x,
-        y: top ? st.y + dy : st.y,
-        zIndex: z++,
-        viewport: st.viewport ? { ...st.viewport } : undefined,
-      }
-      if (top) newStackIds.push(newId)
-      return next
-    })
-
-    // When pasting a whole stack, shift leaf fan previews that are parent-local
-    // for top-level stacks (same dx/dy as the folder)
-    const topLevelOldStackIds = new Set(
-      clip.stacks.filter(isTopLevelStack).map((st) => st.id),
+    const result = cloneBodiesIntoCanvas(
+      get,
+      set,
+      clip.items,
+      clip.stacks,
+      {
+        recenter: true,
+        select: true,
+      },
     )
-
-    const newItems: CanvasItem[] = clip.items.map((raw) => {
-      const src = structuredClone(raw) as CanvasItem
-      const oldContainer = containerOf(src)
-      src.id = uid(src.type)
-
-      if (src.type === 'scribble') {
-        src.paths = src.paths.map((p) => ({ ...p, id: uid('path') }))
-      }
-
-      // Inside a cut stack tree → stay nested under remapped stack
-      if (stackIdMap.has(oldContainer)) {
-        const {
-          stacked: _s,
-          stackGroupId: _g,
-          stackName: _n,
-          ...rest
-        } = src
-        let stackPreview = src.stackPreview
-          ? { ...src.stackPreview }
-          : undefined
-        // Direct members of a top-level pasted stack: stackPreview is parent-local
-        if (stackPreview && topLevelOldStackIds.has(oldContainer)) {
-          stackPreview = {
-            ...stackPreview,
-            x: stackPreview.x + dx,
-            y: stackPreview.y + dy,
-          }
-        }
-        return tagContainer(
-          {
-            ...(rest as CanvasItem),
-            ...(stackPreview ? { stackPreview } : {}),
-            zIndex: z++,
-          } as CanvasItem,
-          stackIdMap.get(oldContainer)!,
-        )
-      }
-
-      // Free item on source canvas → free on target
-      return asPasteFreeItem(
-        {
-          ...src,
-          x: src.x + dx,
-          y: src.y + dy,
-          zIndex: z++,
-        } as CanvasItem,
-        targetContainer,
-      )
-    })
-
-    // Select top-level free items + top-level stacks only
-    const topLevelItemIds = newItems
-      .filter((i) => containerOf(i) === targetContainer)
-      .map((i) => i.id)
-
-    set((st) => ({
-      items: [...st.items, ...newItems],
-      stacks: [...st.stacks, ...newStacks],
-      nextZ: z,
-      selectedIds: topLevelItemIds,
-      selectedStackIds: newStackIds,
-      editingId: null,
-      editingStackGroupId: null,
-      dirty: true,
-    }))
+    if (!result) return false
 
     // After paste, keep payload as copy for multi-paste
     canvasClipboard = { ...clip, mode: 'copy' }
-
     return true
+  },
+
+  duplicateBodies: (itemIds, stackIds) => {
+    const s = get()
+    if (s.animating) return { itemIds: [], stackIds: [] }
+    const idSet = new Set(itemIds)
+    const stackSet = new Set(stackIds)
+    // Expand to full trees for selected stacks
+    const allStackIds = new Set<string>()
+    for (const sid of stackSet) {
+      for (const id of collectDescendantStackIds(s.stacks, sid)) {
+        allStackIds.add(id)
+      }
+    }
+    const clipStacks = s.stacks.filter((st) => allStackIds.has(st.id))
+    const clipItems = s.items.filter((it) => {
+      if (idSet.has(it.id) && !allStackIds.has(containerOf(it))) return true
+      if (allStackIds.has(containerOf(it))) return true
+      return false
+    })
+    if (clipItems.length === 0 && clipStacks.length === 0) {
+      return { itemIds: [], stackIds: [] }
+    }
+    const result = cloneBodiesIntoCanvas(get, set, clipItems, clipStacks, {
+      recenter: false,
+      select: true,
+      // Alt-drag: keep world position; drag will move the clones
+      dx: 0,
+      dy: 0,
+    })
+    return result ?? { itemIds: [], stackIds: [] }
   },
 
   bringToFront: (ids) => {
@@ -2986,19 +3341,69 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }))
   },
 
-  applyCrop: (id, worldRect) => {
-    const item = get().items.find((i) => i.id === id)
-    if (!item || (item.type !== 'image' && item.type !== 'gif' && item.type !== 'video')) return
-    const result = applyWorldCrop(item, worldRect)
-    if (!result) return
+  applyCrop: (ids, worldRect) => {
+    const s = get()
+    const idList = Array.isArray(ids) ? ids : [ids]
+    if (idList.length === 0) return 0
+
+    type Patch = {
+      id: string
+      crop: CropRect
+      width: number
+      height: number
+      x: number
+      y: number
+    }
+    const patches: Patch[] = []
+
+    for (const id of idList) {
+      const item = s.items.find((i) => i.id === id)
+      if (
+        !item ||
+        (item.type !== 'image' && item.type !== 'gif' && item.type !== 'video')
+      ) {
+        continue
+      }
+      if (item.stacked) continue
+      if (containerOf(item) !== s.currentContainerId) continue
+      // Rotated media cannot be cropped — caller should toast + Alt+R
+      if (!isAxisAlignedForCrop(item)) continue
+
+      const result = applyWorldCrop(item, worldRect)
+      if (!result) continue
+      patches.push({
+        id,
+        crop: result.crop as CropRect,
+        width: result.width,
+        height: result.height,
+        x: result.x,
+        y: result.y,
+      })
+    }
+
+    if (patches.length === 0) return 0
+
     get().pushHistory()
-    get().updateItem(id, {
-      crop: result.crop as CropRect,
-      width: result.width,
-      height: result.height,
-      x: result.x,
-      y: result.y,
-    })
+    const byId = new Map(patches.map((p) => [p.id, p]))
+    set((st) => ({
+      dirty: true,
+      items: st.items.map((it) => {
+        const p = byId.get(it.id)
+        if (!p) return it
+        if (it.type !== 'image' && it.type !== 'gif' && it.type !== 'video')
+          return it
+        const { clipPolygon: _drop, ...base } = it
+        return {
+          ...base,
+          crop: p.crop,
+          width: p.width,
+          height: p.height,
+          x: p.x,
+          y: p.y,
+        } as typeof it
+      }),
+    }))
+    return patches.length
   },
 
   restoreCrop: (ids) => {
@@ -3007,12 +3412,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       (i) =>
         targetIds.includes(i.id) &&
         (i.type === 'image' || i.type === 'gif' || i.type === 'video') &&
-        i.crop &&
-        (i.crop.w < 0.999 || i.crop.h < 0.999 || i.crop.x > 0.001 || i.crop.y > 0.001),
+        !i.stacked &&
+        ((i.crop &&
+          (i.crop.w < 0.999 ||
+            i.crop.h < 0.999 ||
+            i.crop.x > 0.001 ||
+            i.crop.y > 0.001)) ||
+          (i.clipPolygon && i.clipPolygon.length >= 3)),
     )
     if (media.length === 0) return
     get().pushHistory()
     set((s) => ({
+      dirty: true,
       items: s.items.map((item) => {
         if (
           item.type !== 'image' &&
@@ -3021,17 +3432,105 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         ) {
           return item
         }
-        if (!targetIds.includes(item.id) || !item.crop) return item
-        const crop = item.crop
-        const fullW = item.width / Math.max(0.001, crop.w)
-        const fullH = item.height / Math.max(0.001, crop.h)
+        if (!targetIds.includes(item.id)) return item
+        if (!item.crop && !(item.clipPolygon && item.clipPolygon.length >= 3))
+          return item
+        // Uncrop: expand frame, keep visible content + rotation fixed in world
+        // (accounts for CSS transform-origin: center under any rotation).
+        if (item.crop) {
+          const frame = uncropFrame(item)
+          const { clipPolygon: _c, crop: _cr, ...rest } = item
+          if (!frame) {
+            return rest as typeof item
+          }
+          return {
+            ...rest,
+            x: frame.x,
+            y: frame.y,
+            width: frame.width,
+            height: frame.height,
+            // rotation intentionally unchanged
+          } as typeof item
+        }
+        const { clipPolygon: _c, ...rest } = item
+        return rest as typeof item
+      }),
+    }))
+  },
+
+  restoreRotation: (ids) => {
+    const targetIds = ids ?? get().selectedIds
+    const targets = get().items.filter(
+      (i) =>
+        targetIds.includes(i.id) &&
+        !i.stacked &&
+        Math.abs(i.rotation ?? 0) > 0.001,
+    )
+    if (targets.length === 0) return
+    get().pushHistory()
+    const idSet = new Set(targets.map((t) => t.id))
+    set((s) => ({
+      dirty: true,
+      items: s.items.map((item) =>
+        idSet.has(item.id) ? { ...item, rotation: 0 } : item,
+      ),
+    }))
+  },
+
+  restoreNativeScale: (ids) => {
+    const targetIds = ids ?? get().selectedIds
+    const media = get().items.filter(
+      (i) =>
+        targetIds.includes(i.id) &&
+        !i.stacked &&
+        (i.type === 'image' || i.type === 'gif' || i.type === 'video') &&
+        i.naturalWidth > 0 &&
+        i.naturalHeight > 0,
+    )
+    if (media.length === 0) return
+
+    // Only push history if any size actually changes
+    let anyChange = false
+    for (const item of media) {
+      if (item.type !== 'image' && item.type !== 'gif' && item.type !== 'video')
+        continue
+      const cropW = item.crop?.w ?? 1
+      const cropH = item.crop?.h ?? 1
+      const nw = Math.max(24, Math.round(item.naturalWidth * cropW))
+      const nh = Math.max(24, Math.round(item.naturalHeight * cropH))
+      if (Math.abs(item.width - nw) > 0.5 || Math.abs(item.height - nh) > 0.5) {
+        anyChange = true
+        break
+      }
+    }
+    if (!anyChange) return
+
+    get().pushHistory()
+    const idSet = new Set(media.map((m) => m.id))
+    set((s) => ({
+      dirty: true,
+      items: s.items.map((item) => {
+        if (!idSet.has(item.id)) return item
+        if (
+          item.type !== 'image' &&
+          item.type !== 'gif' &&
+          item.type !== 'video'
+        ) {
+          return item
+        }
+        const cropW = item.crop?.w ?? 1
+        const cropH = item.crop?.h ?? 1
+        // Visible region at 1:1 source pixels (respect current crop)
+        const nw = Math.max(24, Math.round(item.naturalWidth * cropW))
+        const nh = Math.max(24, Math.round(item.naturalHeight * cropH))
+        const cx = item.x + item.width / 2
+        const cy = item.y + item.height / 2
         return {
           ...item,
-          x: item.x - crop.x * fullW,
-          y: item.y - crop.y * fullH,
-          width: fullW,
-          height: fullH,
-          crop: undefined,
+          width: nw,
+          height: nh,
+          x: cx - nw / 2,
+          y: cy - nh / 2,
         }
       }),
     }))
@@ -3175,7 +3674,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             parentId,
             folder,
             zMin - 1,
-            '',
+            nextUniqueStackName(live.stacks),
             groupId,
           )
           // Inner canvas: tight shelf (user edits preserved after first enter)
@@ -3604,9 +4103,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       homeViewport: {
         ...(currentContainerId === ROOT_CONTAINER_ID ? viewport : homeViewport),
       },
-      items: cloneItems(items),
+      // Deep clone so packers cannot mutate live store
+      items: cloneItemsDeep(items),
       nextZ,
-      stacks: cloneStacks(stacks),
+      stacks: cloneStacksDeep(stacks),
       currentContainerId,
     }
   },
@@ -3621,6 +4121,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         : board.homeViewport
           ? { ...board.homeViewport }
           : { ...DEFAULT_VIEWPORT }
+    // Drop in-flight stack enter/exit / layout locks so a mid-anim open
+    // cannot leave the canvas permanently interaction-locked.
+    // Revoke previous board's blob: URLs before replacing the document.
+    revokeAllTrackedBlobUrls()
     set({
       items: migrated.items,
       stacks: migrated.stacks,
@@ -3633,7 +4137,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       selectedStackIds: [],
       editingId: null,
       editingStackGroupId: null,
+      animating: false,
       stackEnterAnim: null,
+      pendingNavigation: null,
       history: [],
       future: [],
       dirty: false,

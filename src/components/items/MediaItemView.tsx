@@ -186,7 +186,10 @@ export function MediaItemView({ item, selected }: Props) {
   const mediaStyle = cropMediaStyle(item)
   const cropped = getCrop(item)
   const isCropped =
-    cropped.w < 0.999 || cropped.h < 0.999 || cropped.x > 0.001 || cropped.y > 0.001
+    cropped.w < 0.999 ||
+    cropped.h < 0.999 ||
+    cropped.x > 0.001 ||
+    cropped.y > 0.001
   const [showName, setShowName] = useState(false)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 

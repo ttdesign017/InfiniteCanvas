@@ -108,10 +108,22 @@ export function useKeyboard() {
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
 
-      // Restore crop: Ctrl+Shift+C
-      if (mod && e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
+      // Restore crop: Alt+C
+      if (e.altKey && !mod && !e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
         e.preventDefault()
         store.restoreCrop()
+        return
+      }
+      // Reset rotation to 0°: Alt+R
+      if (e.altKey && !mod && !e.shiftKey && (key === 'r' || e.code === 'KeyR')) {
+        e.preventDefault()
+        store.restoreRotation()
+        return
+      }
+      // Restore media to natural pixel size: Alt+S
+      if (e.altKey && !mod && !e.shiftKey && (key === 's' || e.code === 'KeyS')) {
+        e.preventDefault()
+        store.restoreNativeScale()
         return
       }
 
@@ -171,10 +183,25 @@ export function useKeyboard() {
         store.quickStack()
         return
       }
-      // Unstack / layout: Alt+G
+      // Unstack / layout: Alt+G (bare G is Blender-style grab — handled in InfiniteCanvas)
       if (e.altKey && !mod && !e.shiftKey && (key === 'g' || e.code === 'KeyG')) {
         e.preventDefault()
         store.smoothLayout()
+        return
+      }
+      // Bare G / R / S: modal grab / rotate / scale — InfiniteCanvas capture handler
+      if (
+        !mod &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (key === 'g' ||
+          key === 'r' ||
+          key === 's' ||
+          e.code === 'KeyG' ||
+          e.code === 'KeyR' ||
+          e.code === 'KeyS')
+      ) {
+        // Do not handle here — let InfiniteCanvas modal transform run first
         return
       }
       // Immersive mode: Ctrl+F (hide side docks)
@@ -311,9 +338,11 @@ export function useKeyboard() {
     }
 
     const onBlur = () => {
-      useCanvasStore.getState().setSpaceHeld(false)
-      useCanvasStore.getState().setCHeld(false)
-      useCanvasStore.getState().setIsPanning(false)
+      const state = useCanvasStore.getState()
+      state.setSpaceHeld(false)
+      state.setCHeld(false)
+      state.setIsPanning(false)
+      state.clearClipboard()
     }
 
     const readPasteText = (data: DataTransfer | null): string => {

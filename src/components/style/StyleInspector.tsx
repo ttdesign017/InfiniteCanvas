@@ -1,6 +1,7 @@
 import { FONT_STACKS, useCanvasStore } from '../../store/useCanvasStore'
 import type { ScribbleItem, TextCardItem, TextItem } from '../../types/canvas'
 import { recomputeScribbleBounds } from '../../utils/scribble'
+import { useHistoryOnce } from '../../hooks/useHistoryOnce'
 import {
   ChipButton,
   ColorField,
@@ -17,13 +18,19 @@ const WEIGHTS = [
   { w: 700, label: 'Bold' },
 ] as const
 
+function selectionKey(items: { id: string }[]): string {
+  return items.map((i) => i.id).join(',')
+}
+
 function TextStylePanel({ items }: { items: TextItem[] }) {
   const updateItem = useCanvasStore((s) => s.updateItem)
   const convertTextKind = useCanvasStore((s) => s.convertTextKind)
+  const pushHistoryOnce = useHistoryOnce(selectionKey(items))
   const primary = items[0]
   if (!primary) return null
 
   const apply = (patch: Partial<TextItem>) => {
+    pushHistoryOnce()
     for (const t of items) updateItem(t.id, patch)
   }
 
@@ -119,10 +126,12 @@ function TextStylePanel({ items }: { items: TextItem[] }) {
 function NoteStylePanel({ items }: { items: TextCardItem[] }) {
   const updateItem = useCanvasStore((s) => s.updateItem)
   const convertTextKind = useCanvasStore((s) => s.convertTextKind)
+  const pushHistoryOnce = useHistoryOnce(selectionKey(items))
   const primary = items[0]
   if (!primary) return null
 
   const apply = (patch: Partial<TextCardItem>) => {
+    pushHistoryOnce()
     for (const n of items) updateItem(n.id, patch)
   }
 
@@ -215,12 +224,18 @@ function applyScribblePatch(
 
 function ScribbleStylePanel({ items }: { items: ScribbleItem[] }) {
   const updateItem = useCanvasStore((s) => s.updateItem)
+  const pushHistoryOnce = useHistoryOnce(selectionKey(items))
   const primary = items[0]
   if (!primary) return null
 
   const apply = (patch: { color?: string; width?: number }) => {
+    pushHistoryOnce()
+    // Read live items so multi-select width recompute uses current bounds
+    const live = useCanvasStore.getState().items
     for (const s of items) {
-      updateItem(s.id, applyScribblePatch(s, patch))
+      const current = live.find((i) => i.id === s.id)
+      if (!current || current.type !== 'scribble') continue
+      updateItem(s.id, applyScribblePatch(current, patch))
     }
   }
 

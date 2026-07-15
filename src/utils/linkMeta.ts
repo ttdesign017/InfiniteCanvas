@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { trackBlobUrl } from './blobUrls'
 import { isDesktop } from './desktop'
 
 export interface LinkPreviewMeta {
@@ -654,7 +655,7 @@ async function ensureDisplayableImage(
         const res = await fetch(publicProxy, { mode: 'cors' })
         if (res.ok) {
           const blob = await res.blob()
-          if (blob.size > 0) return URL.createObjectURL(blob)
+          if (blob.size > 0) return trackBlobUrl(URL.createObjectURL(blob))
         }
       } catch {
         /* ignore */

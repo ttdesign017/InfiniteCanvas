@@ -9,7 +9,7 @@ export function EmptyState() {
         </p>
         <ul>
           <li>
-            <kbd>Drop</kbd> media / URL / text · <kbd>C</kbd> crop · <kbd>Ctrl+Shift+C</kbd> restore
+            <kbd>Drop</kbd> media · <kbd>C</kbd> crop · <kbd>Alt+R</kbd> unrotate · <kbd>Alt+C</kbd> uncrop
           </li>
           <li>
             <kbd>P</kbd> draw · <kbd>E</kbd> erase · <kbd>T</kbd> text · <kbd>N</kbd> note

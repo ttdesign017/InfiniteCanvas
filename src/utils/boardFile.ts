@@ -20,6 +20,11 @@ export const ICANVAS_FORMAT = 'InfiniteCanvas'
 export const ICANVAS_EXT = 'icanvas'
 /** Current on-disk format version */
 export const ICANVAS_FORMAT_VERSION = 3
+/**
+ * Hard cap on raw JSON text size (~512 MiB). Prevents accidental / malicious
+ * multi-GB files from OOMing the WebView during JSON.parse.
+ */
+export const ICANVAS_MAX_TEXT_BYTES = 512 * 1024 * 1024
 
 export interface ICanvasAsset {
   mime: string
@@ -322,6 +327,13 @@ export function serializeICanvas(doc: ICanvasDocument): string {
 }
 
 export function parseICanvasFile(text: string): BoardSnapshot {
+  // UTF-16 code units ≈ upper bound on storage; reject before parse
+  if (text.length > ICANVAS_MAX_TEXT_BYTES) {
+    throw new Error(
+      `File is too large to open (max ~${Math.round(ICANVAS_MAX_TEXT_BYTES / (1024 * 1024))} MB of JSON text)`,
+    )
+  }
+
   let data: unknown
   try {
     data = JSON.parse(text)
@@ -347,4 +359,62 @@ export function parseICanvasFile(text: string): BoardSnapshot {
     }
   }
   throw new Error('Unable to open the file: not an Infinite Canvas project (.icanvas)')
+}
+
+/**
+ * Post-save / post-pack integrity checks used by boardIO.
+ * Throws with a clear message when the document is inconsistent.
+ */
+export function assertICanvasIntegrity(
+  doc: ICanvasDocument,
+  expected: { itemCount: number; stackCount: number },
+): void {
+  if (doc.magic !== ICANVAS_MAGIC || doc.format !== ICANVAS_FORMAT) {
+    throw new Error('Save verification failed: missing ICNV document header')
+  }
+  if (typeof doc.formatVersion !== 'number') {
+    throw new Error('Save verification failed: missing formatVersion')
+  }
+  if (!Array.isArray(doc.items) || doc.items.length !== expected.itemCount) {
+    throw new Error(
+      `Save verification failed: expected ${expected.itemCount} items, found ${doc.items?.length ?? 0}`,
+    )
+  }
+  const stackCount = Array.isArray(doc.stacks) ? doc.stacks.length : 0
+  if (stackCount !== expected.stackCount) {
+    throw new Error(
+      `Save verification failed: expected ${expected.stackCount} stacks, found ${stackCount}`,
+    )
+  }
+  const assets = doc.assets || {}
+  for (const item of doc.items) {
+    if (
+      item.type === 'image' ||
+      item.type === 'gif' ||
+      item.type === 'video'
+    ) {
+      const src = item.src
+      if (typeof src === 'string' && src.startsWith(ASSET_PREFIX)) {
+        const id = src.slice(ASSET_PREFIX.length)
+        const a = assets[id]
+        if (!a?.data) {
+          throw new Error(
+            `Save verification failed: media asset missing for item ${item.id}`,
+          )
+        }
+      }
+    }
+    if (item.type === 'link') {
+      for (const ref of [item.image, item.favicon]) {
+        if (typeof ref === 'string' && ref.startsWith(ASSET_PREFIX)) {
+          const id = ref.slice(ASSET_PREFIX.length)
+          if (!assets[id]?.data) {
+            throw new Error(
+              `Save verification failed: link asset missing for item ${item.id}`,
+            )
+          }
+        }
+      }
+    }
+  }
 }

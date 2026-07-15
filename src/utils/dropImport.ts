@@ -22,6 +22,7 @@ import {
 } from './media'
 import { normalizeUrl } from './linkMeta'
 import { collectClipboardMedia } from './openMedia'
+import { trackBlobUrl } from './blobUrls'
 
 const MEDIA_EXT_RE =
   /\.(png|jpe?g|webp|gif|bmp|svg|avif|ico|heic|mp4|webm|mov|mkv|avi|ogv|m4v)(\?|#|$)/i
@@ -347,7 +348,7 @@ async function resolveRemoteMediaSrc(
       if (res.ok) {
         const blob = await res.blob()
         if (blob.size > 0 && blob.size < 80 * 1024 * 1024) {
-          return URL.createObjectURL(blob)
+          return trackBlobUrl(URL.createObjectURL(blob))
         }
       }
     } catch {
@@ -384,7 +385,7 @@ async function resolveRemoteMediaSrc(
     const res = await fetch(url, { mode: 'cors' })
     if (res.ok) {
       const blob = await res.blob()
-      if (blob.size > 0) return URL.createObjectURL(blob)
+      if (blob.size > 0) return trackBlobUrl(URL.createObjectURL(blob))
     }
   } catch {
     /* ignore */
@@ -398,7 +399,7 @@ async function resolveRemoteMediaSrc(
       const res = await fetch(proxied, { mode: 'cors' })
       if (res.ok) {
         const blob = await res.blob()
-        if (blob.size > 0) return URL.createObjectURL(blob)
+        if (blob.size > 0) return trackBlobUrl(URL.createObjectURL(blob))
       }
     }
   } catch {
