@@ -4,7 +4,7 @@ PureRef-inspired infinite canvas for Windows — **Tauri 2 + React + TypeScript*
 
 | | |
 |--|--|
-| Product version | `1.0.0` (npm · Tauri · Cargo) |
+| Product version | `1.1.0` (npm · Tauri · Cargo) |
 | Frontend | React 19 · TypeScript 5.8 · Vite 7 · Zustand 5 |
 | Shell | Tauri 2 · plugins: **dialog**, **fs**, **opener** |
 | Board format | `.icanvas` formatVersion **3** (JSON + embedded base64 assets) |
