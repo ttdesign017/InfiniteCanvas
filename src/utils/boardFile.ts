@@ -13,6 +13,7 @@ import type {
   StackRecord,
   Viewport,
 } from '../types/canvas'
+import { trackBlobUrl } from './blobUrls'
 import { isDesktop, readBinaryFile } from './desktop'
 import { getExtension } from './media'
 
@@ -297,7 +298,9 @@ export function isLegacyBoardSnapshot(data: unknown): data is BoardSnapshot {
 }
 
 /**
- * Expand icanvas-asset:// refs to data: URLs for runtime use.
+ * Expand icanvas-asset:// refs to data: URLs (portable intermediate form).
+ * Call {@link materializeRuntimeMediaSources} before showing media in the UI —
+ * Chromium/WebView2 often cannot decode video/audio from large `data:` URLs.
  */
 export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
   const assets = doc.assets || {}
@@ -337,6 +340,86 @@ export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
     stacks: doc.stacks ? structuredClone(doc.stacks) : [],
     currentContainerId: doc.currentContainerId,
   }
+}
+
+/** Parse a data: URL into a Blob (null if not base64 data URL / decode fails). */
+export function dataUrlToBlob(dataUrl: string): Blob | null {
+  const m = dataUrl.match(/^data:([^;,]+);base64,([\s\S]*)$/i)
+  if (!m) return null
+  try {
+    const mime = m[1] || 'application/octet-stream'
+    const b64 = m[2].replace(/\s/g, '')
+    if (!b64) return null
+    const binary = atob(b64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return new Blob([bytes], { type: mime })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Turn a data: URL into a tracked blob: object URL for &lt;video&gt;/&lt;audio&gt;/&lt;img&gt;.
+ * Returns null if conversion fails (caller keeps the original src).
+ */
+export function dataUrlToObjectUrl(dataUrl: string): string | null {
+  const blob = dataUrlToBlob(dataUrl)
+  if (!blob || blob.size === 0) return null
+  try {
+    return trackBlobUrl(URL.createObjectURL(blob))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Runtime media sources that &lt;video&gt;/&lt;audio&gt; can actually play in WebView2.
+ * `data:` is fine for small images but unreliable for video/audio (no frames / no play).
+ */
+export function isPlayableMediaSrc(src: string | undefined | null): boolean {
+  if (!src) return false
+  if (src.startsWith('blob:')) return true
+  if (/^https?:\/\//i.test(src)) return true
+  if (src.startsWith('asset:') || src.includes('asset.localhost')) return true
+  // file / convertFileSrc paths
+  if (/^[a-zA-Z]:[\\/]/.test(src) || src.startsWith('\\\\')) return true
+  // data: images often work; video/audio data: is NOT considered playable here
+  if (src.startsWith('data:image/')) return true
+  return false
+}
+
+/**
+ * Convert packed `data:` media (and link thumbs) to blob: object URLs so
+ * reopen-after-save shows and plays all media types. Safe to call more than
+ * once (blob: / http sources are left alone).
+ *
+ * Must run **after** `revokeAllTrackedBlobUrls` when replacing a board.
+ */
+export function materializeRuntimeMediaSources(
+  items: CanvasItem[],
+): CanvasItem[] {
+  return items.map((raw) => {
+    if (isMediaItem(raw)) {
+      if (!raw.src?.startsWith('data:')) return raw
+      const objectUrl = dataUrlToObjectUrl(raw.src)
+      if (!objectUrl) return raw
+      return { ...raw, src: objectUrl }
+    }
+    if (raw.type === 'link') {
+      let image = raw.image
+      let favicon = raw.favicon
+      if (image?.startsWith('data:')) {
+        image = dataUrlToObjectUrl(image) ?? image
+      }
+      if (favicon?.startsWith('data:')) {
+        favicon = dataUrlToObjectUrl(favicon) ?? favicon
+      }
+      if (image === raw.image && favicon === raw.favicon) return raw
+      return { ...raw, image, favicon }
+    }
+    return raw
+  })
 }
 
 export function serializeICanvas(doc: ICanvasDocument): string {

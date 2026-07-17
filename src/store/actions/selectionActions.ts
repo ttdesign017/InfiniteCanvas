@@ -1,6 +1,6 @@
 import type { CanvasItem, StackRecord } from '../../types/canvas'
 import { uid } from '../../utils/id'
-import { allocateNestedStackTreeZ, buildRaiseZMap, raiseSelectionZ } from '../../utils/zOrder'
+import { allocateNestedStackTreeZ, raiseSelectionZ } from '../../utils/zOrder'
 import { collectDescendantStackIds, containerOf, itemsInContainer, stacksInContainer } from '../../utils/stacks'
 import { cloneItemsDeep, cloneStacksDeep } from '../cloneDocument'
 import { revokeUnreferencedBlobs } from '../../utils/blobUrls'
@@ -377,18 +377,34 @@ export function createSelectionActions(
           ? ids[0]
           : null
 
-      const { zMap, nextZ } = buildRaiseZMap(s.items, selectedIds, s.nextZ, {
-        promoteFreeId,
-      })
-      const dirtyZ = itemZChanged(s.items, zMap)
+      // Full surface reflow: free raise must not leave sibling stacks interleaved
+      // (folder of A under fan of B under fan of A).
+      const { itemZMap, stackZMap, nextZ } = raiseSelectionZ(
+        s.items,
+        s.stacks,
+        selectedIds,
+        additive ? s.selectedStackIds : [],
+        s.nextZ,
+        {
+          promoteFreeId,
+          containerId: s.currentContainerId,
+        },
+      )
+      const dirtyZ =
+        itemZChanged(s.items, itemZMap) || stackZChanged(s.stacks, stackZMap)
 
       return {
         selectedIds,
         selectedStackIds: additive ? s.selectedStackIds : [],
         editingId: null,
         nextZ,
+        stacks: s.stacks.map((st) =>
+          stackZMap.has(st.id) ? { ...st, zIndex: stackZMap.get(st.id)! } : st,
+        ),
         items: s.items.map((item) =>
-          zMap.has(item.id) ? { ...item, zIndex: zMap.get(item.id)! } : item,
+          itemZMap.has(item.id)
+            ? { ...item, zIndex: itemZMap.get(item.id)! }
+            : item,
         ),
         // Raise-on-select persists in the file — mark dirty when z actually moves
         ...(dirtyZ ? { dirty: true as const } : {}),
@@ -439,6 +455,7 @@ export function createSelectionActions(
         freeIds,
         selectedStackIds,
         s.nextZ,
+        { containerId: s.currentContainerId },
       )
       const dirtyZ =
         itemZChanged(s.items, itemZMap) || stackZChanged(s.stacks, stackZMap)
@@ -476,6 +493,7 @@ export function createSelectionActions(
         itemIds,
         stackIds,
         s.nextZ,
+        { containerId: s.currentContainerId },
       )
       const dirtyZ =
         itemZChanged(s.items, itemZMap) || stackZChanged(s.stacks, stackZMap)
@@ -681,6 +699,7 @@ export function createSelectionActions(
         target,
         stackIds,
         s.nextZ,
+        { containerId: s.currentContainerId },
       )
       return {
         nextZ,
@@ -704,40 +723,24 @@ export function createSelectionActions(
     if (target.length === 0 && stackIds.length === 0) return
     get().pushHistory()
     set((s) => {
-      // Place whole selection under everything, preserving relative order
-      const allItemZs = s.items.map((i) => i.zIndex)
-      const allStackZs = s.stacks.map((st) => st.zIndex)
-      const floor = Math.min(...allItemZs, ...allStackZs, 1)
-
-      const { itemZMap, stackZMap } = raiseSelectionZ(
+      // Full surface reflow with selection pinned under other bodies
+      const { itemZMap, stackZMap, nextZ } = raiseSelectionZ(
         s.items,
         s.stacks,
         target,
         stackIds,
-        // Temporary high base then shift — easier: allocate from a low base
-        0,
+        s.nextZ,
+        { containerId: s.currentContainerId, pinToBack: true },
       )
-      // Remap allocated 0..n onto values just below current floor
-      const maxAllocated = Math.max(
-        0,
-        ...itemZMap.values(),
-        ...stackZMap.values(),
-      )
-      const shift = floor - maxAllocated - 1
-      const shiftMap = (m: Map<string, number>) => {
-        const out = new Map<string, number>()
-        for (const [k, v] of m) out.set(k, v + shift)
-        return out
-      }
-      const iMap = shiftMap(itemZMap)
-      const sMap = shiftMap(stackZMap)
-
       return {
+        nextZ,
         stacks: s.stacks.map((st) =>
-          sMap.has(st.id) ? { ...st, zIndex: sMap.get(st.id)! } : st,
+          stackZMap.has(st.id) ? { ...st, zIndex: stackZMap.get(st.id)! } : st,
         ),
         items: s.items.map((item) =>
-          iMap.has(item.id) ? { ...item, zIndex: iMap.get(item.id)! } : item,
+          itemZMap.has(item.id)
+            ? { ...item, zIndex: itemZMap.get(item.id)! }
+            : item,
         ),
       }
     })
@@ -749,7 +752,9 @@ export function createSelectionActions(
     const { items, nextZ } = get()
     const idSet = new Set(ids)
     // Preserve relative z order of sources
-    const sources = items.filter((i) => idSet.has(i.id)).sort((a, b) => a.zIndex - b.zIndex)
+    const sources = items
+      .filter((i) => idSet.has(i.id))
+      .sort((a, b) => a.zIndex - b.zIndex)
     let z = nextZ
     const newIds: string[] = []
     // Remap stack groups so duplicated stacks stay grouped together

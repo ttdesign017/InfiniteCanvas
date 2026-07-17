@@ -34,6 +34,69 @@ export function containerOf(item: Pick<CanvasItem, 'containerId'>): string {
   return item.containerId || ROOT_CONTAINER_ID
 }
 
+/**
+ * Items whose containerId is neither root nor an existing stack id (I1).
+ * Missing/undefined containerId is treated as root (valid).
+ */
+export function findDanglingContainerIds(
+  items: CanvasItem[],
+  stacks: StackRecord[],
+): string[] {
+  const known = new Set<string>([ROOT_CONTAINER_ID, ...stacks.map((s) => s.id)])
+  const dangling = new Set<string>()
+  for (const it of items) {
+    const c = containerOf(it)
+    if (!known.has(c)) dangling.add(c)
+  }
+  return [...dangling].sort()
+}
+
+/**
+ * Stack ids that participate in a parentId cycle, or whose parent is neither
+ * root nor another stack (I2).
+ */
+export function findStackTreeIssues(stacks: StackRecord[]): {
+  cycles: string[]
+  orphanParents: string[]
+} {
+  const byId = new Map(stacks.map((s) => [s.id, s]))
+  const cycles = new Set<string>()
+  const orphanParents = new Set<string>()
+
+  for (const st of stacks) {
+    if (st.parentId !== ROOT_CONTAINER_ID && !byId.has(st.parentId)) {
+      orphanParents.add(st.id)
+    }
+    const seen = new Set<string>()
+    let cur: string | undefined = st.id
+    while (cur && cur !== ROOT_CONTAINER_ID) {
+      if (seen.has(cur)) {
+        for (const id of seen) cycles.add(id)
+        break
+      }
+      seen.add(cur)
+      const rec = byId.get(cur)
+      if (!rec) break
+      cur = rec.parentId
+    }
+  }
+
+  return {
+    cycles: [...cycles].sort(),
+    orphanParents: [...orphanParents].sort(),
+  }
+}
+
+/** True when every item/stack reference is structurally sound for open. */
+export function isBoardStructureSound(
+  items: CanvasItem[],
+  stacks: StackRecord[],
+): boolean {
+  if (findDanglingContainerIds(items, stacks).length > 0) return false
+  const issues = findStackTreeIssues(stacks)
+  return issues.cycles.length === 0 && issues.orphanParents.length === 0
+}
+
 /** Clear same-canvas stack chrome flags (safe for nested-container members). */
 export function asFreeOnContainer(
   item: CanvasItem,

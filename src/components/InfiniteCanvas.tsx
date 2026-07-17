@@ -4,10 +4,11 @@ import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
-import { collectItemsInStackTree, containerOf, countLeafItemsInStack, migrateLegacyStacks } from '../utils/stacks'
+import { containerOf, countLeafItemsInStack, migrateLegacyStacks } from '../utils/stacks'
 import { embedDisplayItem, resolveEmbedWorldPose } from '../utils/embedPose'
 import { type GroupScaleHandle } from '../utils/selectionBounds'
 import { exitPeerStackPreviewOpacity } from '../utils/stackNavigationAnimation'
+import { stackCountPaintZ, stackFolderPaintZ } from '../utils/zOrder'
 import {
   captureJointMoveSelection,
   useInfiniteCanvasController,
@@ -121,13 +122,15 @@ export function InfiniteCanvas() {
                 : 1
           // Leaf items only (nested stack folders are not counted as items)
           const countN = countLeafItemsInStack(items, stacks, f.gid)
-          const leafZ = collectItemsInStackTree(items, stacks, f.gid).map(
-            (i) => i.zIndex,
-          )
-          // Folder chrome always under fan cards
-          const folderZ =
-            Math.min(f.z, ...(leafZ.length ? leafZ : [f.z + 1])) - 1
-          const countZ = Math.max(f.z, ...leafZ, 1) + 2
+          // Folder uses reserved stack.zIndex when allocation is contiguous;
+          // never paint at min(leaf)-1 (that lets sibling fans sit between
+          // folder and this stack's own cards).
+          const folderZ = f.isRecord
+            ? stackFolderPaintZ(f.record!, items, stacks)
+            : Math.min(...f.members.map((m) => m.zIndex)) - 1
+          const countZ = f.isRecord
+            ? stackCountPaintZ(f.record!, items, stacks)
+            : Math.max(...f.members.map((m) => m.zIndex), 1) + 2
           // Nested child stack chrome (B inside A): fade with enter/exit anim
           const childOfAnim =
             stackEnterAnim &&

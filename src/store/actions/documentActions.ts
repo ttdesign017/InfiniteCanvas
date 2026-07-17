@@ -1,17 +1,19 @@
 import type { CanvasItem, CropRect, LinkCardItem, ScribbleItem, ScribblePath, TextCardItem, TextItem, EmbedItem } from '../../types/canvas'
-import { ROOT_CONTAINER_ID } from '../../types/canvas'
 import { uid } from '../../utils/id'
-import { containerOf, migrateLegacyStacks } from '../../utils/stacks'
+import { containerOf } from '../../utils/stacks'
 import { faviconFor, guessTitleFromUrl, normalizeUrl } from '../../utils/linkMeta'
 import { eraseFromPaths, recomputeScribbleBounds } from '../../utils/scribble'
 import { applyWorldCrop, isAxisAlignedForCrop, uncropFrame } from '../../utils/crop'
 import { computeAlignPatches, computePackPatches } from '../../utils/align'
 import { applyItemPatch, applyItemPatches } from '../itemPatch'
-import { cloneItemsDeep, cloneStacksDeep } from '../cloneDocument'
-import { revokeAllTrackedBlobUrls, revokeUnreferencedBlobs } from '../../utils/blobUrls'
+import { revokeUnreferencedBlobs } from '../../utils/blobUrls'
 import { type AlignMode, type PackDir } from '../../utils/align'
-import { blobUrlsStillReachable, tagContainer, measureNoteCardHeight, normalizeImportedItems, extractHost } from '../actionHelpers'
-import { DEFAULT_VIEWPORT, FONT_STACKS } from '../canvasStoreTypes'
+import { blobUrlsStillReachable, tagContainer, measureNoteCardHeight, extractHost } from '../actionHelpers'
+import {
+  loadBoardIntoRuntimeFields,
+  snapshotBoard,
+} from '../../utils/boardDocument'
+import { FONT_STACKS } from '../canvasStoreTypes'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
 
 export type DocumentActionKey =
@@ -745,54 +747,19 @@ export function createDocumentActions(
   },
 
 
-  exportBoard: () => {
-    const {
-      items,
-      stacks,
-      viewport,
-      homeViewport,
-      nextZ,
-      boardName,
-      currentContainerId,
-    } = get()
-    return {
-      version: 1 as const,
-      name: boardName,
-      viewport: { ...viewport },
-      homeViewport: {
-        ...(currentContainerId === ROOT_CONTAINER_ID ? viewport : homeViewport),
-      },
-      // Deep clone so packers cannot mutate live store
-      items: cloneItemsDeep(items),
-      nextZ,
-      stacks: cloneStacksDeep(stacks),
-      currentContainerId,
-    }
-  },
-
+  exportBoard: () => snapshotBoard(get()),
 
   importBoard: (board) => {
-    const normalized = normalizeImportedItems(board.items)
-    const migrated = migrateLegacyStacks(normalized, board.stacks ?? [])
-    const currentContainerId = board.currentContainerId || ROOT_CONTAINER_ID
-    const homeViewport =
-      currentContainerId === ROOT_CONTAINER_ID
-        ? { ...board.viewport }
-        : board.homeViewport
-          ? { ...board.homeViewport }
-          : { ...DEFAULT_VIEWPORT }
-    // Drop in-flight stack enter/exit / layout locks so a mid-anim open
-    // cannot leave the canvas permanently interaction-locked.
-    // Revoke previous board's blob: URLs before replacing the document.
-    revokeAllTrackedBlobUrls()
+    // Drop locks + revoke blobs + hydrate media + reflow stack z (boardDocument)
+    const ready = loadBoardIntoRuntimeFields(board)
     set({
-      items: migrated.items,
-      stacks: migrated.stacks,
-      currentContainerId,
-      viewport: { ...board.viewport },
-      homeViewport,
-      nextZ: board.nextZ,
-      boardName: board.name || 'Untitled Board',
+      items: ready.items,
+      stacks: ready.stacks,
+      currentContainerId: ready.currentContainerId,
+      viewport: ready.viewport,
+      homeViewport: ready.homeViewport,
+      nextZ: ready.nextZ,
+      boardName: ready.boardName,
       selectedIds: [],
       selectedStackIds: [],
       editingId: null,

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { CanvasItem, StackRecord } from '../../types/canvas'
 import {
   collectDescendantStackIds,
+  collectItemsInStackTree,
+  containerOf,
   countLeafItemsInStack,
+  itemsInContainer,
   stackLabelName,
   stackPath,
 } from '../stacks'
@@ -51,5 +54,38 @@ describe('nested stack traversal', () => {
         'a',
       ),
     ).toBe(3)
+  })
+
+  it('treats missing containerId as the root canvas', () => {
+    const orphan = { ...note('no-container', 'root'), containerId: undefined }
+    expect(containerOf(orphan)).toBe('root')
+  })
+
+  it('lists only items that live on a given canvas container', () => {
+    const items = [
+      note('in-a', 'a'),
+      note('in-b', 'b'),
+      note('root', 'root'),
+      { ...note('legacy-root', 'root'), containerId: undefined },
+    ]
+    expect(itemsInContainer(items, 'a').map((i) => i.id)).toEqual(['in-a'])
+    expect(itemsInContainer(items, 'root').map((i) => i.id).sort()).toEqual([
+      'legacy-root',
+      'root',
+    ])
+  })
+
+  it('collects every item under a nested stack tree', () => {
+    const items = [
+      note('in-a', 'a'),
+      note('in-b', 'b'),
+      note('in-c', 'c'),
+      note('root', 'root'),
+    ]
+    expect(collectItemsInStackTree(items, stacks, 'a').map((i) => i.id).sort()).toEqual([
+      'in-a',
+      'in-b',
+      'in-c',
+    ])
   })
 })

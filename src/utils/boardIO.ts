@@ -9,14 +9,14 @@ import {
   ICANVAS_MAX_TEXT_BYTES,
   assertICanvasIntegrity,
   isICanvasDocument,
-  packICanvasDocument,
   parseICanvasFile,
-  serializeICanvas,
 } from './boardFile'
+import { packBoardSnapshotToText } from './boardDocument'
+import type { BoardSnapshot } from '../types/canvas'
 
 function verifySerializedBoard(
   written: string,
-  snapshot: ReturnType<ReturnType<typeof useCanvasStore.getState>['exportBoard']>,
+  snapshot: BoardSnapshot,
 ): void {
   let writtenJson: unknown
   try {
@@ -78,12 +78,7 @@ export async function saveCurrentBoard(options?: {
     const savedName =
       path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || snapshot.name
     snapshot.name = savedName
-    const doc = await packICanvasDocument(snapshot)
-    assertICanvasIntegrity(doc, {
-      itemCount: snapshot.items.length,
-      stackCount: snapshot.stacks?.length ?? 0,
-    })
-    const text = serializeICanvas(doc)
+    const { text } = await packBoardSnapshotToText(snapshot)
     await desktop.writeTextAtomic(path, text, (written) =>
       verifySerializedBoard(written, snapshot),
     )
@@ -123,8 +118,8 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
       )
     }
     const text = await desktop.readText(path)
-    const board = parseICanvasFile(text)
-    store.importBoard(board)
+    // parse → BoardSnapshot; importBoard → loadBoardIntoRuntimeFields (hydrate + reflow)
+    store.importBoard(parseICanvasFile(text))
     store.setBoardFilePath(path)
     store.clearDirty()
     return true
