@@ -11,7 +11,10 @@
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "mcp:install": "npm install --prefix packages/ic2-mcp",
+    "mcp:start": "npm run start --prefix packages/ic2-mcp",
+    "mcp:typecheck": "npm run typecheck --prefix packages/ic2-mcp"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

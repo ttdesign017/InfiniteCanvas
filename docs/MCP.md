@@ -156,20 +156,34 @@ ic2_board_open({ path })
 |------|------|------|
 | Phase 0 board-ops 只读 + DTO + 错误 | **Done** | `src/board-ops` |
 | Phase 0.5 受限写 + 文件 API 解耦 UI | **Done** | `write.ts`, `fileOps.ts`, `boardIO` 薄封装 |
-| Phase 1 MCP stdio server | **Todo** | `packages/ic2-mcp` |
-| Phase 2 文件写权限 + dry_run tools | **Todo** | 映射已有 ops |
+| Phase 1 MCP stdio server 骨架 | **Done** | `packages/ic2-mcp` — tools 已映射 board-ops；Node 文件后端 |
+| Phase 1.1 宿主配置 / 手测 | **Todo** | Claude Desktop / Cursor 接好并跑通 open→tree→export |
+| Phase 2 写权限产品化 | **Partial** | 已有 `IC2_MCP_ALLOW_WRITE` + dry_run；可再加路径 allowlist |
 | Phase 3 Live bridge | **Todo** | App token + history |
 
 ---
 
-## 9. 工程检查清单（落地 MCP 包时）
+## 9. 工程检查清单
 
-- [ ] `packages/ic2-mcp` 依赖 `@modelcontextprotocol/sdk`  
-- [ ] 进程内持有 `BoardView | null` + path  
-- [ ] 每个 tool try/catch → `boardErrorToJson`  
-- [ ] README：Claude Desktop / Cursor `mcpServers` 配置示例  
-- [ ] 默认 `allowWrite: false`  
-- [ ] CI：`npm run check` 已含 board-ops 单测  
+- [x] `packages/ic2-mcp` + `@modelcontextprotocol/sdk`  
+- [x] 进程内 session：`snapshot` + path + dirty  
+- [x] tool 错误 → `boardErrorToJson`  
+- [x] README：Claude Desktop / Cursor 配置示例  
+- [x] 默认 `IC2_MCP_ALLOW_WRITE` 关闭  
+- [x] CI：`npm run check` 含 board-ops 单测  
+- [ ] 宿主侧真实 Agent 联调  
+- [ ] 可选：路径 allowlist  
+
+### 本地启动
+
+```bash
+npm run mcp:install
+npm run mcp:start
+# 或
+cd packages/ic2-mcp && npm start
+```
+
+环境变量：`IC2_MCP_ALLOW_WRITE`、`IC2_MCP_BOARD_PATH`（见 `packages/ic2-mcp/README.md`）。
 
 ---
 

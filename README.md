@@ -9,7 +9,8 @@ PureRef-inspired infinite canvas for Windows — **Tauri 2 + React + TypeScript*
 | Shell | Tauri 2 · plugins: **dialog**, **fs**, **opener** |
 | Board format | `.icanvas` formatVersion **3** (JSON + embedded base64 assets) |
 
-> Product / MCP / board-ops notes: `docs/PRODUCT.md`, `docs/MCP.md`, `docs/BOARD_OPS.md` (domain API for agents).
+> Product / MCP / board-ops notes: `docs/PRODUCT.md`, `docs/MCP.md`, `docs/BOARD_OPS.md`.  
+> MCP server (stdio): `packages/ic2-mcp` — `npm run mcp:install` then `npm run mcp:start`.
 
 ## Features
 
