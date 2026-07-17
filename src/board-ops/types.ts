@@ -64,6 +64,13 @@ export type BoardMutationResult = {
   stackId?: string
   itemIds?: string[]
   warnings?: string[]
+  /**
+   * Live app should navigate into this container after apply and stay there
+   * (research cluster / multi-step agent work).
+   */
+  enterContainerId?: string
+  /** After enter, fit viewport to content in that container (live only). */
+  fitViewport?: boolean
 }
 
 export type ListItemsQuery = {
@@ -102,6 +109,9 @@ export type SearchQuery = {
   limit?: number
 }
 
+/** Semantic role for canvas typography (maps to kind + default size). */
+export type NoteRole = 'title' | 'subtitle' | 'keyword' | 'body'
+
 export type CreateNoteInput = {
   containerId: string
   x: number
@@ -109,8 +119,29 @@ export type CreateNoteInput = {
   content?: string
   width?: number
   height?: number
-  /** `textcard` (default) or free `text` */
+  /**
+   * `textcard` = note card (default for body).
+   * `text` = free-floating text (preferred for title / keyword / large type).
+   * When `role` is set, kind may be inferred if omitted.
+   */
   kind?: 'textcard' | 'text'
+  /**
+   * Typography preset for mood boards:
+   * - title → floating text ~36px
+   * - subtitle → floating text ~24px
+   * - keyword → floating text ~28px
+   * - body → note card ~14px
+   */
+  role?: NoteRole
+  /** Explicit size (8–200). Overrides role default when set. */
+  fontSize?: number
+  color?: string
+  fontWeight?: number
+  /**
+   * When true (default), width/height auto-fit content if not both provided.
+   * Set false to keep role/preset fixed box.
+   */
+  autoSize?: boolean
   /**
    * Client-supplied id for idempotency; if an item with this id exists, no-op return.
    */

@@ -692,111 +692,197 @@ function mergeMeta(
   }
 }
 
+const LINK_PREVIEW_BUDGET_MS = 9000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        resolve(fallback)
+      }
+    }, ms)
+    promise.then(
+      (v) => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          resolve(v)
+        }
+      },
+      () => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          resolve(fallback)
+        }
+      },
+    )
+  })
+}
+
+/** URLs that already failed or timed out — skip re-fetch loops in the same session. */
+const previewGaveUp = new Set<string>()
+
+export function linkPreviewHasGaveUp(url: string): boolean {
+  return previewGaveUp.has(normalizeUrl(url) || url)
+}
+
 /**
  * Fetch Open Graph metadata for a Notion-style bookmark card.
  * YouTube / X use dedicated APIs (generic HTML scrape is blocked).
  * Desktop also proxies images to data URLs for WebView2.
+ *
+ * Hard budget (~9s): never hang the UI spinner forever.
  */
 export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | null> {
   const normalized = normalizeUrl(url)
   if (!normalized || !/^https?:\/\//i.test(normalized)) return null
+  if (previewGaveUp.has(normalized)) return null
 
-  // 1) Site-specific first — X/YouTube rarely expose real OG media to scrapers
-  const site = await fetchSiteSpecificPreview(normalized)
+  const run = async (): Promise<LinkPreviewMeta | null> => {
+    // 1) Site-specific first — X/YouTube rarely expose real OG media to scrapers
+    const site = await withTimeout(
+      fetchSiteSpecificPreview(normalized),
+      4000,
+      null,
+    )
 
-  if (isDesktop()) {
-    let native = await fetchViaTauri(normalized)
-    let combined = mergeMeta(site, native)
+    if (isDesktop()) {
+      const native = await withTimeout(fetchViaTauri(normalized), 5000, null)
+      let combined = mergeMeta(site, native)
 
-    // If site provider has image but native doesn't (or vice versa), keep best of both
-    if (site?.image && !combined?.image) {
-      combined = mergeMeta(combined, site)
-    }
-
-    if (combined) {
-      const image = await ensureDisplayableImage(combined.image, normalized)
-      let favicon = combined.favicon
-      if (favicon && !favicon.startsWith('data:') && /^https?:\/\//i.test(favicon)) {
-        favicon =
-          (await proxyImageToDataUrl(favicon, normalized)) || faviconFor(normalized)
-      } else if (!favicon) {
-        const fallback = faviconFor(normalized)
-        favicon = (await proxyImageToDataUrl(fallback, normalized)) || undefined
+      if (site?.image && !combined?.image) {
+        combined = mergeMeta(combined, site)
       }
 
-      if (!image) {
-        const remote = await fetchViaMicrolink(normalized)
-        if (remote?.image) {
-          const remoteImg = await ensureDisplayableImage(remote.image, normalized)
+      if (combined) {
+        const image = await withTimeout(
+          ensureDisplayableImage(combined.image, normalized),
+          3500,
+          combined.image || null,
+        )
+        let favicon = combined.favicon
+        if (favicon && !favicon.startsWith('data:') && /^https?:\/\//i.test(favicon)) {
+          favicon =
+            (await withTimeout(
+              proxyImageToDataUrl(favicon, normalized),
+              2500,
+              null,
+            )) || faviconFor(normalized)
+        } else if (!favicon) {
+          const fallback = faviconFor(normalized)
+          favicon =
+            (await withTimeout(
+              proxyImageToDataUrl(fallback, normalized),
+              2000,
+              null,
+            )) || undefined
+        }
+
+        if (!image) {
+          const remote = await withTimeout(
+            fetchViaMicrolink(normalized),
+            4000,
+            null,
+          )
+          if (remote?.image) {
+            const remoteImg = await withTimeout(
+              ensureDisplayableImage(remote.image, normalized),
+              3000,
+              remote.image || null,
+            )
+            return {
+              title: combined.title || remote.title,
+              description: combined.description || remote.description,
+              image: remoteImg || undefined,
+              favicon: favicon || remote.favicon || faviconFor(normalized),
+              siteName: combined.siteName || remote.siteName,
+            }
+          }
+        }
+
+        if (combined.title || combined.description || image) {
           return {
-            title: combined.title || remote.title,
-            description: combined.description || remote.description,
-            image: remoteImg,
-            favicon: favicon || remote.favicon || faviconFor(normalized),
-            siteName: combined.siteName || remote.siteName,
+            ...combined,
+            image: image || undefined,
+            favicon: favicon || faviconFor(normalized),
           }
         }
       }
 
-      if (combined.title || combined.description || image) {
+      const remote = await withTimeout(fetchViaMicrolink(normalized), 4000, null)
+      if (remote) {
+        const image = await withTimeout(
+          ensureDisplayableImage(remote.image, normalized),
+          3000,
+          remote.image || null,
+        )
         return {
-          ...combined,
-          image,
-          favicon: favicon || faviconFor(normalized),
+          ...remote,
+          image: image || undefined,
+          favicon: remote.favicon || faviconFor(normalized),
         }
       }
-    }
 
-    const remote = await fetchViaMicrolink(normalized)
-    if (remote) {
-      const image = await ensureDisplayableImage(remote.image, normalized)
-      return {
-        ...remote,
-        image,
-        favicon: remote.favicon || faviconFor(normalized),
+      if (site) {
+        return {
+          ...site,
+          image:
+            (await withTimeout(
+              ensureDisplayableImage(site.image, normalized),
+              2500,
+              site.image || null,
+            )) || undefined,
+          favicon: site.favicon || faviconFor(normalized),
+        }
       }
+
+      return null
     }
 
-    // Last resort: site provider alone (even without proxy)
-    if (site) {
+    // Browser: site-specific → microlink
+    if (site?.image || site?.title) {
+      if (!site.title || !site.description) {
+        const remote = await withTimeout(
+          fetchViaMicrolink(normalized),
+          4000,
+          null,
+        )
+        const merged = mergeMeta(site, remote)
+        if (merged) {
+          return {
+            ...merged,
+            favicon: merged.favicon || faviconFor(normalized),
+          }
+        }
+      }
       return {
         ...site,
-        image: await ensureDisplayableImage(site.image, normalized),
         favicon: site.favicon || faviconFor(normalized),
       }
     }
 
-    return null
-  }
-
-  // Browser: site-specific → microlink
-  if (site?.image || site?.title) {
-    // Still merge microlink title improvements if site image-only
-    if (!site.title || !site.description) {
-      const remote = await fetchViaMicrolink(normalized)
-      const merged = mergeMeta(site, remote)
-      if (merged) {
-        return {
-          ...merged,
-          favicon: merged.favicon || faviconFor(normalized),
-        }
+    const remote = await withTimeout(fetchViaMicrolink(normalized), 4000, null)
+    if (remote) {
+      return {
+        ...remote,
+        favicon: remote.favicon || faviconFor(normalized),
       }
     }
-    return {
-      ...site,
-      favicon: site.favicon || faviconFor(normalized),
-    }
+
+    return site
   }
 
-  const remote = await fetchViaMicrolink(normalized)
-  if (remote) {
-    return {
-      ...remote,
-      favicon: remote.favicon || faviconFor(normalized),
-    }
+  try {
+    const result = await withTimeout(run(), LINK_PREVIEW_BUDGET_MS, null)
+    if (!result) previewGaveUp.add(normalized)
+    return result
+  } catch {
+    previewGaveUp.add(normalized)
+    return null
   }
-
-  return site
 }
 
 export function mergePreview(

@@ -5,6 +5,7 @@ import { useCanvasStore } from '../../store/useCanvasStore'
 import {
   extractDomain,
   fetchLinkPreview,
+  linkPreviewHasGaveUp,
   mergePreview,
   normalizeUrl,
   placeholderPreview,
@@ -100,6 +101,14 @@ export function LinkCardView({ item, selected }: Props) {
       setLoading(false)
       return
     }
+    // Already timed out / failed this session — settle as complete, no spinner
+    if (linkPreviewHasGaveUp(url) && !canRetryMissingImage) {
+      if (item.previewStatus !== 'complete') {
+        updateItem(item.id, { previewStatus: 'complete' }, { dirty: false })
+      }
+      setLoading(false)
+      return
+    }
     if (canRetryMissingImage) {
       missingImageRetried.add(item.id)
     }
@@ -109,7 +118,13 @@ export function LinkCardView({ item, selected }: Props) {
     setLoading(true)
 
     void (async () => {
-      const preview = await fetchLinkPreview(url)
+      // fetchLinkPreview has an internal hard budget; this is a second guard
+      let preview: Awaited<ReturnType<typeof fetchLinkPreview>> = null
+      try {
+        preview = await fetchLinkPreview(url)
+      } catch {
+        preview = null
+      }
       if (cancelled || gen !== fetchGen.current) return
 
       const merged = mergePreview(url, preview)
@@ -133,8 +148,8 @@ export function LinkCardView({ item, selected }: Props) {
         (current.image || '') === (merged.image || '') &&
         (current.siteName || '') === (merged.siteName || '')
 
+      // Always mark complete so a failed/timeout fetch does not spin forever
       if (!same || current.previewStatus !== 'complete') {
-        // Automatic metadata — do not mark the board dirty (reopen clean boards)
         updateItem(
           item.id,
           {
@@ -154,7 +169,7 @@ export function LinkCardView({ item, selected }: Props) {
     return () => {
       cancelled = true
     }
-  }, [item.id, item.url, updateItem])
+  }, [item.id, item.url, updateItem, item.previewStatus])
 
   // Dismiss context menu on outside click / scroll / Escape
   useEffect(() => {

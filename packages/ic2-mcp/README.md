@@ -54,13 +54,26 @@ IC2_MCP_ALLOW_WRITE = "1"
 | `ic2_status` | live vs file |
 | `ic2_board_open` / `info` / `save` | file session |
 | `ic2_get_viewport` | place in view |
-| `ic2_tree` / `list_items` / `get_item` / `export_text` / `search` | read |
-| `ic2_create_note` / `create_link` / `import_image_url` | content |
+| `ic2_tree` / `list_items` / `get_item` / `get_stack` / `export_text` / `search` | read |
+| `ic2_create_note` | notes; set `role=title\|keyword` for large floating type |
+| `ic2_create_text` | free-floating title/keyword (kind=text) |
+| `ic2_create_link` | **pages only** — not image asset URLs |
+| `ic2_import_image_url` | real media on canvas |
 | `ic2_create_stack` / `rename_stack` / `move_to_container` | structure |
 | `ic2_layout_grid` | arrange |
-| **`ic2_add_research_cluster`** | **preferred** one-shot mood board |
+| **`ic2_add_research_cluster`** | create or **append** mood board (`stackId` / same `clientRequestId`) |
+| **`ic2_append_cluster`** | progressive chunk: one section at a time into existing stack |
 
 `containerId`: use `root` for home.
+
+### Free canvas / mood board (agents)
+
+1. Photos → `images[]` or `import_image_url` (never `links` for `.jpg`/`.png`).  
+2. Titles/keywords → `role: title|keyword` with **bold `fontSize`** (defaults are large; scale by importance).  
+3. Paragraphs → `role: body` / default note (auto height).  
+4. After cluster: `createdStackIds[0]` + `list_items` (not `get_item` on stack id).  
+
+Generic skill: `skills/ic2-moodboard` (any topic — not brand-only).
 
 ## Architecture
 

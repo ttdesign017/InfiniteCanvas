@@ -37,6 +37,7 @@ export type {
   GetItemQuery,
   ListItemsQuery,
   MoveItemsInput,
+  NoteRole,
   SearchQuery,
   TreeQuery,
   UpdateTextInput,
@@ -66,8 +67,12 @@ export type { PersistState, WriteResultEnvelope } from './writeResult'
 export {
   createNote,
   createNotesBatch,
+  estimateTextBlockSize,
+  extractHexColor,
   itemsInBoardContainer,
+  measureTextUnits,
   moveItems,
+  resolveNoteStyle,
   updateText,
 } from './write'
 
@@ -77,8 +82,10 @@ export {
   createLink,
   createStack,
   layoutGrid,
+  looksLikeImageUrl,
   moveToContainer,
   renameStack,
+  seedStackFanPreview,
   worldRectFromViewport,
 } from './writeExtras'
 

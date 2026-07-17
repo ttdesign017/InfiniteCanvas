@@ -82,10 +82,13 @@ src/board-ops/             ← 已实现：纯领域 + 文件 I/O
 
 | Tool | board-ops | 说明 |
 |------|-----------|------|
-| `ic2_create_note` | `createNote` | `dry_run?`, `client_request_id?` |
+| `ic2_create_note` | `createNote` | `role?` title/keyword/body，`fontSize?`，`dry_run?` |
+| `ic2_create_text` | `createNote` (kind=text) | 浮动大字标题/关键词 |
 | `ic2_create_notes` | `createNotesBatch` | 一批 = 一逻辑变更 |
 | `ic2_update_text` | `updateText` | 白名单字段 |
 | `ic2_move_items` | `moveItems` | 绝对坐标 |
+| `ic2_import_image_url` | `createImage` + fetch | **真图**，勿用 link 代替 |
+| `ic2_add_research_cluster` | `addResearchCluster` | notes+links+**images** mood board |
 
 ### 4.4 默认不做（v1 tools）
 

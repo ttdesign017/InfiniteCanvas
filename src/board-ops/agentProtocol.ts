@@ -38,8 +38,18 @@ export type CreateLinkInput = {
   x: number
   y: number
   url: string
+  /**
+   * Temporary label only. OG fetch will replace title/description/image unless
+   * `lockTitle` is true. Prefer putting agent commentary in `annotation` (cluster)
+   * or a separate floating text item — not as the link card title.
+   */
   title?: string
   description?: string
+  /**
+   * When true, keep provided title and mark preview complete (skip OG title).
+   * Default false so link cards get real site previews.
+   */
+  lockTitle?: boolean
   width?: number
   height?: number
   clientRequestId?: string
@@ -90,31 +100,103 @@ export type CreateImageInput = {
   assetMime?: string
 }
 
+export type ResearchClusterNote = {
+  content: string
+  /** Prefer role for mood boards; kind overrides when explicit */
+  kind?: 'textcard' | 'text'
+  /** title | subtitle | keyword | body — drives floating text vs note + size */
+  role?: 'title' | 'subtitle' | 'keyword' | 'body'
+  fontSize?: number
+  color?: string
+  fontWeight?: number
+  width?: number
+  height?: number
+  autoSize?: boolean
+  /** Optional association key for mood layout (group with matching images/links) */
+  group?: string
+}
+
+export type ResearchClusterLink = {
+  url: string
+  /**
+   * Agent commentary — rendered as floating text **above** the link card
+   * (left-aligned). Not used as the OG link title.
+   */
+  annotation?: string
+  /** @deprecated Prefer annotation; still accepted as annotation if annotation omitted */
+  title?: string
+  description?: string
+  group?: string
+}
+
+export type ResearchClusterImage = {
+  /** Prefer https URL — live/file backends download when possible */
+  url?: string
+  /** Or pre-fetched data URL */
+  dataUrl?: string
+  fileName?: string
+  caption?: string
+  group?: string
+  /** Preferred display width (default ~480, aspect preserved) */
+  width?: number
+  naturalWidth?: number
+  naturalHeight?: number
+}
+
+export type ResearchClusterSection = {
+  heading?: string
+  notes?: ResearchClusterNote[]
+  links?: ResearchClusterLink[]
+  images?: ResearchClusterImage[]
+}
+
 export type ResearchClusterInput = {
   /** Parent container for the new stack (usually root) */
   parentId?: string
-  title: string
+  /**
+   * Stack folder name when **creating**. Optional when appending via `stackId`
+   * or reusing `clientRequestId` of an existing stack.
+   */
+  title?: string
   x?: number
   y?: number
-  notes?: Array<{ content: string; kind?: 'textcard' | 'text' }>
-  links?: Array<{ url: string; title?: string; description?: string }>
-  images?: Array<{
-    /** Prefer https URL — live/file backends download when possible */
-    url?: string
-    /** Or pre-fetched data URL */
-    dataUrl?: string
-    fileName?: string
-    caption?: string
-  }>
+  notes?: ResearchClusterNote[]
+  links?: ResearchClusterLink[]
+  images?: ResearchClusterImage[]
+  /**
+   * Explicit thematic blocks (preferred for rich mood boards).
+   * When set, top-level notes/links/images are still placed in a header/body
+   * then each section is laid out as a related vignette.
+   */
+  sections?: ResearchClusterSection[]
+  /**
+   * `mood` (default): relational multi-column vignettes.
+   * `grid`: legacy uniform grid.
+   */
+  layout?: 'mood' | 'grid'
   columns?: number
   dryRun?: boolean
-  /** Idempotent cluster stack id */
+  /**
+   * Stable stack id. If a stack with this id already exists, content is
+   * **appended** (progressive write) instead of no-op.
+   */
   clientRequestId?: string
+  /**
+   * Append into this existing stack (progressive streaming).
+   * Prefer this after the first write returns `createdStackIds[0]`.
+   */
+  stackId?: string
+  /** Gap below existing content when appending (default 80). */
+  appendGap?: number
   /**
    * When true (default), failed image downloads are skipped with warnings
    * instead of aborting the whole cluster.
    */
   skipInvalidImages?: boolean
+  /**
+   * Live: enter the stack after apply and stay inside (default true).
+   */
+  enterStack?: boolean
 }
 
 export type AgentOp =

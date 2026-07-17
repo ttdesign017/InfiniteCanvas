@@ -101,6 +101,8 @@ async function prepareOp(body: AgentOp): Promise<AgentOp> {
         fileName: body.input.fileName || img.fileName,
         assetMime: img.mime,
         assetBase64: parts?.b64,
+        naturalWidth: body.input.naturalWidth ?? img.width,
+        naturalHeight: body.input.naturalHeight ?? img.height,
       },
     }
   }
@@ -119,33 +121,51 @@ async function prepareOp(body: AgentOp): Promise<AgentOp> {
   }
   if (body.op === 'add_research_cluster') {
     const skip = body.input.skipInvalidImages !== false
-    const images = []
     const prepWarnings: string[] = []
-    for (const im of body.input.images || []) {
-      if (im.dataUrl) {
-        images.push(im)
-        continue
-      }
-      if (im.url) {
-        try {
-          const fetched = await fetchImageAsDataUrl(im.url)
-          images.push({
-            ...im,
-            dataUrl: fetched.dataUrl,
-            fileName: im.fileName || fetched.fileName,
-          })
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          if (!skip) throw err
-          prepWarnings.push(`image download skipped: ${im.url} (${msg})`)
+
+    const hydrateImages = async (
+      list: NonNullable<typeof body.input.images>,
+    ) => {
+      const images = []
+      for (const im of list || []) {
+        if (im.dataUrl) {
+          images.push(im)
+          continue
+        }
+        if (im.url) {
+          try {
+            const fetched = await fetchImageAsDataUrl(im.url)
+            images.push({
+              ...im,
+              dataUrl: fetched.dataUrl,
+              fileName: im.fileName || fetched.fileName,
+              naturalWidth: im.naturalWidth ?? fetched.width,
+              naturalHeight: im.naturalHeight ?? fetched.height,
+            })
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            if (!skip) throw err
+            prepWarnings.push(`image download skipped: ${im.url} (${msg})`)
+          }
         }
       }
+      return images
+    }
+
+    const images = await hydrateImages(body.input.images || [])
+    const sections = []
+    for (const sec of body.input.sections || []) {
+      sections.push({
+        ...sec,
+        images: await hydrateImages(sec.images || []),
+      })
     }
     return {
       ...body,
       input: {
         ...body.input,
         images,
+        sections: sections.length ? sections : body.input.sections,
         // stash prep warnings via a non-schema field consumed later if needed
         _prepWarnings: prepWarnings,
       } as typeof body.input & { _prepWarnings?: string[] },

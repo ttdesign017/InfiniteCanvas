@@ -227,20 +227,39 @@ export function registerTools(server: McpServer, session: Session): void {
     assertWritable(session)
   }
 
+  const noteFields = {
+    containerId: z.string(),
+    x: z.number(),
+    y: z.number(),
+    content: z.string().optional(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+    kind: z
+      .enum(['textcard', 'text'])
+      .optional()
+      .describe(
+        'textcard = note card (paragraphs). text = free-floating type (titles/keywords). Prefer role over kind when possible.',
+      ),
+    role: z
+      .enum(['title', 'subtitle', 'keyword', 'body'])
+      .optional()
+      .describe(
+        'Typography preset: title~36px floating, subtitle~24, keyword~28, body=note card. Prefer this for mood boards.',
+      ),
+    fontSize: z
+      .number()
+      .optional()
+      .describe('Explicit font size 8–200 (overrides role default)'),
+    color: z.string().optional(),
+    fontWeight: z.number().optional(),
+    clientRequestId: z.string().optional(),
+    dry_run: z.boolean().optional(),
+  }
+
   server.tool(
     'ic2_create_note',
-    'Create a note/textcard on the canvas (live preferred).',
-    {
-      containerId: z.string(),
-      x: z.number(),
-      y: z.number(),
-      content: z.string().optional(),
-      width: z.number().optional(),
-      height: z.number().optional(),
-      kind: z.enum(['textcard', 'text']).optional(),
-      clientRequestId: z.string().optional(),
-      dry_run: z.boolean().optional(),
-    },
+    'Create text on the canvas. Width/height auto-fit content (CJK-aware) unless set. For paragraphs use default textcard; for titles/keywords set role=title|keyword. Hex in content like "#1D1D1B ONYX" auto-colors the text. Do NOT use for images.',
+    noteFields,
     async (args) =>
       runTool(async () => {
         writeGuard()
@@ -254,6 +273,54 @@ export function registerTools(server: McpServer, session: Session): void {
             width: args.width,
             height: args.height,
             kind: args.kind,
+            role: args.role,
+            fontSize: args.fontSize,
+            color: args.color,
+            fontWeight: args.fontWeight,
+            clientRequestId: args.clientRequestId,
+          },
+          options: { dryRun: args.dry_run === true },
+        })
+      }),
+  )
+
+  server.tool(
+    'ic2_create_text',
+    'Create free-floating large text (title/keyword). Equivalent to create_note with kind=text; defaults role=title if role omitted. Use for headings and keywords, not long paragraphs.',
+    {
+      containerId: z.string(),
+      x: z.number(),
+      y: z.number(),
+      content: z.string(),
+      role: z
+        .enum(['title', 'subtitle', 'keyword'])
+        .optional()
+        .describe('Default title (~36px). keyword ~28px, subtitle ~24px.'),
+      fontSize: z.number().optional(),
+      color: z.string().optional(),
+      fontWeight: z.number().optional(),
+      width: z.number().optional(),
+      height: z.number().optional(),
+      clientRequestId: z.string().optional(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'create_note',
+          input: {
+            containerId: args.containerId,
+            x: args.x,
+            y: args.y,
+            content: args.content,
+            kind: 'text',
+            role: args.role ?? 'title',
+            fontSize: args.fontSize,
+            color: args.color,
+            fontWeight: args.fontWeight,
+            width: args.width,
+            height: args.height,
             clientRequestId: args.clientRequestId,
           },
           options: { dryRun: args.dry_run === true },
@@ -263,14 +330,21 @@ export function registerTools(server: McpServer, session: Session): void {
 
   server.tool(
     'ic2_create_link',
-    'Create a link/bookmark card.',
+    'Create a link/bookmark card for pages (official site, articles, social). Card title/image come from live OG preview — do NOT put agent summaries as title (use a floating text above, or research_cluster link.annotation). NEVER pass direct image URLs — use import_image_url / images[].',
     {
       containerId: z.string(),
       x: z.number(),
       y: z.number(),
       url: z.string(),
-      title: z.string().optional(),
+      title: z
+        .string()
+        .optional()
+        .describe('Temporary only; OG overwrites unless lockTitle'),
       description: z.string().optional(),
+      lockTitle: z
+        .boolean()
+        .optional()
+        .describe('Rare: keep title and skip OG title overwrite'),
       dry_run: z.boolean().optional(),
     },
     async (args) =>
@@ -285,6 +359,7 @@ export function registerTools(server: McpServer, session: Session): void {
             url: args.url,
             title: args.title,
             description: args.description,
+            lockTitle: args.lockTitle,
           },
           options: { dryRun: args.dry_run === true },
         })
@@ -343,7 +418,7 @@ export function registerTools(server: McpServer, session: Session): void {
 
   server.tool(
     'ic2_import_image_url',
-    'Download an image URL and place it on the canvas.',
+    'Download a public image URL and place a real image media item on the canvas (not a link card). Prefer this (or research_cluster images[]) for reference photos. HTTPS direct image URLs work best.',
     {
       containerId: z.string(),
       x: z.number(),
@@ -368,6 +443,8 @@ export function registerTools(server: McpServer, session: Session): void {
             fileName: args.fileName || img.fileName,
             width: args.width,
             height: args.height,
+            naturalWidth: img.width,
+            naturalHeight: img.height,
             assetMime: img.mime,
             assetBase64: img.dataUrl.includes('base64,')
               ? img.dataUrl.split('base64,')[1]
@@ -434,73 +511,185 @@ export function registerTools(server: McpServer, session: Session): void {
       }),
   )
 
+  const clusterNoteSchema = z.object({
+    content: z.string(),
+    kind: z.enum(['textcard', 'text']).optional(),
+    role: z
+      .enum(['title', 'subtitle', 'keyword', 'body'])
+      .optional()
+      .describe('title/keyword/subtitle → floating type; body → note card'),
+    fontSize: z.number().optional(),
+    color: z.string().optional(),
+    fontWeight: z.number().optional(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+    autoSize: z.boolean().optional(),
+    group: z
+      .string()
+      .optional()
+      .describe('Associate with images/links that share the same group key'),
+  })
+
+  const clusterLinkSchema = z.object({
+    url: z.string().describe('Page URL only — not .jpg/.png assets'),
+    annotation: z
+      .string()
+      .optional()
+      .describe(
+        'Agent summary — becomes floating text ABOVE the link card (left-aligned). NOT the OG card title.',
+      ),
+    title: z
+      .string()
+      .optional()
+      .describe('Deprecated alias for annotation; OG owns the card title'),
+    description: z.string().optional(),
+    group: z.string().optional(),
+  })
+
+  const clusterImageSchema = z.object({
+    url: z
+      .string()
+      .optional()
+      .describe('Public https image URL (downloaded into media item)'),
+    dataUrl: z.string().optional(),
+    fileName: z.string().optional(),
+    caption: z.string().optional(),
+    group: z.string().optional(),
+    width: z.number().optional().describe('Preferred display width (~480 default)'),
+  })
+
+  const clusterSectionSchema = z.object({
+    heading: z.string().optional(),
+    notes: z.array(clusterNoteSchema).optional(),
+    links: z.array(clusterLinkSchema).optional(),
+    images: z.array(clusterImageSchema).optional(),
+  })
+
+  const runCluster = async (args: {
+    title?: string
+    parentId?: string
+    x?: number
+    y?: number
+    columns?: number
+    layout?: 'mood' | 'grid'
+    enterStack?: boolean
+    clientRequestId?: string
+    stackId?: string
+    appendGap?: number
+    skipInvalidImages?: boolean
+    notes?: z.infer<typeof clusterNoteSchema>[]
+    links?: z.infer<typeof clusterLinkSchema>[]
+    images?: z.infer<typeof clusterImageSchema>[]
+    sections?: z.infer<typeof clusterSectionSchema>[]
+    dry_run?: boolean
+  }) => {
+    writeGuard()
+    return runOp(session, {
+      op: 'add_research_cluster',
+      input: {
+        title: args.title,
+        parentId: args.parentId,
+        x: args.x,
+        y: args.y,
+        columns: args.columns,
+        layout: args.layout,
+        enterStack: args.enterStack,
+        notes: args.notes,
+        links: args.links,
+        images: args.images,
+        sections: args.sections,
+        dryRun: args.dry_run,
+        clientRequestId: args.clientRequestId,
+        stackId: args.stackId,
+        appendGap: args.appendGap,
+        skipInvalidImages: args.skipInvalidImages !== false,
+      },
+      options: { dryRun: args.dry_run === true },
+    })
+  }
+
   server.tool(
     'ic2_add_research_cluster',
-    'High-level: create a named stack filled with notes, links, and images. Returns createdIds (items) + createdStackIds (use get_stack / list_items(stackId)). Failed images are skipped by default (warnings).',
+    [
+      'Create or APPEND a freeform board stack (live). Each call appears immediately — prefer progressive chunks over one giant dump.',
+      'CREATE: title + clientRequestId + first notes/sections. APPEND: pass stackId (or same clientRequestId) + new sections only.',
+      'MEDIA: images[] = photos; links[] = pages + annotation above card; notes role title/keyword/body with bold fontSize.',
+      'enterStack defaults true (stay inside). Empty body opens shell stack for streaming.',
+    ].join(' '),
     {
-      title: z.string(),
+      title: z
+        .string()
+        .optional()
+        .describe('Stack name on create; optional rename on append'),
       parentId: z.string().optional(),
       x: z.number().optional(),
       y: z.number().optional(),
       columns: z.number().int().optional(),
+      layout: z.enum(['mood', 'grid']).optional(),
+      enterStack: z
+        .boolean()
+        .optional()
+        .describe('Live: enter stack and stay (default true)'),
       clientRequestId: z
         .string()
         .optional()
-        .describe('Idempotent stack id — retries will not duplicate'),
-      skipInvalidImages: z
-        .boolean()
+        .describe(
+          'Stable stack id. First call creates; later calls with same id APPEND.',
+        ),
+      stackId: z
+        .string()
         .optional()
-        .describe('Default true: skip 404 images and continue'),
-      notes: z
-        .array(
-          z.object({
-            content: z.string(),
-            kind: z.enum(['textcard', 'text']).optional(),
-          }),
-        )
-        .optional(),
-      links: z
-        .array(
-          z.object({
-            url: z.string(),
-            title: z.string().optional(),
-            description: z.string().optional(),
-          }),
-        )
-        .optional(),
-      images: z
-        .array(
-          z.object({
-            url: z.string().optional(),
-            dataUrl: z.string().optional(),
-            fileName: z.string().optional(),
-            caption: z.string().optional(),
-          }),
-        )
-        .optional(),
+        .describe('Append into this stack (from createdStackIds[0])'),
+      appendGap: z
+        .number()
+        .optional()
+        .describe('Y gap below existing content when appending (default 80)'),
+      skipInvalidImages: z.boolean().optional(),
+      notes: z.array(clusterNoteSchema).optional(),
+      links: z.array(clusterLinkSchema).optional(),
+      images: z.array(clusterImageSchema).optional(),
+      sections: z.array(clusterSectionSchema).optional(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) => runTool(async () => runCluster(args)),
+  )
+
+  server.tool(
+    'ic2_append_cluster',
+    [
+      'PROGRESSIVE WRITE: append one section/chunk into an existing stack (same as add_research_cluster with stackId).',
+      'Use after research workers finish a theme — content appears as soon as you call this.',
+      'Required: stackId. Pass sections and/or notes/images/links.',
+    ].join(' '),
+    {
+      stackId: z.string().describe('Target stack from first create'),
+      title: z.string().optional(),
+      appendGap: z.number().optional(),
+      enterStack: z.boolean().optional(),
+      layout: z.enum(['mood', 'grid']).optional(),
+      notes: z.array(clusterNoteSchema).optional(),
+      links: z.array(clusterLinkSchema).optional(),
+      images: z.array(clusterImageSchema).optional(),
+      sections: z.array(clusterSectionSchema).optional(),
+      skipInvalidImages: z.boolean().optional(),
       dry_run: z.boolean().optional(),
     },
     async (args) =>
-      runTool(async () => {
-        writeGuard()
-        return runOp(session, {
-          op: 'add_research_cluster',
-          input: {
-            title: args.title,
-            parentId: args.parentId,
-            x: args.x,
-            y: args.y,
-            columns: args.columns,
-            notes: args.notes,
-            links: args.links,
-            images: args.images,
-            dryRun: args.dry_run,
-            clientRequestId: args.clientRequestId,
-            skipInvalidImages: args.skipInvalidImages !== false,
-          },
-          options: { dryRun: args.dry_run === true },
-        })
-      }),
+      runTool(async () =>
+        runCluster({
+          stackId: args.stackId,
+          title: args.title,
+          appendGap: args.appendGap,
+          enterStack: args.enterStack,
+          layout: args.layout,
+          notes: args.notes,
+          links: args.links,
+          images: args.images,
+          sections: args.sections,
+          skipInvalidImages: args.skipInvalidImages,
+          dry_run: args.dry_run,
+        }),
+      ),
   )
 }
 

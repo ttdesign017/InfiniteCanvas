@@ -46,6 +46,8 @@ export type WriteResultEnvelope = {
   stackId?: string
   itemIds?: string[]
   warnings?: string[]
+  /** Live app navigated into this container after apply */
+  enterContainerId?: string
   meta?: ReturnType<typeof getBoardMeta>
 }
 
@@ -156,6 +158,7 @@ export function buildWriteEnvelope(
     dirty: opts.dirty,
     pendingUserSave: opts.pendingUserSave,
     autoSaved: opts.autoSaved === true,
+    enterContainerId: m.enterContainerId,
     dryRun: m.dryRun,
     stackId: m.stackId ?? partitioned.createdStackIds[0],
     itemIds: m.itemIds ?? partitioned.createdIds,

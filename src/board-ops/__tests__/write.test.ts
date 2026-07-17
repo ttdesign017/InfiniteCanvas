@@ -40,6 +40,96 @@ describe('board-ops write', () => {
     expect(listed.items[0].label).toContain('Agent note')
   })
 
+  it('createNote role=title makes large floating text', () => {
+    const r = createNote(emptyBoard(), {
+      containerId: ROOT_CONTAINER_ID,
+      x: 0,
+      y: 0,
+      content: 'Songmont',
+      role: 'title',
+    })
+    const item = r.board.items[0] as CanvasItem & {
+      type: string
+      fontSize: number
+      fontWeight: number
+    }
+    expect(item.type).toBe('text')
+    expect(item.fontSize).toBe(64)
+    expect(item.fontWeight).toBe(700)
+  })
+
+  it('createNote role=keyword and explicit fontSize override', () => {
+    const r = createNote(emptyBoard(), {
+      containerId: ROOT_CONTAINER_ID,
+      x: 0,
+      y: 0,
+      content: '皮革',
+      role: 'keyword',
+      fontSize: 32,
+    })
+    const item = r.board.items[0] as CanvasItem & {
+      type: string
+      fontSize: number
+    }
+    expect(item.type).toBe('text')
+    expect(item.fontSize).toBe(32)
+  })
+
+  it('createNote rejects out-of-range fontSize', () => {
+    expect(() =>
+      createNote(emptyBoard(), {
+        containerId: ROOT_CONTAINER_ID,
+        x: 0,
+        y: 0,
+        content: 'x',
+        fontSize: 999,
+      }),
+    ).toThrow(BoardOpsError)
+  })
+
+  it('createNote auto-sizes CJK body notes taller than short Latin', () => {
+    const short = createNote(emptyBoard(), {
+      containerId: ROOT_CONTAINER_ID,
+      x: 0,
+      y: 0,
+      content: 'Hi',
+      role: 'body',
+    })
+    const longCjk = createNote(emptyBoard(), {
+      containerId: ROOT_CONTAINER_ID,
+      x: 0,
+      y: 0,
+      content:
+        '宋蒙以极简植鞣革与东方留白著称，产品线覆盖手袋与小皮件，视觉气质克制而不寡淡，材质叙事是核心卖点之一。',
+      role: 'body',
+    })
+    const s = short.board.items[0]
+    const l = longCjk.board.items[0]
+    expect(l.height).toBeGreaterThan(s.height)
+    expect(l.height).toBeGreaterThan(120)
+  })
+
+  it('createNote keyword with hex gets that color and fits width', () => {
+    const r = createNote(emptyBoard(), {
+      containerId: ROOT_CONTAINER_ID,
+      x: 0,
+      y: 0,
+      content: '#1D1D1B ONYX',
+      role: 'keyword',
+    })
+    const item = r.board.items[0] as CanvasItem & {
+      color: string
+      width: number
+      height: number
+      type: string
+    }
+    expect(item.type).toBe('text')
+    expect(item.color.toUpperCase()).toBe('#1D1D1B')
+    // single-line preference: short label should not become a multi-line block
+    expect(item.height).toBeLessThan(120)
+    expect(item.width).toBeGreaterThan(100)
+  })
+
   it('createNote dryRun still returns a board preview', () => {
     const r = createNote(
       emptyBoard(),

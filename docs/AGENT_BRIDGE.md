@@ -30,9 +30,10 @@ Codex  →  ic2-mcp  →  %LOCALAPPDATA%/InfiniteCanvas/agent/req-*.json
 1. Open **Infinite Canvas 2** (empty board or a sandbox board).  
 2. Codex has MCP `ic2` with write enabled.  
 3. Prompt: *「帮我调研 songmont 的品牌视觉」*  
-4. Codex should: web research → `ic2_status` → `ic2_get_viewport` →  
-   `ic2_add_research_cluster` (notes + links + image URLs).  
-5. Cards appear on the live canvas; user **Ctrl+S** to persist.
+4. Prefer **progressive** writes (skill `ic2-moodboard`): open stack →  
+   append each finished section via `ic2_append_cluster` / `stackId`  
+   so the user sees chunks as research completes (not one final dump).  
+5. Content appears live per MCP call; user **Ctrl+S** to persist.
 
 ## Tools (highlights)
 
@@ -40,9 +41,10 @@ Codex  →  ic2-mcp  →  %LOCALAPPDATA%/InfiniteCanvas/agent/req-*.json
 |------|------|
 | `ic2_status` | live vs file; `dirty` / `pendingUserSave` / `revision` |
 | `ic2_get_viewport` | place near what user sees |
-| `ic2_create_note` / `create_link` / `import_image_url` | primitives |
+| `ic2_create_note` / `ic2_create_text` | body notes + floating large type (`role`) |
+| `ic2_create_link` / `import_image_url` | pages vs **real images** |
 | `ic2_create_stack` / `ic2_get_stack` / `move_to_container` / `layout_grid` | structure |
-| `ic2_add_research_cluster` | **preferred** one-shot mood board dump |
+| `ic2_add_research_cluster` | **preferred** mood board (`images` + typed notes) |
 
 ## Write response envelope (v2)
 
