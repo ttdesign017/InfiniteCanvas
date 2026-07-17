@@ -80,7 +80,11 @@ export function prepareBoardForRuntime(board: BoardSnapshot): {
         ? { ...board.homeViewport }
         : { x: 0, y: 0, zoom: 1 }
 
-  const hydratedItems = materializeRuntimeMediaSources(migrated.items)
+  // packedAssets → blob: here (after caller revoked previous board blobs)
+  const hydratedItems = materializeRuntimeMediaSources(
+    migrated.items,
+    board.packedAssets,
+  )
   // Inner canvases first (relative order), then root last so each stack unit
   // is one exclusive contiguous z block on the parent surface (atomic fans).
   let nextItems = hydratedItems

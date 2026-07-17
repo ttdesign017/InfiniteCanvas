@@ -15,7 +15,15 @@ import type {
 } from '../types/canvas'
 import { trackBlobUrl } from './blobUrls'
 import { isDesktop, readBinaryFile } from './desktop'
+import { mapPool } from './mapPool'
 import { getExtension } from './media'
+import {
+  getCachedPackAsset,
+  setCachedPackAsset,
+} from './packAssetCache'
+
+/** Concurrent media loads while packing .icanvas (I/O bound). */
+export const PACK_MEDIA_CONCURRENCY = 6
 
 export const ICANVAS_MAGIC = 'ICNV'
 export const ICANVAS_FORMAT = 'InfiniteCanvas'
@@ -197,61 +205,78 @@ function isMediaItem(item: CanvasItem): item is MediaItem | AudioItem {
   )
 }
 
+type PackedItemResult = {
+  item: CanvasItem
+  assets: Record<string, ICanvasAsset>
+}
+
+async function loadSrcAsAssetCached(
+  src: string,
+  fileName?: string,
+): Promise<ICanvasAsset | null> {
+  const cached = getCachedPackAsset(src, fileName)
+  if (cached) return cached
+  const packed = await loadSrcAsAsset(src, fileName)
+  if (packed) setCachedPackAsset(src, fileName, packed)
+  return packed
+}
+
+async function packOneItem(item: CanvasItem): Promise<PackedItemResult> {
+  if (isMediaItem(item)) {
+    const assetId = item.id
+    const packed = await loadSrcAsAssetCached(item.src, item.fileName)
+    if (packed) {
+      return {
+        item: { ...item, src: `${ASSET_PREFIX}${assetId}` },
+        assets: { [assetId]: packed },
+      }
+    }
+    // Keep original src if pack failed (better than dropping the item)
+    return { item: { ...item }, assets: {} }
+  }
+
+  // Link cards: embed preview image / favicon when they are data or fetchable remote
+  if (item.type === 'link') {
+    const next = { ...item }
+    const assets: Record<string, ICanvasAsset> = {}
+    if (item.image) {
+      const imgAsset = await loadSrcAsAssetCached(item.image)
+      if (imgAsset) {
+        const aid = `${item.id}_img`
+        assets[aid] = imgAsset
+        next.image = `${ASSET_PREFIX}${aid}`
+      }
+    }
+    if (item.favicon) {
+      const fav = await loadSrcAsAssetCached(item.favicon)
+      if (fav) {
+        const aid = `${item.id}_fav`
+        assets[aid] = fav
+        next.favicon = `${ASSET_PREFIX}${aid}`
+      }
+    }
+    return { item: next, assets }
+  }
+
+  return { item: structuredClone(item), assets: {} }
+}
+
 /**
  * Pack current board + embed all media into an .icanvas document.
+ * Media loads run with limited concurrency (see {@link PACK_MEDIA_CONCURRENCY}).
  */
 export async function packICanvasDocument(snapshot: BoardSnapshot): Promise<ICanvasDocument> {
+  const packed = await mapPool(
+    snapshot.items,
+    PACK_MEDIA_CONCURRENCY,
+    (item) => packOneItem(item),
+  )
+
   const assets: Record<string, ICanvasAsset> = {}
   const items: CanvasItem[] = []
-
-  for (const item of snapshot.items) {
-    if (isMediaItem(item)) {
-      const assetId = item.id
-      const packed = await loadSrcAsAsset(item.src, item.fileName)
-      if (packed) {
-        assets[assetId] = packed
-        items.push({
-          ...item,
-          src: `${ASSET_PREFIX}${assetId}`,
-        })
-        continue
-      }
-      // Keep original src if pack failed (better than dropping the item)
-      items.push({ ...item })
-      continue
-    }
-
-    // Link cards: embed preview image / favicon when they are data or fetchable remote
-    if (item.type === 'link') {
-      const next = { ...item }
-      if (item.image && !item.image.startsWith('data:')) {
-        const imgAsset = await loadSrcAsAsset(item.image)
-        if (imgAsset) {
-          const aid = `${item.id}_img`
-          assets[aid] = imgAsset
-          next.image = `${ASSET_PREFIX}${aid}`
-        }
-      } else if (item.image?.startsWith('data:')) {
-        const imgAsset = await loadSrcAsAsset(item.image)
-        if (imgAsset) {
-          const aid = `${item.id}_img`
-          assets[aid] = imgAsset
-          next.image = `${ASSET_PREFIX}${aid}`
-        }
-      }
-      if (item.favicon && !item.favicon.startsWith('data:')) {
-        const fav = await loadSrcAsAsset(item.favicon)
-        if (fav) {
-          const aid = `${item.id}_fav`
-          assets[aid] = fav
-          next.favicon = `${ASSET_PREFIX}${aid}`
-        }
-      }
-      items.push(next)
-      continue
-    }
-
-    items.push(structuredClone(item))
+  for (const row of packed) {
+    items.push(row.item)
+    Object.assign(assets, row.assets)
   }
 
   return {
@@ -298,36 +323,42 @@ export function isLegacyBoardSnapshot(data: unknown): data is BoardSnapshot {
 }
 
 /**
- * Expand icanvas-asset:// refs to data: URLs (portable intermediate form).
- * Call {@link materializeRuntimeMediaSources} before showing media in the UI —
- * Chromium/WebView2 often cannot decode video/audio from large `data:` URLs.
+ * Decode raw base64 (no data: prefix) into a Blob without building a giant
+ * intermediate data-URL string (open-path memory win).
+ */
+export function base64ToBlob(b64: string, mime: string): Blob | null {
+  try {
+    const cleaned = b64.replace(/\s/g, '')
+    if (!cleaned) return null
+    const binary = atob(cleaned)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return new Blob([bytes], { type: mime || 'application/octet-stream' })
+  } catch {
+    return null
+  }
+}
+
+/** base64 + mime → tracked blob: object URL (null on failure). */
+export function base64ToObjectUrl(b64: string, mime: string): string | null {
+  const blob = base64ToBlob(b64, mime)
+  if (!blob || blob.size === 0) return null
+  try {
+    return trackBlobUrl(URL.createObjectURL(blob))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Expand a packed document into a BoardSnapshot.
+ *
+ * Media stays as `icanvas-asset://` refs plus {@link BoardSnapshot.packedAssets}
+ * so blob object URLs are only created in {@link materializeRuntimeMediaSources}
+ * *after* the previous board's blobs are revoked (avoids peak double-copy and
+ * revoke races on open).
  */
 export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
-  const assets = doc.assets || {}
-
-  const resolve = (ref: string | undefined): string | undefined => {
-    if (!ref) return ref
-    if (ref.startsWith(ASSET_PREFIX)) {
-      const id = ref.slice(ASSET_PREFIX.length)
-      const a = assets[id]
-      if (!a) return ref
-      return `data:${a.mime};base64,${a.data}`
-    }
-    return ref
-  }
-
-  const items = doc.items.map((raw) => {
-    const item = structuredClone(raw) as CanvasItem
-    if (isMediaItem(item)) {
-      item.src = resolve(item.src) || item.src
-    }
-    if (item.type === 'link') {
-      item.image = resolve(item.image)
-      item.favicon = resolve(item.favicon)
-    }
-    return item
-  })
-
   return {
     version: 1,
     name: doc.name || 'Untitled Board',
@@ -335,10 +366,11 @@ export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
     homeViewport: doc.homeViewport
       ? { ...doc.homeViewport }
       : undefined,
-    items,
+    items: structuredClone(doc.items),
     nextZ: doc.nextZ ?? 1,
     stacks: doc.stacks ? structuredClone(doc.stacks) : [],
     currentContainerId: doc.currentContainerId,
+    packedAssets: doc.assets ? { ...doc.assets } : undefined,
   }
 }
 
@@ -346,17 +378,7 @@ export function unpackICanvasDocument(doc: ICanvasDocument): BoardSnapshot {
 export function dataUrlToBlob(dataUrl: string): Blob | null {
   const m = dataUrl.match(/^data:([^;,]+);base64,([\s\S]*)$/i)
   if (!m) return null
-  try {
-    const mime = m[1] || 'application/octet-stream'
-    const b64 = m[2].replace(/\s/g, '')
-    if (!b64) return null
-    const binary = atob(b64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    return new Blob([bytes], { type: mime })
-  } catch {
-    return null
-  }
+  return base64ToBlob(m[2], m[1] || 'application/octet-stream')
 }
 
 /**
@@ -390,31 +412,42 @@ export function isPlayableMediaSrc(src: string | undefined | null): boolean {
 }
 
 /**
- * Convert packed `data:` media (and link thumbs) to blob: object URLs so
- * reopen-after-save shows and plays all media types. Safe to call more than
- * once (blob: / http sources are left alone).
+ * Resolve packed asset refs and leftover `data:` URLs to tracked blob: URLs.
+ * Prefer base64 → Blob directly (no intermediate data: string) when
+ * `packedAssets` is provided from {@link unpackICanvasDocument}.
  *
+ * Safe to call more than once (blob: / http sources are left alone).
  * Must run **after** `revokeAllTrackedBlobUrls` when replacing a board.
  */
 export function materializeRuntimeMediaSources(
   items: CanvasItem[],
+  packedAssets?: Record<string, ICanvasAsset> | null,
 ): CanvasItem[] {
+  const assets = packedAssets || {}
+
+  const resolveRef = (ref: string | undefined): string | undefined => {
+    if (!ref) return ref
+    if (ref.startsWith(ASSET_PREFIX)) {
+      const id = ref.slice(ASSET_PREFIX.length)
+      const a = assets[id]
+      if (!a?.data) return ref
+      return base64ToObjectUrl(a.data, a.mime) ?? `data:${a.mime};base64,${a.data}`
+    }
+    if (ref.startsWith('data:')) {
+      return dataUrlToObjectUrl(ref) ?? ref
+    }
+    return ref
+  }
+
   return items.map((raw) => {
     if (isMediaItem(raw)) {
-      if (!raw.src?.startsWith('data:')) return raw
-      const objectUrl = dataUrlToObjectUrl(raw.src)
-      if (!objectUrl) return raw
-      return { ...raw, src: objectUrl }
+      const src = resolveRef(raw.src)
+      if (src === raw.src) return raw
+      return { ...raw, src: src || raw.src }
     }
     if (raw.type === 'link') {
-      let image = raw.image
-      let favicon = raw.favicon
-      if (image?.startsWith('data:')) {
-        image = dataUrlToObjectUrl(image) ?? image
-      }
-      if (favicon?.startsWith('data:')) {
-        favicon = dataUrlToObjectUrl(favicon) ?? favicon
-      }
+      const image = resolveRef(raw.image)
+      const favicon = resolveRef(raw.favicon)
       if (image === raw.image && favicon === raw.favicon) return raw
       return { ...raw, image, favicon }
     }

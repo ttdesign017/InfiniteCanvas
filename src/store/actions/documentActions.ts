@@ -13,6 +13,7 @@ import {
   loadBoardIntoRuntimeFields,
   snapshotBoard,
 } from '../../utils/boardDocument'
+import { resetStackAnimProgress } from '../../utils/stackAnimProgress'
 import { FONT_STACKS } from '../canvasStoreTypes'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
 
@@ -752,6 +753,7 @@ export function createDocumentActions(
   importBoard: (board) => {
     // Drop locks + revoke blobs + hydrate media + reflow stack z (boardDocument)
     const ready = loadBoardIntoRuntimeFields(board)
+    resetStackAnimProgress()
     set({
       items: ready.items,
       stacks: ready.stacks,

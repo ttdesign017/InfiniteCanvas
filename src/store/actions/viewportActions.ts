@@ -1,4 +1,8 @@
 import { allContentBounds } from '../../utils/layout'
+import {
+  resetStackAnimProgress,
+  seedStackAnimProgress,
+} from '../../utils/stackAnimProgress'
 import { itemsInContainer, stacksInContainer } from '../../utils/stacks'
 import { DEFAULT_VIEWPORT } from '../canvasStoreTypes'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
@@ -49,7 +53,19 @@ export function createViewportActions(
 
   toggleImmersiveMode: () => set((s) => ({ immersiveMode: !s.immersiveMode })),
 
-  setStackEnterAnim: (anim) => set({ stackEnterAnim: anim }),
+  setStackEnterAnim: (anim) => {
+    if (anim) {
+      seedStackAnimProgress({
+        t: anim.t,
+        settle: anim.settle ?? 0,
+        peerReveal: anim.peerReveal ?? (anim.mode === 'enter' ? 1 : 0),
+        nestedChromeOpacity: anim.nestedChromeOpacity ?? 1,
+      })
+    } else {
+      resetStackAnimProgress()
+    }
+    set({ stackEnterAnim: anim })
+  },
 
   setSnapEnabled: (enabled) => set({ snapEnabled: enabled }),
 

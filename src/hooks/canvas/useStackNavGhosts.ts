@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { CanvasItem, StackRecord } from '../../types/canvas'
 import type { StackEnterAnim } from '../../store/types'
+import { useStackAnimProgress } from '../../utils/stackAnimProgress'
 import {
   collapsedStackFanCards,
   collapsedStackFolderBounds,
@@ -19,6 +20,8 @@ export function useStackNavGhosts(input: {
   stackEnterAnim: StackEnterAnim | null
 }) {
   const { items, stacks, currentContainerId, stackEnterAnim } = input
+  // Per-frame peerReveal lives outside the main store (see stackAnimProgress)
+  const animProgress = useStackAnimProgress()
 
   const isEnterAnim = stackEnterAnim?.mode === 'enter'
   const isExitAnim = stackEnterAnim?.mode === 'exit'
@@ -48,7 +51,7 @@ export function useStackNavGhosts(input: {
     isExitAnim || isEnterAnim
       ? Math.max(
           0,
-          Math.min(1, stackEnterAnim?.peerReveal ?? (isEnterAnim ? 1 : 0)),
+          Math.min(1, animProgress.peerReveal ?? (isEnterAnim ? 1 : 0)),
         )
       : 1
   const exitPeerOpacity = isExitAnim ? peerOpacity : 1
@@ -167,6 +170,24 @@ export function useStackNavGhosts(input: {
       ? exitPeerOpacity
       : 1
 
+  /** Focus stack center in ghost-local space (stack top-left is 0,0). */
+  const peerScatterOriginLocal =
+    animStackRec != null
+      ? {
+          x: animStackRec.width / 2,
+          y: animStackRec.height / 2,
+        }
+      : null
+
+  /** Focus stack center in parent world space (for real layer after exit handoff). */
+  const peerScatterOriginWorld =
+    animStackRec != null
+      ? {
+          x: animStackRec.x + animStackRec.width / 2,
+          y: animStackRec.y + animStackRec.height / 2,
+        }
+      : null
+
   return {
     isEnterAnim,
     isExitAnim,
@@ -186,5 +207,7 @@ export function useStackNavGhosts(input: {
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
     navPeerOpacity,
+    peerScatterOriginLocal,
+    peerScatterOriginWorld,
   }
 }

@@ -1,5 +1,6 @@
 import { ROOT_CONTAINER_ID } from '../../types/canvas'
 import { STACK_FOLDER_PAD, type LayoutTarget } from '../../utils/layout'
+import { seedStackAnimProgress } from '../../utils/stackAnimProgress'
 import {
   containerOf,
   countLeafItemsInStack,
@@ -224,6 +225,13 @@ export function createStackEnterActions(
         name: stackLabelName(stack.name),
         memberCount: leafCount,
       },
+    })
+    // Progress scalars live outside Zustand so enter morph RAF can skip store commits
+    seedStackAnimProgress({
+      t: 0,
+      settle: 0,
+      peerReveal: 1,
+      nestedChromeOpacity: 0,
     })
 
     // Target viewport: fit free layout (zoom in as cards spread)

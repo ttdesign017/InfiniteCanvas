@@ -8,6 +8,11 @@ import { useDragWriteScheduler } from './canvas/useDragWriteScheduler'
 import { useModalTransformHotkeys } from './canvas/useModalTransformHotkeys'
 import { useStackNavGhosts } from './canvas/useStackNavGhosts'
 import { useCanvasPointerGestures } from './canvas/useCanvasPointerGestures'
+import { useWorldCullRect } from './canvas/useWorldCullRect'
+import {
+  resetStackAnimProgress,
+  setStackAnimProgress,
+} from '../utils/stackAnimProgress'
 import {
   blurChrome,
   dismissStackNameEdit,
@@ -63,13 +68,15 @@ export function useInfiniteCanvasController() {
   const currentContainerId = useCanvasStore((s) => s.currentContainerId)
   const selectedIds = useCanvasStore((s) => s.selectedIds)
   const selectedStackIds = useCanvasStore((s) => s.selectedStackIds)
-  const viewport = useCanvasStore((s) => s.viewport)
+  // Viewport is NOT subscribed here — CanvasWorldTransform owns pan/zoom so
+  // item layers do not re-render on every wheel tick.
   const tool = useCanvasStore((s) => s.tool)
   const spaceHeld = useCanvasStore((s) => s.spaceHeld)
   const cHeld = useCanvasStore((s) => s.cHeld)
   const isPanning = useCanvasStore((s) => s.isPanning)
   const stackEnterAnim = useCanvasStore((s) => s.stackEnterAnim)
   const setStackEnterAnim = useCanvasStore((s) => s.setStackEnterAnim)
+  const animating = useCanvasStore((s) => s.animating)
 
   useEffect(() => {
     const live = new Set(
@@ -77,6 +84,12 @@ export function useInfiniteCanvasController() {
     )
     pruneEmbedIframes(live)
   }, [items])
+
+  // Cull during normal editing; keep full tree during stack enter/exit morph.
+  const cullRect = useWorldCullRect({
+    disabled: !!(stackEnterAnim || animating),
+    marginPx: 280,
+  })
 
   const {
     visibleItems,
@@ -100,6 +113,7 @@ export function useInfiniteCanvasController() {
     tool,
     spaceHeld,
     cHeld,
+    cullRect,
   })
 
   const navGhosts = useStackNavGhosts({
@@ -112,10 +126,7 @@ export function useInfiniteCanvasController() {
   useEffect(() => {
     if (!stackEnterAnim) return
     if (stackEnterAnim.mode === 'exit') return
-    const startSnap = { ...stackEnterAnim.start }
-    const stackId = stackEnterAnim.stackId
-    const name = stackEnterAnim.name
-    const memberCount = stackEnterAnim.memberCount
+    // Morph/peer progress only — do not rewrite Zustand stackEnterAnim each frame
     const t0 = performance.now()
     const morphDur = 380
     const peerFadeDur = 500
@@ -126,19 +137,16 @@ export function useInfiniteCanvasController() {
       const nestedChromeOpacity = Math.max(0, Math.min(1, (e - 0.15) / 0.85))
       const pu = Math.max(0, Math.min(1, (now - t0) / peerFadeDur))
       const peerReveal = 1 - pu * pu * (3 - 2 * pu)
-      useCanvasStore.getState().setStackEnterAnim({
-        stackId,
-        mode: 'enter',
-        start: startSnap,
+      setStackAnimProgress({
         t: e,
         nestedChromeOpacity,
         peerReveal,
-        name,
-        memberCount,
+        settle: 0,
       })
       if (t < 1 || pu < 1) {
         raf = requestAnimationFrame(tick)
       } else {
+        resetStackAnimProgress()
         setStackEnterAnim(null)
       }
     }
@@ -249,6 +257,8 @@ export function useInfiniteCanvasController() {
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
     navPeerOpacity,
+    peerScatterOriginLocal,
+    peerScatterOriginWorld,
   } = navGhosts
 
   return {
@@ -263,7 +273,6 @@ export function useInfiniteCanvasController() {
     stacks,
     currentContainerId,
     selectedStackIds,
-    viewport,
     tool,
     cHeld,
     stackEnterAnim,
@@ -304,5 +313,7 @@ export function useInfiniteCanvasController() {
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
     navPeerOpacity,
+    peerScatterOriginLocal,
+    peerScatterOriginWorld,
   }
 }

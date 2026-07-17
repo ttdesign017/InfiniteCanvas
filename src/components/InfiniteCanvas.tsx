@@ -1,5 +1,6 @@
-import { Fragment } from 'react'
+import type { ReactNode } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
+import type { StackEnterAnim } from '../store/types'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
@@ -8,11 +9,53 @@ import { containerOf, countLeafItemsInStack, migrateLegacyStacks } from '../util
 import { embedDisplayItem, resolveEmbedWorldPose } from '../utils/embedPose'
 import { type GroupScaleHandle } from '../utils/selectionBounds'
 import { exitPeerStackPreviewOpacity } from '../utils/stackNavigationAnimation'
+import {
+  useStackAnimProgress,
+  type StackAnimProgress,
+} from '../utils/stackAnimProgress'
+import type { SnapGuide } from '../utils/snap'
 import { stackCountPaintZ, stackFolderPaintZ } from '../utils/zOrder'
+import {
+  freeItemWrapAllowsPointer,
+  peerScatterStyle,
+  peerScatterWrapClassName,
+  rectCenter,
+} from '../utils/peerScatter'
 import {
   captureJointMoveSelection,
   useInfiniteCanvasController,
 } from '../hooks/useInfiniteCanvasController'
+
+/** Owns pan/zoom transform only — children do not re-render when viewport moves. */
+function CanvasWorldTransform({ children }: { children: ReactNode }) {
+  const viewport = useCanvasStore((s) => s.viewport)
+  return (
+    <div
+      className="canvas-world"
+      style={{
+        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
+function SnapGuidesLayer({ guides }: { guides: SnapGuide[] }) {
+  const viewport = useCanvasStore((s) => s.viewport)
+  return (
+    <>
+      {guides.map((g, i) => {
+        if (g.orientation === 'v') {
+          const sx = g.pos * viewport.zoom + viewport.x
+          return <div key={`sg-${i}`} className="snap-guide v" style={{ left: sx }} />
+        }
+        const sy = g.pos * viewport.zoom + viewport.y
+        return <div key={`sg-${i}`} className="snap-guide h" style={{ top: sy }} />
+      })}
+    </>
+  )
+}
 
 export function InfiniteCanvas() {
   const {
@@ -26,7 +69,6 @@ export function InfiniteCanvas() {
     items,
     stacks,
     currentContainerId,
-    viewport,
     tool,
     cHeld,
     stackEnterAnim,
@@ -67,7 +109,12 @@ export function InfiniteCanvas() {
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
     navPeerOpacity,
+    peerScatterOriginLocal,
+    peerScatterOriginWorld,
   } = useInfiniteCanvasController()
+
+  // Morph progress (t / settle / nested chrome) — not in Zustand hot path
+  const animProgress = useStackAnimProgress()
 
   return (
     <div
@@ -95,12 +142,7 @@ export function InfiniteCanvas() {
           {modalXformKind === 'scale' && 'Scale (S) — LMB confirm · RMB cancel'}
         </div>
       )}
-      <div
-        className="canvas-world"
-        style={{
-          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-        }}
-      >
+      <CanvasWorldTransform>
         <div className="canvas-grid" />
         {/* Folder chrome for nested stacks + legacy groups */}
         {stackFolders.map((f) => {
@@ -108,15 +150,13 @@ export function InfiniteCanvas() {
           // reaches 1. Avoid mounting a second real folder at handoff.
           if (exitParentPeerStackIds.has(f.gid)) return null
           // During exit settle, real folder fades in under morph overlay
-          const exitAnim =
+          const isExitFolder =
             stackEnterAnim?.mode === 'exit' &&
             stackEnterAnim.stackId === f.gid
-              ? stackEnterAnim
-              : null
           // Other stacks on parent fade in with exit settle (not the one we just left)
           const folderOpacity =
-            exitAnim != null
-              ? Math.max(0, Math.min(1, exitAnim.settle ?? 0))
+            isExitFolder
+              ? Math.max(0, Math.min(1, animProgress.settle))
               : exitAfterHandoff
                 ? exitPeerOpacity
                 : 1
@@ -140,11 +180,34 @@ export function InfiniteCanvas() {
             )
           const nestedChrome =
             childOfAnim && stackEnterAnim
-              ? Math.max(0, Math.min(1, stackEnterAnim.nestedChromeOpacity ?? 1))
+              ? Math.max(0, Math.min(1, animProgress.nestedChromeOpacity))
               : 1
           const folderOp = folderOpacity * nestedChrome
+          // After exit handoff, sibling stacks share ghost scatter so opacity/transform match
+          const isExitPeerFolder =
+            exitAfterHandoff &&
+            !isExitFolder &&
+            f.gid !== exitingStackId &&
+            peerScatterOriginWorld != null
+          const folderScatter = isExitPeerFolder
+            ? peerScatterStyle(
+                rectCenter(f.bounds),
+                peerScatterOriginWorld,
+                folderOp,
+                f.gid,
+              )
+            : null
+          const folderChromeOp = folderScatter ? 1 : folderOp
           return (
-          <Fragment key={`folder-wrap-${f.gid}`}>
+          <div
+            key={`folder-wrap-${f.gid}`}
+            className={
+              folderScatter
+                ? peerScatterWrapClassName({ isGhost: false })
+                : undefined
+            }
+            style={folderScatter ?? undefined}
+          >
           <StackFolder
             groupId={f.gid}
             members={f.members}
@@ -153,7 +216,7 @@ export function InfiniteCanvas() {
             dropTarget={f.dropTarget}
             zIndex={folderZ}
             name={f.name}
-            styleOpacity={folderOp}
+            styleOpacity={folderChromeOp}
             count={countN}
             countZIndex={countZ}
             onEnter={() => {
@@ -243,22 +306,36 @@ export function InfiniteCanvas() {
                   f.bounds.y + f.bounds.height - 10
                 }px) translate(-100%, -100%)`,
                 zIndex: countZ,
-                opacity: folderOp,
+                opacity: folderChromeOp,
                 pointerEvents: 'none',
               }}
             >
               {countN}
             </span>
           )}
-          </Fragment>
+          </div>
           )
         })}
         {/*
           Parent peers (enter fade-out / exit fade-in): continuous ghost layer
           so container switch never pops same-level items off instantly.
         */}
-        {parentPeerGhostStacks.map((peer) => (
-          <Fragment key={`peer-ghost-stack-${peer.stack.id}`}>
+        {parentPeerGhostStacks.map((peer) => {
+          const scatter =
+            peerScatterOriginLocal != null
+              ? peerScatterStyle(
+                  rectCenter(peer.bounds),
+                  peerScatterOriginLocal,
+                  navPeerOpacity,
+                  peer.stack.id,
+                )
+              : { opacity: navPeerOpacity }
+          return (
+          <div
+            key={`peer-ghost-stack-${peer.stack.id}`}
+            className={peerScatterWrapClassName({ isGhost: true })}
+            style={scatter}
+          >
             <StackFolder
               groupId={peer.stack.id}
               members={[]}
@@ -266,7 +343,7 @@ export function InfiniteCanvas() {
               selected={false}
               zIndex={peer.folderZ}
               name={peer.stack.name}
-              styleOpacity={navPeerOpacity}
+              styleOpacity={1}
               count={peer.count}
               countZIndex={peer.countZ}
               onPointerDown={() => {}}
@@ -279,7 +356,7 @@ export function InfiniteCanvas() {
                     peer.bounds.y + peer.bounds.height - 10
                   }px) translate(-100%, -100%)`,
                   zIndex: peer.countZ,
-                  opacity: navPeerOpacity,
+                  opacity: 1,
                   pointerEvents: 'none',
                 }}
               >
@@ -291,7 +368,7 @@ export function InfiniteCanvas() {
                 key={`peer-ghost-fan-${item.id}`}
                 className="stack-preview-wrap"
                 style={{
-                  opacity: navPeerOpacity,
+                  opacity: 1,
                   pointerEvents: 'none',
                 }}
               >
@@ -303,16 +380,27 @@ export function InfiniteCanvas() {
                 />
               </div>
             ))}
-          </Fragment>
-        ))}
-        {parentPeerGhostItems.map((item) => (
+          </div>
+          )
+        })}
+        {parentPeerGhostItems.map((item) => {
+          const scatter =
+            peerScatterOriginLocal != null
+              ? peerScatterStyle(
+                  {
+                    x: item.x + item.width / 2,
+                    y: item.y + item.height / 2,
+                  },
+                  peerScatterOriginLocal,
+                  navPeerOpacity,
+                  item.id,
+                )
+              : { opacity: navPeerOpacity }
+          return (
           <div
             key={`peer-ghost-item-${item.id}`}
-            className="peer-fade-wrap"
-            style={{
-              opacity: navPeerOpacity,
-              pointerEvents: 'none',
-            }}
+            className={`peer-fade-wrap ${peerScatterWrapClassName({ isGhost: true })}`}
+            style={scatter}
           >
             <CanvasItemView
               item={item}
@@ -321,7 +409,8 @@ export function InfiniteCanvas() {
               onResizePointerDown={() => {}}
             />
           </div>
-        ))}
+          )
+        })}
         {stackPreviewItems.map((item) => {
           // Ghost layer owns peer-stack fan cards during enter/exit — hide real ones
           const isPeerGhostPreview =
@@ -329,19 +418,46 @@ export function InfiniteCanvas() {
             parentPeerGhostStackIds.has(item.stackGroupId)
           if (isPeerGhostPreview) return null
           // At exit handoff the real parent layer takes ownership at exactly the
-          // ghost's current opacity. The stack we just left stays fully visible;
-          // sibling stacks continue the same one-way reveal as ordinary items.
+          // ghost's current opacity + scatter. Exiting stack fan stays solid at rest.
           const previewOpacity = exitPeerStackPreviewOpacity(
             exitAfterHandoff,
             exitingStackId,
             item.stackGroupId,
             exitPeerOpacity,
           )
+          const isSiblingPeer =
+            exitAfterHandoff &&
+            item.stackGroupId != null &&
+            item.stackGroupId !== exitingStackId
+          // Rigid unit: same scatter as folder (unit center), not per-card center —
+          // matches ghost wrap so handoff does not pop fan vs chrome.
+          const siblingRec =
+            isSiblingPeer && item.stackGroupId
+              ? stacks.find((s) => s.id === item.stackGroupId)
+              : null
+          const scatter =
+            isSiblingPeer &&
+            peerScatterOriginWorld != null &&
+            siblingRec != null
+              ? peerScatterStyle(
+                  {
+                    x: siblingRec.x + siblingRec.width / 2,
+                    y: siblingRec.y + siblingRec.height / 2,
+                  },
+                  peerScatterOriginWorld,
+                  previewOpacity,
+                  siblingRec.id,
+                )
+              : { opacity: previewOpacity }
           return (
             <div
               key={item.id}
-              className="stack-preview-wrap"
-              style={{ opacity: previewOpacity }}
+              className={`stack-preview-wrap${
+                isSiblingPeer
+                  ? ` ${peerScatterWrapClassName({ isGhost: false })}`
+                  : ''
+              }`}
+              style={scatter}
             >
               <CanvasItemView
                 item={item}
@@ -423,12 +539,37 @@ export function InfiniteCanvas() {
             </div>
           )
         })}
-        {sortedNonEmbeds.map((item) => (
+        {sortedNonEmbeds.map((item) => {
+          const peerOp = exitAfterHandoff ? exitPeerOpacity : 1
+          const scattering =
+            exitAfterHandoff && peerScatterOriginWorld != null
+          const scatter = scattering
+            ? peerScatterStyle(
+                {
+                  x: item.x + item.width / 2,
+                  y: item.y + item.height / 2,
+                },
+                peerScatterOriginWorld,
+                peerOp,
+                item.id,
+              )
+            : { opacity: peerOp }
+          // Live free items must stay clickable; never use is-peer-ghost here.
+          const scatterClass = scattering
+            ? peerScatterWrapClassName({ isGhost: false })
+            : ''
+          const allowPointer = freeItemWrapAllowsPointer(
+            exitAfterHandoff,
+            peerOp,
+          )
+          return (
           <div
             key={item.id}
-            className="peer-fade-wrap"
+            className={`peer-fade-wrap${scatterClass ? ` ${scatterClass}` : ''}`}
             style={{
-              opacity: exitAfterHandoff ? exitPeerOpacity : 1,
+              ...scatter,
+              // Explicit override so a stuck handoff style cannot brick selection
+              pointerEvents: allowPointer ? 'auto' : 'none',
             }}
           >
             <CanvasItemView
@@ -438,7 +579,8 @@ export function InfiniteCanvas() {
               onResizePointerDown={onResizePointerDown}
             />
           </div>
-        ))}
+          )
+        })}
         {/* Multi-select group bounding box (2+ free items and/or stacks) */}
         {isGroupSelect && groupBounds && !stackEnterAnim && (
           <div
@@ -575,7 +717,7 @@ export function InfiniteCanvas() {
             </div>
           )
         })}
-      </div>
+      </CanvasWorldTransform>
 
       {visibleItems.length === 0 &&
         visibleStacks.length === 0 &&
@@ -583,100 +725,10 @@ export function InfiniteCanvas() {
 
       {/* Stack folder morph: screen-space outer rect, world-scale chrome (matches canvas zoom) */}
       {stackEnterAnim && (
-        <div className="stack-enter-overlay" aria-hidden>
-          {(() => {
-            const t = stackEnterAnim.t
-            const settle = stackEnterAnim.settle ?? 0
-            const a = stackEnterAnim.start
-            const vw = window.innerWidth
-            const vh = window.innerHeight
-            const b =
-              stackEnterAnim.end ??
-              (stackEnterAnim.mode === 'enter'
-                ? { x: 0, y: 0, w: vw, h: vh }
-                : a)
-            const x = a.x + (b.x - a.x) * t
-            const y = a.y + (b.y - a.y) * t
-            const w = Math.max(1, a.w + (b.w - a.w) * t)
-            const h = Math.max(1, a.h + (b.h - a.h) * t)
-            /*
-             * CRITICAL scale match: real StackFolder lives inside .canvas-world
-             * (transform scale(zoom)), so tab / badge / radius are in world units.
-             * Morph is a surface overlay — if we paint CSS px at screen size, chrome
-             * looks larger whenever zoom < 1. Layout in world units then scale(zoom).
-             */
-            const zoom = Math.max(0.05, viewport.zoom)
-            const worldW = w / zoom
-            const worldH = h / zoom
-            /*
-             * Enter: expand + fade out together — fully transparent at full-screen edge.
-             * Exit: fade in with shrink, then settle crossfades to real folder.
-             */
-            const smooth = (u: number) => u * u * (3 - 2 * u) // smoothstep
-            const clamp01 = (u: number) => Math.max(0, Math.min(1, u))
-            // Enter: hit full transparency slightly before t=1 so edge is clean
-            const enterFade = clamp01(t / 0.92)
-            const baseOp =
-              stackEnterAnim.mode === 'exit'
-                ? smooth(clamp01(t))
-                : 1 - smooth(enterFade)
-            const opacity =
-              stackEnterAnim.mode === 'exit'
-                ? baseOp * (1 - smooth(clamp01(settle)))
-                : baseOp
-            // Tab + count: enter rides parent opacity; exit trails body then settle-out
-            const detailT =
-              stackEnterAnim.mode === 'exit'
-                ? clamp01((t - 0.08) / 0.92)
-
-                : 1
-            const detailOp =
-              stackEnterAnim.mode === 'exit'
-                ? smooth(detailT) * (1 - smooth(clamp01(settle)))
-                : 1
-            const hasName = !!(stackEnterAnim.name || '').trim()
-            const count = stackEnterAnim.memberCount ?? 0
-            return (
-              <div
-                className={`stack-enter-folder stack-folder-morph ${
-                  stackEnterAnim.mode === 'exit' ? 'is-exit' : 'is-enter'
-                } ${hasName ? 'has-name' : 'is-compact'}`}
-                style={{
-                  left: x,
-                  top: y,
-                  width: worldW,
-                  height: worldH,
-                  transform: `scale(${zoom})`,
-                  transformOrigin: 'top left',
-                  opacity,
-                }}
-              >
-                <div
-                  className={`stack-folder-tab ${
-                    hasName ? 'is-expanded' : 'is-compact'
-                  }`}
-                  style={{ opacity: detailOp }}
-                >
-                  {hasName && (
-                    <span className="stack-folder-tab-label">
-                      {stackEnterAnim.name}
-                    </span>
-                  )}
-                </div>
-                {/* Body fill — height from top offset; parent opacity drives fade */}
-                <div className="stack-folder-body" />
-                {count > 0 && (
-                  <span
-                    className="stack-folder-label"
-                    style={{ opacity: detailOp }}
-                  >
-                    {count}
-                  </span>
-                )}
-              </div>
-            )
-          })()}
-        </div>
+        <StackMorphOverlay
+          stackEnterAnim={stackEnterAnim}
+          progress={animProgress}
+        />
       )}
 
       {marquee && (
@@ -703,18 +755,100 @@ export function InfiniteCanvas() {
         />
       )}
 
-      {snapGuides.map((g, i) => {
-        if (g.orientation === 'v') {
-          const sx = g.pos * viewport.zoom + viewport.x
-          return <div key={`sg-${i}`} className="snap-guide v" style={{ left: sx }} />
-        }
-        const sy = g.pos * viewport.zoom + viewport.y
-        return <div key={`sg-${i}`} className="snap-guide h" style={{ top: sy }} />
-      })}
+      <SnapGuidesLayer guides={snapGuides} />
 
       {dropActive && (
         <div className="drop-overlay">Drop media, URL, or text</div>
       )}
+    </div>
+  )
+}
+
+/** Screen-space folder morph; reads zoom only (viewport slice) + progress bus. */
+function StackMorphOverlay({
+  stackEnterAnim,
+  progress,
+}: {
+  stackEnterAnim: StackEnterAnim
+  progress: StackAnimProgress
+}) {
+  const zoom = useCanvasStore((s) => Math.max(0.05, s.viewport.zoom))
+  const t = progress.t
+  const settle = progress.settle
+  const a = stackEnterAnim.start
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1440
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 900
+  const b =
+    stackEnterAnim.end ??
+    (stackEnterAnim.mode === 'enter'
+      ? { x: 0, y: 0, w: vw, h: vh }
+      : a)
+  const x = a.x + (b.x - a.x) * t
+  const y = a.y + (b.y - a.y) * t
+  const w = Math.max(1, a.w + (b.w - a.w) * t)
+  const h = Math.max(1, a.h + (b.h - a.h) * t)
+  /*
+   * CRITICAL scale match: real StackFolder lives inside .canvas-world
+   * (transform scale(zoom)), so tab / badge / radius are in world units.
+   * Morph is a surface overlay — layout in world units then scale(zoom).
+   */
+  const worldW = w / zoom
+  const worldH = h / zoom
+  const smooth = (u: number) => u * u * (3 - 2 * u)
+  const clamp01 = (u: number) => Math.max(0, Math.min(1, u))
+  const enterFade = clamp01(t / 0.92)
+  const baseOp =
+    stackEnterAnim.mode === 'exit'
+      ? smooth(clamp01(t))
+      : 1 - smooth(enterFade)
+  const opacity =
+    stackEnterAnim.mode === 'exit'
+      ? baseOp * (1 - smooth(clamp01(settle)))
+      : baseOp
+  const detailT =
+    stackEnterAnim.mode === 'exit' ? clamp01((t - 0.08) / 0.92) : 1
+  const detailOp =
+    stackEnterAnim.mode === 'exit'
+      ? smooth(detailT) * (1 - smooth(clamp01(settle)))
+      : 1
+  const hasName = !!(stackEnterAnim.name || '').trim()
+  const count = stackEnterAnim.memberCount ?? 0
+
+  return (
+    <div className="stack-enter-overlay" aria-hidden>
+      <div
+        className={`stack-enter-folder stack-folder-morph ${
+          stackEnterAnim.mode === 'exit' ? 'is-exit' : 'is-enter'
+        } ${hasName ? 'has-name' : 'is-compact'}`}
+        style={{
+          left: x,
+          top: y,
+          width: worldW,
+          height: worldH,
+          transform: `scale(${zoom})`,
+          transformOrigin: 'top left',
+          opacity,
+        }}
+      >
+        <div
+          className={`stack-folder-tab ${
+            hasName ? 'is-expanded' : 'is-compact'
+          }`}
+          style={{ opacity: detailOp }}
+        >
+          {hasName && (
+            <span className="stack-folder-tab-label">
+              {stackEnterAnim.name}
+            </span>
+          )}
+        </div>
+        <div className="stack-folder-body" />
+        {count > 0 && (
+          <span className="stack-folder-label" style={{ opacity: detailOp }}>
+            {count}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

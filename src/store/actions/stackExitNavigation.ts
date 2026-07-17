@@ -24,6 +24,11 @@ import {
   stackLabelName,
   stacksInContainer,
 } from '../../utils/stacks'
+import {
+  resetStackAnimProgress,
+  seedStackAnimProgress,
+  setStackAnimProgress,
+} from '../../utils/stackAnimProgress'
 import type { GetState, SetState } from '../canvasStoreTypes'
 
 export function runStackExitNavigation(
@@ -589,6 +594,16 @@ export function runStackExitNavigation(
             : {}),
           pendingNavigation: opts?.pending ?? null,
         })
+        if (opts?.keepAnimating) {
+          seedStackAnimProgress({
+            t: 1,
+            settle: 0,
+            peerReveal: peerAt,
+            nestedChromeOpacity: 0,
+          })
+        } else {
+          resetStackAnimProgress()
+        }
         // Heal sibling interleaving on the parent canvas (folder|fan atomic)
         const after = get()
         const parentSurface = after.stacks.find((s) => s.id === leavingId)
@@ -697,6 +712,12 @@ export function runStackExitNavigation(
           targetContainerId: chainSilent ? containerId : immediateTarget,
         },
       })
+      seedStackAnimProgress({
+        t: 0,
+        settle: 0,
+        peerReveal: 0,
+        nestedChromeOpacity: 1,
+      })
 
       const dur = 560
       const easeOut = (t: number) => 1 - Math.pow(1 - t, 3)
@@ -723,6 +744,7 @@ export function runStackExitNavigation(
           const anim = get().stackEnterAnim
           const peer = peerRevealAt(now)
           if (!anim || anim.mode !== 'exit') {
+            resetStackAnimProgress()
             set({
               animating: false,
               stackEnterAnim: null,
@@ -735,18 +757,17 @@ export function runStackExitNavigation(
             }
             return
           }
-          set({
-            stackEnterAnim: {
-              ...anim,
-              t: 1,
-              settle: e,
-              peerReveal: peer,
-              targetContainerId: chainSilent ? containerId : immediateTarget,
-            },
+          // Settle/peer only — avoid rewriting stackEnterAnim (and React) every frame
+          setStackAnimProgress({
+            t: 1,
+            settle: e,
+            peerReveal: peer,
+            nestedChromeOpacity: 0,
           })
           if (st < 1 || peer < 0.999) {
             requestAnimationFrame(settleTick)
           } else {
+            resetStackAnimProgress()
             set({
               animating: false,
               stackEnterAnim: null,
@@ -764,6 +785,7 @@ export function runStackExitNavigation(
 
       const tick = (now: number) => {
         if (get().currentContainerId !== leavingId) {
+          resetStackAnimProgress()
           set({ animating: false, stackEnterAnim: null })
           return
         }
@@ -789,6 +811,13 @@ export function runStackExitNavigation(
           })
         }
 
+        // Layout + viewport still need store updates; morph scalars use progress bus
+        setStackAnimProgress({
+          t: eFolder,
+          settle: 0,
+          peerReveal,
+          nestedChromeOpacity,
+        })
         set((st) => ({
           items: st.items.map((item) => {
             if (memberIds.has(item.id)) {
@@ -806,7 +835,7 @@ export function runStackExitNavigation(
                   ((b.rotation ?? 0) - (a.rotation ?? 0)) * e,
               } as CanvasItem
             }
-            // Nested unit leaves: direct B 闂?parent-abs; deeper C 闂?B-local
+            // Nested unit leaves: direct B → parent-abs; deeper C → B-local
             // (folder origin unit.x/y carries C while B gathers)
             for (const [sid, unit] of unitPose) {
               const nu = nestedUnitById.get(sid)
@@ -848,19 +877,6 @@ export function runStackExitNavigation(
             x: exitVp0.x + (centerLocalVp.x - exitVp0.x) * e,
             y: exitVp0.y + (centerLocalVp.y - exitVp0.y) * e,
           },
-          stackEnterAnim: {
-            stackId: leavingId,
-            mode: 'exit',
-            start: fullScreen,
-            end: folderScreen,
-            t: eFolder,
-            settle: 0,
-            peerReveal,
-            nestedChromeOpacity,
-            name: stackName,
-            memberCount: leafCountExit,
-            targetContainerId: chainSilent ? containerId : immediateTarget,
-          },
         }))
 
         if (raw < 1) {
@@ -886,6 +902,7 @@ export function runStackExitNavigation(
               ? { ...parentStack.viewport }
               : { ...get().viewport }
           })()
+    resetStackAnimProgress()
     set({
       currentContainerId: immediateTarget,
       selectedIds: [],

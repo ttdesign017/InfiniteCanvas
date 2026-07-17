@@ -218,4 +218,10 @@ export interface BoardSnapshot {
   stacks?: StackRecord[]
   /** Active nested canvas; omit or `root` = home */
   currentContainerId?: string
+  /**
+   * Transient packed media from `.icanvas` parse — consumed by
+   * `prepareBoardForRuntime` / `materializeRuntimeMediaSources` into blob: URLs.
+   * Never written back by export; cleared after hydration.
+   */
+  packedAssets?: Record<string, { mime: string; data: string; fileName?: string }>
 }

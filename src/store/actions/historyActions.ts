@@ -1,5 +1,6 @@
 import { ROOT_CONTAINER_ID } from '../../types/canvas'
 import { revokeUnreferencedBlobs } from '../../utils/blobUrls'
+import { resetStackAnimProgress } from '../../utils/stackAnimProgress'
 import { cloneItems, cloneStacks, blobUrlsStillReachable } from '../actionHelpers'
 import type { HistoryEntry } from '../types'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
@@ -54,6 +55,7 @@ export function createHistoryActions(
       get()
     if (history.length === 0) return
     const prev = history[history.length - 1]
+    resetStackAnimProgress()
     set({
       history: history.slice(0, -1),
       future: [
@@ -86,6 +88,7 @@ export function createHistoryActions(
       get()
     if (future.length === 0) return
     const next = future[future.length - 1]
+    resetStackAnimProgress()
     set({
       future: future.slice(0, -1),
       history: [

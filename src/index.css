@@ -1497,6 +1497,17 @@ body,
   pointer-events: none;
 }
 
+/* Off-screen / not-yet-loaded video shell (no decoder cost) */
+.video-player .video-lazy-poster {
+  background:
+    linear-gradient(145deg, rgba(40, 42, 48, 0.95), rgba(22, 24, 28, 0.98));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.video-player.is-lazy .video-play-btn {
+  opacity: 0.92;
+}
+
 .video-play-btn {
   position: absolute;
   left: 50%;
@@ -2553,6 +2564,7 @@ body,
 /* Wrappers for exit peer fade / embed keepalive (zero-size positioned hosts) */
 .peer-fade-wrap,
 .stack-preview-wrap,
+.peer-scatter-wrap,
 .embed-alive {
   position: absolute;
   left: 0;
@@ -2560,6 +2572,17 @@ body,
   width: 0;
   height: 0;
   overflow: visible;
+}
+
+/* Peer scatter: radial push + scale + blur during stack enter/exit.
+   Do NOT set pointer-events:none here — free items reuse this class and must
+   stay clickable/draggable when not in a non-interactive ghost layer. */
+.peer-scatter-wrap {
+  transform-origin: 0 0;
+}
+
+.peer-scatter-wrap.is-peer-ghost {
+  pointer-events: none;
 }
 
 /* Embed keepalive slot — always mounted; hide without display:none (avoids unload) */

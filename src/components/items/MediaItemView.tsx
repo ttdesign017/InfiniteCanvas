@@ -16,17 +16,64 @@ function formatTime(sec: number): string {
 }
 
 function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
   const [hovering, setHovering] = useState(false)
+  /**
+   * Lazy media: only attach `src` after the player has entered (or neared)
+   * the browser viewport. Sticky once true so scrubbing after pan-away still works
+   * while selected/playing; otherwise we detach when far off-screen to free decoders.
+   */
+  const [mediaAttached, setMediaAttached] = useState(false)
+  const [inView, setInView] = useState(false)
 
   const mediaStyle = cropMediaStyle(item)
 
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setMediaAttached(true)
+      setInView(true)
+      return
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        const hit = entries.some((e) => e.isIntersecting)
+        setInView(hit)
+        if (hit) setMediaAttached(true)
+      },
+      // Start loading slightly before the tile is fully on screen
+      { root: null, rootMargin: '120px', threshold: 0 },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
+
+  // Detach decoder when far off-screen (unless playing or selected)
+  const keepAttached = mediaAttached && (inView || playing || selected)
+  const activeSrc = keepAttached ? item.src : undefined
+
   const togglePlay = useCallback(() => {
+    // Ensure src is attached before play (e.g. spacebar while barely off-screen)
+    setMediaAttached(true)
     const v = videoRef.current
-    if (!v) return
+    if (!v) {
+      // src may attach next paint — retry on next frame
+      requestAnimationFrame(() => {
+        const el = videoRef.current
+        if (!el) return
+        if (el.paused) void el.play()
+      })
+      return
+    }
+    if (!v.src && item.src) {
+      v.src = item.src
+      v.load()
+    }
     if (v.paused) {
       void v.play()
       setPlaying(true)
@@ -34,7 +81,7 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       v.pause()
       setPlaying(false)
     }
-  }, [])
+  }, [item.src])
 
   useEffect(() => {
     return registerVideoToggle(item.id, togglePlay)
@@ -42,7 +89,7 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
 
   useEffect(() => {
     const v = videoRef.current
-    if (!v) return
+    if (!v || !activeSrc) return
     const onTime = () => setProgress(v.currentTime)
     const onMeta = () => setDuration(v.duration || 0)
     const onEnd = () => setPlaying(false)
@@ -60,7 +107,15 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
     }
-  }, [item.src])
+  }, [activeSrc])
+
+  // Pause when detaching
+  useEffect(() => {
+    if (keepAttached) return
+    const v = videoRef.current
+    if (v && !v.paused) v.pause()
+    setPlaying(false)
+  }, [keepAttached])
 
   const seeking = useRef(false)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -109,24 +164,35 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
 
   return (
     <div
-      className={`video-player ${selected ? 'is-selected' : ''}`}
+      ref={wrapRef}
+      className={`video-player ${selected ? 'is-selected' : ''} ${
+        keepAttached ? '' : 'is-lazy'
+      }`}
       onPointerEnter={() => setHovering(true)}
       onPointerLeave={() => {
         if (!seeking.current) setHovering(false)
       }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
-      <video
-        ref={videoRef}
-        data-playback-id={item.id}
-        src={item.src}
-        loop
-        playsInline
-        preload="metadata"
-        draggable={false}
-        className="media-content video-el"
-        style={mediaStyle}
-      />
+      {keepAttached ? (
+        <video
+          ref={videoRef}
+          data-playback-id={item.id}
+          src={activeSrc}
+          loop
+          playsInline
+          preload="metadata"
+          draggable={false}
+          className="media-content video-el"
+          style={mediaStyle}
+        />
+      ) : (
+        <div
+          className="media-content video-el video-lazy-poster"
+          style={mediaStyle}
+          aria-hidden
+        />
+      )}
 
       {showChrome && !playing && (
         <button
@@ -163,21 +229,23 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
         </button>
       )}
 
-      <div
-        className={`video-progress-wrap ${hovering || seeking.current ? 'visible' : ''}`}
-        onPointerDown={onSeekPointerDown}
-        onPointerMove={onSeekPointerMove}
-        onPointerUp={onSeekPointerUp}
-        onPointerCancel={onSeekPointerUp}
-      >
-        <div className="video-progress-track" ref={trackRef}>
-          <div className="video-progress-fill" style={{ width: `${pct}%` }} />
-          <div className="video-progress-thumb" style={{ left: `${pct}%` }} />
+      {keepAttached && (
+        <div
+          className={`video-progress-wrap ${hovering || seeking.current ? 'visible' : ''}`}
+          onPointerDown={onSeekPointerDown}
+          onPointerMove={onSeekPointerMove}
+          onPointerUp={onSeekPointerUp}
+          onPointerCancel={onSeekPointerUp}
+        >
+          <div className="video-progress-track" ref={trackRef}>
+            <div className="video-progress-fill" style={{ width: `${pct}%` }} />
+            <div className="video-progress-thumb" style={{ left: `${pct}%` }} />
+          </div>
+          <div className="video-time">
+            {formatTime(progress)} / {formatTime(duration)}
+          </div>
         </div>
-        <div className="video-time">
-          {formatTime(progress)} / {formatTime(duration)}
-        </div>
-      </div>
+      )}
     </div>
   )
 }

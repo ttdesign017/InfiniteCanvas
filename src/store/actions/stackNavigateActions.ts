@@ -1,4 +1,5 @@
 import { ROOT_CONTAINER_ID } from '../../types/canvas'
+import { resetStackAnimProgress } from '../../utils/stackAnimProgress'
 import { withViewport } from '../../utils/stacks'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
 import { runStackExitNavigation } from './stackExitNavigation'
@@ -45,6 +46,7 @@ export function createStackNavigateActions(
     }
 
     if (containerId === ROOT_CONTAINER_ID) {
+      resetStackAnimProgress()
       set({
         currentContainerId: ROOT_CONTAINER_ID,
         selectedIds: [],

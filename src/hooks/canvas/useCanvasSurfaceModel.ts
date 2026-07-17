@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import type { CanvasItem, EmbedItem, StackRecord } from '../../types/canvas'
+import type { BoundsRect } from '../../utils/geometry'
 import { computeSelectionBounds } from '../../utils/selectionBounds'
 import {
   collapsedStackFanCards,
@@ -8,6 +9,10 @@ import {
   itemsInContainer,
 } from '../../utils/stacks'
 import { stackGroupBounds } from '../../utils/layout'
+import {
+  boundsIntersectsCullRect,
+  cullItemsForPaint,
+} from '../../utils/viewportCull'
 
 export type StackFolderView = {
   gid: string
@@ -36,6 +41,11 @@ export function useCanvasSurfaceModel(input: {
   tool: string
   spaceHeld: boolean
   cHeld: boolean
+  /**
+   * Expanded world frustum for paint culling. Null disables culling
+   * (show everything — use during stack nav anim).
+   */
+  cullRect?: BoundsRect | null
 }) {
   const {
     items,
@@ -47,6 +57,7 @@ export function useCanvasSurfaceModel(input: {
     tool,
     spaceHeld,
     cHeld,
+    cullRect = null,
   } = input
 
   const visibleItems = useMemo(
@@ -62,10 +73,11 @@ export function useCanvasSurfaceModel(input: {
     () => [...visibleItems].sort((a, b) => a.zIndex - b.zIndex),
     [visibleItems],
   )
-  const sortedNonEmbeds = useMemo(
-    () => sortedItems.filter((i) => i.type !== 'embed'),
-    [sortedItems],
-  )
+  /** Free (non-embed) items in the current container, frustum-culled for paint. */
+  const sortedNonEmbeds = useMemo(() => {
+    const free = sortedItems.filter((i) => i.type !== 'embed')
+    return cullItemsForPaint(free, cullRect ?? null, new Set(selectedIds))
+  }, [sortedItems, cullRect, selectedIds])
   const allEmbedItems = useMemo(
     () =>
       items
@@ -166,7 +178,15 @@ export function useCanvasSurfaceModel(input: {
       })
       .filter(Boolean) as StackFolderView[]
 
-    return [...fromRecords, ...legacy]
+    const all = [...fromRecords, ...legacy]
+    if (!cullRect) return all
+    // Keep selected stacks mounted even when off-screen (drag / multi-select)
+    return all.filter(
+      (f) =>
+        f.selected ||
+        selectedStackSet.has(f.gid) ||
+        boundsIntersectsCullRect(f.bounds, cullRect),
+    )
   }, [
     visibleStacks,
     visibleItems,
@@ -176,10 +196,13 @@ export function useCanvasSurfaceModel(input: {
     selectedSet,
     selectedStackSet,
     stackDropTargetId,
+    cullRect,
   ])
 
   const stackPreviewItems = useMemo(() => {
     const out: CanvasItem[] = []
+    // Only build fan cards for folders that survive folder culling — but folder
+    // list already depends on cull; rebuild from visibleStacks then cull cards.
     for (const st of visibleStacks) {
       for (const c of collapsedStackFanCards(st, items, stacks)) {
         const m = items.find((i) => i.id === c.id)
@@ -194,8 +217,16 @@ export function useCanvasSurfaceModel(input: {
         })
       }
     }
-    return out.sort((a, b) => a.zIndex - b.zIndex)
-  }, [visibleStacks, items, stacks])
+    const sorted = out.sort((a, b) => a.zIndex - b.zIndex)
+    // Fan cards of selected stacks always paint
+    const keep = new Set<string>()
+    for (const it of sorted) {
+      if (it.stackGroupId && selectedStackSet.has(it.stackGroupId)) {
+        keep.add(it.id)
+      }
+    }
+    return cullItemsForPaint(sorted, cullRect ?? null, keep)
+  }, [visibleStacks, items, stacks, cullRect, selectedStackSet])
 
   return {
     visibleItems,

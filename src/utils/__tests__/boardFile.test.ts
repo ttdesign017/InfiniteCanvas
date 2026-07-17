@@ -9,10 +9,15 @@ import {
   ICANVAS_MAGIC,
   isPlayableMediaSrc,
   materializeRuntimeMediaSources,
+  packICanvasDocument,
   parseICanvasFile,
   serializeICanvas,
   type ICanvasDocument,
 } from '../boardFile'
+import {
+  clearPackAssetCache,
+  getCachedPackAsset,
+} from '../packAssetCache'
 
 const project = (): ICanvasDocument => ({
   magic: ICANVAS_MAGIC,
@@ -50,15 +55,23 @@ const project = (): ICanvasDocument => ({
 describe('.icanvas parsing and integrity', () => {
   afterEach(() => {
     revokeAllTrackedBlobUrls()
+    clearPackAssetCache()
   })
 
-  it('restores packed assets as offline data URLs', () => {
+  it('keeps packed asset refs until materialize (open-path memory)', () => {
     const snapshot = parseICanvasFile(serializeICanvas(project()))
     expect(snapshot.name).toBe('Reference board')
     expect(snapshot.items[0]).toMatchObject({
       id: 'image-1',
-      src: 'data:image/png;base64,AQID',
+      src: 'icanvas-asset://image-1',
     })
+    expect(snapshot.packedAssets?.['image-1']?.data).toBe('AQID')
+    revokeAllTrackedBlobUrls()
+    const live = materializeRuntimeMediaSources(
+      snapshot.items,
+      snapshot.packedAssets,
+    )
+    expect((live[0] as { src: string }).src).toMatch(/^blob:/)
   })
 
   it('rejects a project whose media reference has no packed asset', () => {
@@ -106,10 +119,17 @@ describe('.icanvas parsing and integrity', () => {
     expect(() =>
       assertICanvasIntegrity(audioProject, { itemCount: 1, stackCount: 0 }),
     ).not.toThrow()
-    expect(parseICanvasFile(serializeICanvas(audioProject)).items[0]).toMatchObject({
+    const audioSnap = parseICanvasFile(serializeICanvas(audioProject))
+    expect(audioSnap.items[0]).toMatchObject({
       type: 'audio',
-      src: 'data:audio/mpeg;base64,AQID',
+      src: 'icanvas-asset://audio-1',
     })
+    revokeAllTrackedBlobUrls()
+    const liveAudio = materializeRuntimeMediaSources(
+      audioSnap.items,
+      audioSnap.packedAssets,
+    )
+    expect((liveAudio[0] as { src: string }).src).toMatch(/^blob:/)
   })
 
   it('rejects invalid JSON before touching the board model', () => {
@@ -187,12 +207,15 @@ describe('.icanvas parsing and integrity', () => {
     const unpackedVideo = unpacked.items.find((i) => i.id === 'vid-1') as {
       src: string
     }
-    // Intermediate form still uses data: (what the file layer produces)
-    expect(unpackedVideo.src).toMatch(/^data:video\/mp4;base64,/)
+    // Packed form keeps asset refs until hydrate (after revoke of previous board)
+    expect(unpackedVideo.src).toBe('icanvas-asset://vid-1')
     expect(isPlayableMediaSrc(unpackedVideo.src)).toBe(false)
 
     revokeAllTrackedBlobUrls()
-    const live = materializeRuntimeMediaSources(unpacked.items)
+    const live = materializeRuntimeMediaSources(
+      unpacked.items,
+      unpacked.packedAssets,
+    )
 
     for (const id of ['vid-1', 'aud-1', 'img-1']) {
       const item = live.find((i) => i.id === id) as { src: string }
@@ -270,9 +293,8 @@ describe('.icanvas parsing and integrity', () => {
     }
 
     revokeAllTrackedBlobUrls()
-    const live = materializeRuntimeMediaSources(
-      parseICanvasFile(serializeICanvas(doc)).items,
-    )
+    const snap = parseICanvasFile(serializeICanvas(doc))
+    const live = materializeRuntimeMediaSources(snap.items, snap.packedAssets)
     expect(live).toHaveLength(4)
     for (const item of live) {
       const src = (item as { src: string }).src
@@ -288,6 +310,40 @@ describe('.icanvas parsing and integrity', () => {
     expect(blob!.size).toBeGreaterThan(0)
     const url = dataUrlToObjectUrl('data:audio/mpeg;base64,AQID')
     expect(url).toMatch(/^blob:/)
+  })
+
+  it('caches packed media so a second pack reuses the asset', async () => {
+    const src = 'data:image/png;base64,AQID'
+    const snap = {
+      version: 1 as const,
+      name: 'Cache',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nextZ: 2,
+      items: [
+        {
+          id: 'img-cache',
+          type: 'image' as const,
+          x: 0,
+          y: 0,
+          width: 10,
+          height: 10,
+          rotation: 0,
+          zIndex: 1,
+          src,
+          fileName: 'c.png',
+          naturalWidth: 10,
+          naturalHeight: 10,
+        },
+      ],
+      stacks: [],
+    }
+    const first = await packICanvasDocument(snap)
+    expect(first.assets['img-cache']?.data).toBeTruthy()
+    expect(getCachedPackAsset(src, 'c.png')?.data).toBe(
+      first.assets['img-cache'].data,
+    )
+    const second = await packICanvasDocument(snap)
+    expect(second.assets['img-cache'].data).toBe(first.assets['img-cache'].data)
   })
 
   it('round-trips nested stacks and container membership', () => {
@@ -366,8 +422,16 @@ describe('.icanvas parsing and integrity', () => {
       content: 'inside B',
     })
     expect(snapshot.items.find((i) => i.id === 'image-1')).toMatchObject({
-      src: 'data:image/png;base64,AQID',
+      src: 'icanvas-asset://image-1',
     })
+    revokeAllTrackedBlobUrls()
+    const liveNested = materializeRuntimeMediaSources(
+      snapshot.items,
+      snapshot.packedAssets,
+    )
+    expect(
+      (liveNested.find((i) => i.id === 'image-1') as { src: string }).src,
+    ).toMatch(/^blob:/)
     expect(() =>
       assertICanvasIntegrity(nested, { itemCount: 3, stackCount: 2 }),
     ).not.toThrow()

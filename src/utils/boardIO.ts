@@ -12,8 +12,10 @@ import {
   parseICanvasFile,
 } from './boardFile'
 import { packBoardSnapshotToText } from './boardDocument'
+import { perfMark, perfMeasure } from './perfMarks'
 import type { BoardSnapshot } from '../types/canvas'
 
+/** In-memory integrity check before disk write (no second full-file parse). */
 function verifySerializedBoard(
   written: string,
   snapshot: BoardSnapshot,
@@ -73,15 +75,22 @@ export async function saveCurrentBoard(options?: {
     // Keep the exact state references present at snapshot time. Zustand updates
     // replace these objects, so a reference change means the live board moved
     // on while media was being packed or the file was being written.
+    perfMark('save-start')
     const saveStart = useCanvasStore.getState()
     const snapshot = store.exportBoard()
     const savedName =
       path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || snapshot.name
     snapshot.name = savedName
+    perfMark('save-pack-start')
     const { text } = await packBoardSnapshotToText(snapshot)
-    await desktop.writeTextAtomic(path, text, (written) =>
-      verifySerializedBoard(written, snapshot),
+    perfMark('save-pack-end')
+    perfMeasure('save-pack', 'save-pack-start', 'save-pack-end')
+    // Schema check once in memory; disk layer only checks byte length.
+    await desktop.writeTextAtomic(path, text, (content) =>
+      verifySerializedBoard(content, snapshot),
     )
+    perfMark('save-end')
+    perfMeasure('save-total', 'save-start', 'save-end')
     store.setBoardFilePath(path)
     const live = useCanvasStore.getState()
     const unchangedSinceSnapshot =
@@ -111,6 +120,7 @@ export async function saveCurrentBoard(options?: {
 export async function openBoardFromPath(path: string): Promise<boolean> {
   const store = useCanvasStore.getState()
   try {
+    perfMark('open-start')
     const size = await desktop.fileSize(path)
     if (size !== null && size > ICANVAS_MAX_TEXT_BYTES) {
       throw new Error(
@@ -118,8 +128,12 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
       )
     }
     const text = await desktop.readText(path)
-    // parse → BoardSnapshot; importBoard → loadBoardIntoRuntimeFields (hydrate + reflow)
+    perfMark('open-read-end')
+    perfMeasure('open-read', 'open-start', 'open-read-end')
+    // parse keeps icanvas-asset:// + packedAssets; import hydrates blobs after revoke
     store.importBoard(parseICanvasFile(text))
+    perfMark('open-end')
+    perfMeasure('open-total', 'open-start', 'open-end')
     store.setBoardFilePath(path)
     store.clearDirty()
     return true

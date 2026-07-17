@@ -122,17 +122,44 @@ export async function fileSize(path: string): Promise<number | null> {
   return Number(info.size)
 }
 
+/** UTF-8 byte length — matches what writeTextFile persists on disk. */
+export function utf8ByteLength(text: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length
+  }
+  // Fallback for exotic runtimes (should not hit in Tauri webview)
+  let n = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff) {
+      n += 4
+      i++
+    } else n += 3
+  }
+  return n
+}
+
 /**
  * Persist text without ever writing directly over the only good copy.
  *
- * The sibling temp file is verified before rename. Existing projects keep one
- * `.bak` recovery copy, and a failed final verification restores that backup.
+ * Integrity strategy (light, O(1) disk reads):
+ * 1. Optional in-memory `verifyContent(content)` before any write (JSON / schema).
+ * 2. Write temp → `stat` size must match UTF-8 byte length (catches truncation).
+ * 3. Rename into place → size check again.
+ *
+ * Existing projects keep one `.bak` recovery copy; failed final steps restore it.
+ * Avoids re-reading multi‑100MB board text twice just to re-parse JSON.
  */
 export async function writeTextAtomic(
   path: string,
   content: string,
-  verify: (written: string) => void,
+  verifyContent?: (content: string) => void,
 ): Promise<void> {
+  verifyContent?.(content)
+
+  const expectedBytes = utf8ByteLength(content)
   const suffix =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
@@ -143,9 +170,19 @@ export async function writeTextAtomic(
   let originalMoved = false
   let replaced = false
 
+  const assertSize = async (filePath: string, label: string) => {
+    const info = await stat(filePath)
+    const size = Number(info.size)
+    if (size !== expectedBytes) {
+      throw new Error(
+        `Save verification failed: ${label} size ${size} != expected ${expectedBytes} bytes`,
+      )
+    }
+  }
+
   try {
     await writeTextFile(tempPath, content)
-    verify(await readTextFile(tempPath))
+    await assertSize(tempPath, 'temp file')
 
     hadOriginal = await exists(path)
     if (hadOriginal) {
@@ -158,7 +195,7 @@ export async function writeTextAtomic(
 
     await rename(tempPath, path)
     replaced = true
-    verify(await readTextFile(path))
+    await assertSize(path, 'final file')
   } catch (error) {
     if (await exists(tempPath)) {
       try {
