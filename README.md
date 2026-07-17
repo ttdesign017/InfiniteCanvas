@@ -9,7 +9,7 @@ PureRef-inspired infinite canvas for Windows — **Tauri 2 + React + TypeScript*
 | Shell | Tauri 2 · plugins: **dialog**, **fs**, **opener** |
 | Board format | `.icanvas` formatVersion **3** (JSON + embedded base64 assets) |
 
-> Local-only notes (gitignored under `docs/`): architecture writeups, code reviews, feature backlog.
+> Product / MCP / board-ops notes: `docs/PRODUCT.md`, `docs/MCP.md`, `docs/BOARD_OPS.md` (domain API for agents).
 
 ## Features
 

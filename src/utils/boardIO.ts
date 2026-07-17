@@ -1,55 +1,18 @@
 /**
- * High-level save / load for Infinite Canvas project files.
+ * High-level save / load for Infinite Canvas project files (UI layer).
+ * Domain I/O lives in `board-ops/fileOps` — no alert there.
  */
 
 import { useCanvasStore } from '../store/useCanvasStore'
 import * as desktop from './desktop'
+import { ICANVAS_EXT } from './boardFile'
 import {
-  ICANVAS_EXT,
-  ICANVAS_MAX_TEXT_BYTES,
-  assertICanvasIntegrity,
-  isICanvasDocument,
-  parseICanvasFile,
-} from './boardFile'
-import { packBoardSnapshotToText } from './boardDocument'
+  ensureIcanvasExt,
+  loadBoardSnapshotFromPath,
+  saveBoardSnapshotToPath,
+} from '../board-ops/fileOps'
+import { formatBoardError } from '../board-ops/errors'
 import { perfMark, perfMeasure } from './perfMarks'
-import type { BoardSnapshot } from '../types/canvas'
-
-/** In-memory integrity check before disk write (no second full-file parse). */
-function verifySerializedBoard(
-  written: string,
-  snapshot: BoardSnapshot,
-): void {
-  let writtenJson: unknown
-  try {
-    writtenJson = JSON.parse(written)
-  } catch {
-    throw new Error('Save verification failed: written file is not valid JSON')
-  }
-  if (isICanvasDocument(writtenJson)) {
-    assertICanvasIntegrity(writtenJson, {
-      itemCount: snapshot.items.length,
-      stackCount: snapshot.stacks?.length ?? 0,
-    })
-    return
-  }
-
-  const verified = parseICanvasFile(written)
-  if (verified.items.length !== snapshot.items.length) {
-    throw new Error(
-      `Save verification failed: expected ${snapshot.items.length} items, found ${verified.items.length}`,
-    )
-  }
-  if ((verified.stacks?.length ?? 0) !== (snapshot.stacks?.length ?? 0)) {
-    throw new Error('Save verification failed: stack count mismatch after write')
-  }
-}
-
-function ensureExt(path: string): string {
-  const lower = path.toLowerCase()
-  if (lower.endsWith(`.${ICANVAS_EXT}`) || lower.endsWith('.json')) return path
-  return `${path}.${ICANVAS_EXT}`
-}
 
 /**
  * Save current board. Uses existing path when `saveAs` is false and a path is known.
@@ -68,7 +31,7 @@ export async function saveCurrentBoard(options?: {
       `.${ICANVAS_EXT}`
     path = await desktop.saveBoardDialog(base)
     if (!path) return false
-    path = ensureExt(path)
+    path = ensureIcanvasExt(path)
   }
 
   try {
@@ -78,20 +41,13 @@ export async function saveCurrentBoard(options?: {
     perfMark('save-start')
     const saveStart = useCanvasStore.getState()
     const snapshot = store.exportBoard()
-    const savedName =
-      path.split(/[/\\]/).pop()?.replace(/\.icanvas$/i, '') || snapshot.name
-    snapshot.name = savedName
-    perfMark('save-pack-start')
-    const { text } = await packBoardSnapshotToText(snapshot)
-    perfMark('save-pack-end')
-    perfMeasure('save-pack', 'save-pack-start', 'save-pack-end')
-    // Schema check once in memory; disk layer only checks byte length.
-    await desktop.writeTextAtomic(path, text, (content) =>
-      verifySerializedBoard(content, snapshot),
+    const { path: outPath, name: savedName } = await saveBoardSnapshotToPath(
+      snapshot,
+      path,
     )
     perfMark('save-end')
     perfMeasure('save-total', 'save-start', 'save-end')
-    store.setBoardFilePath(path)
+    store.setBoardFilePath(outPath)
     const live = useCanvasStore.getState()
     const unchangedSinceSnapshot =
       live.items === saveStart.items &&
@@ -111,7 +67,7 @@ export async function saveCurrentBoard(options?: {
     return true
   } catch (err) {
     console.error('Save board failed', err)
-    alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
+    alert(`Save failed: ${formatBoardError(err)}`)
     return false
   }
 }
@@ -121,17 +77,11 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
   const store = useCanvasStore.getState()
   try {
     perfMark('open-start')
-    const size = await desktop.fileSize(path)
-    if (size !== null && size > ICANVAS_MAX_TEXT_BYTES) {
-      throw new Error(
-        `Project is too large to open safely (${Math.ceil(size / (1024 * 1024))} MB; limit ${Math.floor(ICANVAS_MAX_TEXT_BYTES / (1024 * 1024))} MB)`,
-      )
-    }
-    const text = await desktop.readText(path)
-    perfMark('open-read-end')
-    perfMeasure('open-read', 'open-start', 'open-read-end')
-    // parse keeps icanvas-asset:// + packedAssets; import hydrates blobs after revoke
-    store.importBoard(parseICanvasFile(text))
+    // File ops return a pure snapshot (asset refs + packedAssets).
+    // importBoard → loadBoardIntoRuntimeFields hydrates blobs after revoke.
+    const snapshot = await loadBoardSnapshotFromPath(path)
+    // importBoard → hydrate blobs after revoke (see boardDocument)
+    store.importBoard(snapshot)
     perfMark('open-end')
     perfMeasure('open-total', 'open-start', 'open-end')
     store.setBoardFilePath(path)
@@ -139,7 +89,7 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
     return true
   } catch (err) {
     console.error('Open board failed', err)
-    alert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
+    alert(`Open failed: ${formatBoardError(err)}`)
     return false
   }
 }

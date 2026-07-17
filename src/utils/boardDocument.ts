@@ -1,7 +1,8 @@
 /**
  * Board document contract — single place for snapshot / pack / open hydration.
- * UI (boardIO) and future MCP tools should go through these helpers so media
- * materialization and z-reflow stay consistent.
+ * UI (`boardIO`) uses these for runtime hydrate; structured list/get/create for
+ * agents lives in `src/board-ops` (see `docs/BOARD_OPS.md`, `docs/MCP.md`).
+ * Keep media materialization and z-reflow consistent across both paths.
  */
 
 import type { BoardSnapshot, CanvasItem, StackRecord, Viewport } from '../types/canvas'
