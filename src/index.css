@@ -2713,3 +2713,81 @@ body,
   background: var(--bg-hover);
   border-radius: 4px;
 }
+
+/* ！！ Diagnostic error boundary ！！ */
+.diag-error-boundary {
+  position: absolute;
+  inset: 0;
+  z-index: 99999;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(245, 245, 245, 0.96);
+  overflow: auto;
+}
+.diag-error-card {
+  max-width: 720px;
+  width: 100%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  color: #1e1e1e;
+}
+.diag-error-card h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.diag-error-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #555;
+}
+.diag-error-lead code {
+  font-size: 11px;
+  background: #f0f0f0;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.diag-error-stack {
+  margin: 0 0 14px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: #1e1e1e;
+  color: #f5f5f5;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diag-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.diag-btn {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #f5f5f5;
+  color: #1e1e1e;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.diag-btn:hover {
+  background: #eee;
+}
+.diag-btn.primary {
+  background: #0d99ff;
+  border-color: #0d99ff;
+  color: #fff;
+}
+.diag-btn.primary:hover {
+  background: #0b86e0;
+}

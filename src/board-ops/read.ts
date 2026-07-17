@@ -55,17 +55,70 @@ function typeMatches(
 }
 
 export function getBoardMeta(board: BoardView): BoardMetaResult {
+  const currentContainerId = normalizeContainerId(board.currentContainerId)
+  const rootItemCount = board.items.filter(
+    (i) => containerOf(i) === ROOT_CONTAINER_ID,
+  ).length
+  const currentContainerItemCount = board.items.filter(
+    (i) => containerOf(i) === currentContainerId,
+  ).length
   return {
     name: board.name,
     itemCount: board.items.length,
+    rootItemCount,
     stackCount: board.stacks.length,
-    currentContainerId: normalizeContainerId(board.currentContainerId),
+    currentContainerId,
+    currentContainerItemCount,
     viewport: { ...board.viewport },
     homeViewport: board.homeViewport
       ? { ...board.homeViewport }
       : undefined,
     nextZ: board.nextZ,
+    revision: board.revision,
     apiVersion: BOARD_OPS_API_VERSION,
+    countsNote:
+      'itemCount is global (all containers). list_items(containerId) is per-surface. Stack folders are not items — use createdStackIds / ic2_tree, not get_item(stackId).',
+  }
+}
+
+/** Resolve a stack or throw STACK_NOT_FOUND (for agents that confused stack vs item). */
+export function getStack(
+  board: BoardView,
+  id: string,
+): {
+  id: string
+  parentId: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  zIndex: number
+  itemCount: number
+} {
+  const st = board.stacks.find((s) => s.id === id)
+  if (!st) {
+    // Helpful error if they passed an item id
+    if (board.items.some((i) => i.id === id)) {
+      throw new BoardOpsError(
+        'STACK_NOT_FOUND',
+        `Id ${id} is an item, not a stack. Use ic2_get_item.`,
+        id,
+      )
+    }
+    throw new BoardOpsError('STACK_NOT_FOUND', `Stack not found: ${id}`, id)
+  }
+  const itemCount = board.items.filter((i) => containerOf(i) === st.id).length
+  return {
+    id: st.id,
+    parentId: st.parentId || ROOT_CONTAINER_ID,
+    name: st.name || '',
+    x: st.x,
+    y: st.y,
+    width: st.width,
+    height: st.height,
+    zIndex: st.zIndex,
+    itemCount,
   }
 }
 
@@ -99,6 +152,13 @@ export function getItem(
 ): GetItemResult {
   const item = board.items.find((i) => i.id === query.id)
   if (!item) {
+    if (board.stacks.some((s) => s.id === query.id)) {
+      throw new BoardOpsError(
+        'ITEM_NOT_FOUND',
+        `Id ${query.id} is a stack folder, not an item. Use ic2_get_stack or ic2_list_items({ containerId: stackId }).`,
+        query.id,
+      )
+    }
     throw new BoardOpsError(
       'ITEM_NOT_FOUND',
       `Item not found: ${query.id}`,

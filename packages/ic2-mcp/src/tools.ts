@@ -170,9 +170,16 @@ export function registerTools(server: McpServer, session: Session): void {
 
   server.tool(
     'ic2_get_item',
-    'Get one item detail (text ok; no media payloads).',
+    'Get one item detail (text ok; no media payloads). Do NOT pass stack folder ids — use ic2_get_stack.',
     { id: z.string() },
     async ({ id }) => runTool(() => runOp(session, { op: 'get_item', id })),
+  )
+
+  server.tool(
+    'ic2_get_stack',
+    'Get a stack folder by id (not an item). Use after ic2_create_stack / research_cluster.',
+    { id: z.string() },
+    async ({ id }) => runTool(() => runOp(session, { op: 'get_stack', id })),
   )
 
   server.tool(
@@ -429,13 +436,21 @@ export function registerTools(server: McpServer, session: Session): void {
 
   server.tool(
     'ic2_add_research_cluster',
-    'High-level: create a named stack filled with notes, links, and images (mood-board cluster). Prefer this for brand research dumps.',
+    'High-level: create a named stack filled with notes, links, and images. Returns createdIds (items) + createdStackIds (use get_stack / list_items(stackId)). Failed images are skipped by default (warnings).',
     {
       title: z.string(),
       parentId: z.string().optional(),
       x: z.number().optional(),
       y: z.number().optional(),
       columns: z.number().int().optional(),
+      clientRequestId: z
+        .string()
+        .optional()
+        .describe('Idempotent stack id — retries will not duplicate'),
+      skipInvalidImages: z
+        .boolean()
+        .optional()
+        .describe('Default true: skip 404 images and continue'),
       notes: z
         .array(
           z.object({
@@ -480,6 +495,8 @@ export function registerTools(server: McpServer, session: Session): void {
             links: args.links,
             images: args.images,
             dryRun: args.dry_run,
+            clientRequestId: args.clientRequestId,
+            skipInvalidImages: args.skipInvalidImages !== false,
           },
           options: { dryRun: args.dry_run === true },
         })

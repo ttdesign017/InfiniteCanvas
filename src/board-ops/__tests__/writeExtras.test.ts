@@ -41,7 +41,8 @@ describe('board-ops writeExtras', () => {
       y: 100,
       name: 'Brand',
     })
-    expect(st.createdIds[0]).toMatch(/^stack_/)
+    expect(st.createdStackIds?.[0]).toMatch(/^stack_/)
+    expect(st.createdIds).toEqual([])
     expect(st.board.stacks[0].name).toBe('Brand')
   })
 
@@ -53,9 +54,40 @@ describe('board-ops writeExtras', () => {
       columns: 2,
     })
     expect(r.stackId).toBeTruthy()
-    expect(r.createdIds.length).toBeGreaterThanOrEqual(3)
+    expect(r.createdStackIds?.[0]).toBe(r.stackId)
+    // createdIds are items only (not the stack folder)
+    expect(r.createdIds).not.toContain(r.stackId)
+    expect(r.createdIds.length).toBe(2)
     const inside = listItems(r.board, { containerId: r.stackId! })
     expect(inside.total).toBe(2)
+  })
+
+  it('createLink with title sets preview complete so OG cannot overwrite', () => {
+    const r = createLink(empty(), {
+      containerId: 'root',
+      x: 0,
+      y: 0,
+      url: 'https://example.com',
+      title: 'My Title',
+    })
+    const link = r.board.items[0] as { title: string; previewStatus?: string }
+    expect(link.title).toBe('My Title')
+    expect(link.previewStatus).toBe('complete')
+  })
+
+  it('cluster clientRequestId is idempotent', () => {
+    const a = addResearchCluster(empty(), {
+      title: 'A',
+      clientRequestId: 'stack_fixed_id',
+      notes: [{ content: 'n1' }],
+    })
+    const b = addResearchCluster(a.board, {
+      title: 'A again',
+      clientRequestId: 'stack_fixed_id',
+      notes: [{ content: 'n2' }],
+    })
+    expect(b.board.stacks).toHaveLength(1)
+    expect(b.warnings?.[0]).toMatch(/idempotent/)
   })
 
   it('layoutGrid positions items', () => {

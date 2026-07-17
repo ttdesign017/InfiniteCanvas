@@ -18,6 +18,7 @@ export type Session = {
   path: string | null
   snapshot: BoardSnapshot | null
   dirty: boolean
+  revision: number
 }
 
 export function createSession(config: McpConfig): Session {
@@ -26,6 +27,7 @@ export function createSession(config: McpConfig): Session {
     path: null,
     snapshot: null,
     dirty: false,
+    revision: 0,
   }
 }
 
@@ -64,6 +66,7 @@ export function applyMutation(
   if (result.dryRun) return
 
   const prev = session.snapshot
+  session.revision = (session.revision || 0) + 1
   session.snapshot = {
     ...prev,
     name: result.board.name,
@@ -78,6 +81,29 @@ export function applyMutation(
     packedAssets: prev.packedAssets,
   }
   session.dirty = true
+  // Read-after-write: ensure stacks/items from mutation exist
+  for (const id of result.createdIds) {
+    if (!session.snapshot.items.some((i) => i.id === id)) {
+      // stack ids may be in createdStackIds only
+      const stackIds = result.createdStackIds ?? []
+      if (!stackIds.includes(id) && !session.snapshot.stacks.some((s) => s.id === id)) {
+        throw new BoardOpsError(
+          'INTERNAL',
+          `File-session verify failed: missing ${id}`,
+          id,
+        )
+      }
+    }
+  }
+  for (const id of result.createdStackIds ?? []) {
+    if (!session.snapshot.stacks.some((s) => s.id === id)) {
+      throw new BoardOpsError(
+        'INTERNAL',
+        `File-session verify failed: missing stack ${id}`,
+        id,
+      )
+    }
+  }
 }
 
 export function assertWritable(session: Session): void {

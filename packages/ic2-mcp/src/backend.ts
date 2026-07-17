@@ -24,25 +24,61 @@ export function getBackendMode(session: Session): BackendMode {
 
 export function statusInfo(session: Session) {
   const live = readLiveSession()
+  const mode = getBackendMode(session)
+  /**
+   * dirty = unsaved changes exist somewhere
+   * pendingUserSave = live window needs Ctrl+S
+   * autoSaved = last write already on disk (only after ic2_board_save)
+   */
+  if (live && mode === 'live') {
+    return {
+      mode: 'live' as const,
+      dirty: live.dirty === true,
+      pendingUserSave: live.dirty === true,
+      autoSaved: false,
+      revision: live.revision ?? 0,
+      allowWrite: session.config.allowWrite && live.allowAgentWrite !== false,
+      live: {
+        boardName: live.boardName,
+        boardPath: live.boardPath,
+        currentContainerId: live.currentContainerId,
+        aliveAt: live.aliveAt,
+        allowAgentWrite: live.allowAgentWrite,
+        dirty: live.dirty === true,
+        revision: live.revision ?? 0,
+        itemCount: live.itemCount,
+        stackCount: live.stackCount,
+      },
+      file: session.snapshot
+        ? {
+            path: session.path,
+            dirty: session.dirty,
+            name: session.snapshot.name,
+          }
+        : null,
+      note: 'Live writes mark the app dirty until the user saves in Infinite Canvas (Ctrl+S).',
+    }
+  }
   return {
-    mode: getBackendMode(session),
-    live: live
-      ? {
-          boardName: live.boardName,
-          boardPath: live.boardPath,
-          currentContainerId: live.currentContainerId,
-          aliveAt: live.aliveAt,
-          allowAgentWrite: live.allowAgentWrite,
-        }
-      : null,
+    mode,
+    dirty: session.dirty,
+    pendingUserSave: false,
+    autoSaved: !session.dirty && !!session.path,
+    revision: session.revision ?? 0,
+    allowWrite: session.config.allowWrite,
+    live: null,
     file: session.snapshot
       ? {
           path: session.path,
           dirty: session.dirty,
           name: session.snapshot.name,
+          revision: session.revision ?? 0,
         }
       : null,
-    allowWrite: session.config.allowWrite,
+    note:
+      mode === 'file'
+        ? 'File session: dirty means ic2_board_save is needed to persist.'
+        : 'No board context.',
   }
 }
 
@@ -82,24 +118,37 @@ async function prepareOp(body: AgentOp): Promise<AgentOp> {
     }
   }
   if (body.op === 'add_research_cluster') {
+    const skip = body.input.skipInvalidImages !== false
     const images = []
+    const prepWarnings: string[] = []
     for (const im of body.input.images || []) {
       if (im.dataUrl) {
         images.push(im)
         continue
       }
       if (im.url) {
-        const fetched = await fetchImageAsDataUrl(im.url)
-        images.push({
-          ...im,
-          dataUrl: fetched.dataUrl,
-          fileName: im.fileName || fetched.fileName,
-        })
+        try {
+          const fetched = await fetchImageAsDataUrl(im.url)
+          images.push({
+            ...im,
+            dataUrl: fetched.dataUrl,
+            fileName: im.fileName || fetched.fileName,
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (!skip) throw err
+          prepWarnings.push(`image download skipped: ${im.url} (${msg})`)
+        }
       }
     }
     return {
       ...body,
-      input: { ...body.input, images },
+      input: {
+        ...body.input,
+        images,
+        // stash prep warnings via a non-schema field consumed later if needed
+        _prepWarnings: prepWarnings,
+      } as typeof body.input & { _prepWarnings?: string[] },
     }
   }
   return body
@@ -120,7 +169,14 @@ export async function runOp(
   // File session
   if (mode === 'file' || session.snapshot) {
     const { view } = requireBoard(session)
-    const result = dispatchAgentOp({ board: view }, prepared)
+    const result = dispatchAgentOp(
+      {
+        board: view,
+        persist: 'memory',
+        visibleInLiveBoard: false,
+      },
+      prepared,
+    )
     if (result.mutation) {
       applyMutation(session, result.mutation)
       // Merge packed asset for data-url images into snapshot for save

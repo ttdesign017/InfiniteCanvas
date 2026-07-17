@@ -10,6 +10,7 @@ import type {
 } from '../types/canvas'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
 import { uid } from '../utils/id'
+import { containerOf } from '../utils/stacks'
 import { BoardOpsError } from './errors'
 import type {
   BoardMutationResult,
@@ -108,6 +109,11 @@ export function createLink(
   const next = cloneView(board)
   const z = next.nextZ
   const id = input.clientRequestId || uid('link')
+  const titleIn = input.title?.trim()
+  const descIn = input.description?.trim()
+  // When the agent supplies a title, mark preview complete so LinkCardView
+  // does not overwrite it with remote OG metadata.
+  const titleLocked = Boolean(titleIn)
   const item: LinkCardItem = tagContainerId(
     {
       id,
@@ -119,9 +125,9 @@ export function createLink(
       rotation: 0,
       zIndex: z,
       url,
-      title: input.title?.trim() || hostOf(url),
-      description: input.description?.trim() || hostOf(url),
-      previewStatus: 'pending',
+      title: titleIn || hostOf(url),
+      description: descIn || hostOf(url),
+      previewStatus: titleLocked ? 'complete' : 'pending',
     },
     containerId,
   ) as LinkCardItem
@@ -163,7 +169,14 @@ export function createStack(
   }
   next.stacks = [...next.stacks, st]
   next.nextZ = z + 1
-  return { board: next, createdIds: [id], changedIds: [id], dryRun }
+  return {
+    board: next,
+    createdIds: [],
+    createdStackIds: [id],
+    changedIds: [id],
+    dryRun,
+    stackId: id,
+  }
 }
 
 export function renameStack(
@@ -320,9 +333,31 @@ export function addResearchCluster(
   const originX = input.x ?? 80
   const originY = input.y ?? 80
   const columns = Math.max(1, input.columns ?? 3)
+  const warnings: string[] = []
+
+  // Idempotent full cluster when clientRequestId already exists as a stack
+  if (input.clientRequestId) {
+    const existing = board.stacks.find((s) => s.id === input.clientRequestId)
+    if (existing) {
+      const itemIds = board.items
+        .filter((i) => containerOf(i) === existing.id)
+        .map((i) => i.id)
+      return {
+        board: cloneView(board),
+        createdIds: [],
+        createdStackIds: [],
+        changedIds: [existing.id],
+        dryRun,
+        stackId: existing.id,
+        itemIds,
+        warnings: ['idempotent: stack clientRequestId already exists'],
+      }
+    }
+  }
 
   let cur = board
   const allCreated: string[] = []
+  const allStackIds: string[] = []
   const allChanged: string[] = []
 
   const stackRes = createStack(
@@ -334,13 +369,15 @@ export function addResearchCluster(
       name: input.title,
       width: 320,
       height: 260,
+      clientRequestId: input.clientRequestId,
     },
     { dryRun: false },
   )
   cur = stackRes.board
   allCreated.push(...stackRes.createdIds)
+  allStackIds.push(...(stackRes.createdStackIds ?? []))
   allChanged.push(...stackRes.changedIds)
-  const stackId = stackRes.createdIds[0]
+  const stackId = stackRes.createdStackIds?.[0] ?? stackRes.stackId
   if (!stackId) {
     throw new BoardOpsError('INTERNAL', 'Failed to create research stack')
   }
@@ -399,27 +436,36 @@ export function addResearchCluster(
   for (const img of input.images || []) {
     const src = img.dataUrl
     if (!src) {
-      // URL-only images must be resolved by caller (MCP downloads first)
+      // URL-only must be resolved by MCP prepareOp; if still missing, skip
+      warnings.push(
+        `image skipped (no dataUrl): ${img.url || img.fileName || 'unknown'}`,
+      )
       continue
     }
-    const p = place()
-    const r = createImage(
-      cur,
-      {
-        containerId: stackId,
-        x: p.x,
-        y: p.y,
-        src,
-        fileName: img.fileName || 'image',
-        width: 260,
-        height: 180,
-      },
-      { dryRun: false },
-    )
-    cur = r.board
-    allCreated.push(...r.createdIds)
-    allChanged.push(...r.changedIds)
-    itemIds.push(...r.createdIds)
+    try {
+      const p = place()
+      const r = createImage(
+        cur,
+        {
+          containerId: stackId,
+          x: p.x,
+          y: p.y,
+          src,
+          fileName: img.fileName || 'image',
+          width: 260,
+          height: 180,
+        },
+        { dryRun: false },
+      )
+      cur = r.board
+      allCreated.push(...r.createdIds)
+      allChanged.push(...r.changedIds)
+      itemIds.push(...r.createdIds)
+    } catch (err) {
+      warnings.push(
+        `image failed: ${img.fileName || img.url || 'unknown'} (${err instanceof Error ? err.message : String(err)})`,
+      )
+    }
   }
 
   // Resize stack folder to fit content roughly
@@ -438,13 +484,33 @@ export function addResearchCluster(
     ),
   }
 
+  // Read-after-write: stack + all children must exist on resulting board
+  if (!cur.stacks.some((s) => s.id === stackId)) {
+    throw new BoardOpsError(
+      'INTERNAL',
+      'Research cluster stack missing after write',
+      stackId,
+    )
+  }
+  for (const id of itemIds) {
+    if (!cur.items.some((i) => i.id === id)) {
+      throw new BoardOpsError(
+        'INTERNAL',
+        'Research cluster item missing after write',
+        id,
+      )
+    }
+  }
+
   return {
     board: cur,
     createdIds: allCreated,
+    createdStackIds: allStackIds.length ? allStackIds : [stackId],
     changedIds: allChanged,
     dryRun,
     stackId,
     itemIds,
+    warnings: warnings.length ? warnings : undefined,
   }
 }
 

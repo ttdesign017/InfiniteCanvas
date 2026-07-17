@@ -5,6 +5,7 @@ import { WindowChrome } from './components/WindowChrome'
 import { CloseSaveDialog } from './components/CloseSaveDialog'
 import { SaveToast } from './components/SaveToast'
 import { CanvasPath } from './components/CanvasPath'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { useCanvasStore } from './store/useCanvasStore'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useDesktopMenu } from './hooks/useDesktopMenu'
@@ -13,6 +14,7 @@ import { useCloseGuard } from './hooks/useCloseGuard'
 import { useAgentBridge } from './hooks/useAgentBridge'
 import { getLaunchFilePath, isDesktop } from './utils/desktop'
 import { openBoardFromPath } from './utils/boardIO'
+import { diagError, diagInfo } from './utils/diagLog'
 
 let launchFileChecked = false
 
@@ -27,16 +29,25 @@ export default function App() {
   useEffect(() => {
     if (!isDesktop() || launchFileChecked) return
     launchFileChecked = true
-    void getLaunchFilePath().then((path) => {
-      if (path) void openBoardFromPath(path)
-    })
+    void getLaunchFilePath()
+      .then((path) => {
+        if (path) {
+          diagInfo('boot', 'Opening launch file', path)
+          return openBoardFromPath(path)
+        }
+      })
+      .catch((err) => {
+        diagError('boot', 'Launch file open failed', err)
+      })
   }, [])
 
   return (
     <div className={`app-shell ${immersiveMode ? 'is-immersive' : ''}`}>
       <WindowChrome />
       <main className="workspace">
-        <InfiniteCanvas />
+        <ErrorBoundary name="Canvas">
+          <InfiniteCanvas />
+        </ErrorBoundary>
         <Toolbar />
         <CanvasPath />
       </main>

@@ -34,6 +34,7 @@ import {
   liveBoardViewFromStore,
 } from '../board-ops/applyLive'
 import { boardErrorToJson, isBoardOpsError } from '../board-ops/errors'
+import { diagError, diagInfo } from '../utils/diagLog'
 
 async function resolveAgentDirTauri(): Promise<string> {
   const root = await localDataDir()
@@ -55,6 +56,10 @@ async function writeSession(dir: string): Promise<void> {
     boardName: s.boardName,
     currentContainerId: s.currentContainerId,
     allowAgentWrite: true,
+    dirty: s.dirty,
+    revision: s.agentRevision ?? 0,
+    itemCount: s.items.length,
+    stackCount: s.stacks.length,
   }
   const path = await join(dir, SESSION_FILE)
   await writeTextFile(path, JSON.stringify(payload, null, 2))
@@ -83,9 +88,53 @@ async function processRequest(dir: string, name: string): Promise<void> {
       width: typeof window !== 'undefined' ? window.innerWidth : 1440,
       height: typeof window !== 'undefined' ? window.innerHeight : 900,
     }
-    const result = dispatchAgentOp({ board: view, screen }, req.body)
+    const result = dispatchAgentOp(
+      {
+        board: view,
+        screen,
+        persist: 'live',
+        visibleInLiveBoard: true,
+      },
+      req.body,
+    )
     if (result.mutation && !result.mutation.dryRun) {
-      applyMutationToStore(result.mutation)
+      const revision = applyMutationToStore(result.mutation)
+      // Re-stamp envelope with post-apply store truth
+      if (
+        result.response &&
+        typeof result.response === 'object' &&
+        result.response !== null &&
+        'ok' in (result.response as object)
+      ) {
+        const env = result.response as Record<string, unknown>
+        env.revision = revision
+        env.persisted = 'live'
+        env.visibleInLiveBoard = true
+        env.dirty = true
+        env.pendingUserSave = true
+        env.autoSaved = false
+        // Final RAW against live store
+        const live = liveBoardViewFromStore()
+        const itemIds = (env.createdIds as string[]) || []
+        const stackIds = (env.createdStackIds as string[]) || []
+        for (const id of itemIds) {
+          if (!live.items.some((i) => i.id === id)) {
+            throw new Error(`Post-apply item missing: ${id}`)
+          }
+        }
+        for (const id of stackIds) {
+          if (!live.stacks.some((s) => s.id === id)) {
+            throw new Error(`Post-apply stack missing: ${id}`)
+          }
+        }
+        env.verified = { items: itemIds, stacks: stackIds }
+        env.meta = {
+          ...(typeof env.meta === 'object' && env.meta ? env.meta : {}),
+          itemCount: live.items.length,
+          stackCount: live.stacks.length,
+          revision,
+        }
+      }
     }
     response = {
       protocolVersion: AGENT_PROTOCOL_VERSION,
@@ -144,15 +193,21 @@ export function useAgentBridge() {
         const dir = await resolveAgentDirTauri()
         if (cancelled) return
         await writeSession(dir)
+        diagInfo('agent-bridge', 'live session heartbeat started', { dir })
 
         heartbeat = setInterval(() => {
-          void writeSession(dir)
+          void writeSession(dir).catch((err) => {
+            diagError('agent-bridge', 'session heartbeat failed', err)
+          })
         }, 2000)
 
         poll = setInterval(() => {
-          void pollOnce(dir)
+          void pollOnce(dir).catch((err) => {
+            diagError('agent-bridge', 'poll failed', err)
+          })
         }, 350)
       } catch (err) {
+        diagError('agent-bridge', 'init failed', err)
         console.error('[agent-bridge] init failed', err)
       }
     })()

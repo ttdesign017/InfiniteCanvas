@@ -1,6 +1,7 @@
 import { ROOT_CONTAINER_ID } from '../../types/canvas'
 import { STACK_FOLDER_PAD, type LayoutTarget } from '../../utils/layout'
 import { seedStackAnimProgress } from '../../utils/stackAnimProgress'
+import { diagError, diagInfo } from '../../utils/diagLog'
 import {
   containerOf,
   countLeafItemsInStack,
@@ -19,10 +20,30 @@ export function createStackEnterActions(
 ): Pick<CanvasState, StackEnterActionKey> {
   return {
   enterStack: (stackId, screenRect) => {
+    try {
     const s = get()
     const stack = s.stacks.find((st) => st.id === stackId)
-    if (!stack) return
-    if (s.animating) return
+    if (!stack) {
+      diagInfo('enterStack', 'stack not found', { stackId })
+      return
+    }
+    if (s.animating) {
+      diagInfo('enterStack', 'blocked while animating', { stackId })
+      return
+    }
+
+    const members = itemsInContainer(s.items, stackId)
+    const childStacks = stacksInContainer(s.stacks, stackId)
+    diagInfo('enterStack', 'begin', {
+      stackId,
+      name: stack.name,
+      memberCount: members.length,
+      childStackCount: childStacks.length,
+      fromContainer: s.currentContainerId,
+      hasScreenRect: !!screenRect,
+      itemTotal: s.items.length,
+      stackTotal: s.stacks.length,
+    })
 
     const parentVp = { ...s.viewport }
 
@@ -41,8 +62,6 @@ export function createStackEnterActions(
     }
 
     // Always drive folder expand anim (Space and double-click share this path)
-    const members = itemsInContainer(s.items, stackId)
-    const childStacks = stacksInContainer(s.stacks, stackId)
     const leafCount = countLeafItemsInStack(s.items, s.stacks, stackId)
     const enterRect =
       screenRect ??
@@ -293,6 +312,7 @@ export function createStackEnterActions(
     }
 
     const tickVp = (now: number) => {
+      try {
       if (get().currentContainerId !== stackId) return
       const t = Math.min(1, (now - t0) / dur)
       const e = ease(t)
@@ -415,8 +435,33 @@ export function createStackEnterActions(
       if (!get().stackEnterAnim) {
         set({ animating: false })
       }
+      } catch (err) {
+        diagError('enterStack', `enter RAF tick failed for ${stackId}`, err)
+        try {
+          set({ animating: false, stackEnterAnim: null })
+        } catch {
+          /* ignore */
+        }
+      }
     }
     requestAnimationFrame(tickVp)
+    diagInfo('enterStack', 'RAF scheduled', {
+      stackId,
+      leafCount,
+      ends: ends.length,
+      nestedUnits: nestedEnterUnits.length,
+    })
+    } catch (err) {
+      diagError('enterStack', `enterStack failed for ${stackId}`, err)
+      try {
+        set({
+          animating: false,
+          stackEnterAnim: null,
+        })
+      } catch {
+        /* ignore secondary failures */
+      }
+    }
   },
   }
 }

@@ -13,6 +13,7 @@ import {
   resetStackAnimProgress,
   setStackAnimProgress,
 } from '../utils/stackAnimProgress'
+import { diagError, diagInfo } from '../utils/diagLog'
 import {
   blurChrome,
   dismissStackNameEdit,
@@ -127,27 +128,44 @@ export function useInfiniteCanvasController() {
     if (!stackEnterAnim) return
     if (stackEnterAnim.mode === 'exit') return
     // Morph/peer progress only — do not rewrite Zustand stackEnterAnim each frame
+    diagInfo('enterMorph', 'start', {
+      stackId: stackEnterAnim.stackId,
+      start: stackEnterAnim.start,
+    })
     const t0 = performance.now()
     const morphDur = 380
     const peerFadeDur = 500
     let raf = 0
     const tick = (now: number) => {
-      const t = Math.min(1, (now - t0) / morphDur)
-      const e = 1 - Math.pow(1 - t, 3)
-      const nestedChromeOpacity = Math.max(0, Math.min(1, (e - 0.15) / 0.85))
-      const pu = Math.max(0, Math.min(1, (now - t0) / peerFadeDur))
-      const peerReveal = 1 - pu * pu * (3 - 2 * pu)
-      setStackAnimProgress({
-        t: e,
-        nestedChromeOpacity,
-        peerReveal,
-        settle: 0,
-      })
-      if (t < 1 || pu < 1) {
-        raf = requestAnimationFrame(tick)
-      } else {
+      try {
+        const t = Math.min(1, (now - t0) / morphDur)
+        const e = 1 - Math.pow(1 - t, 3)
+        const nestedChromeOpacity = Math.max(0, Math.min(1, (e - 0.15) / 0.85))
+        const pu = Math.max(0, Math.min(1, (now - t0) / peerFadeDur))
+        const peerReveal = 1 - pu * pu * (3 - 2 * pu)
+        setStackAnimProgress({
+          t: e,
+          nestedChromeOpacity,
+          peerReveal,
+          settle: 0,
+        })
+        if (t < 1 || pu < 1) {
+          raf = requestAnimationFrame(tick)
+        } else {
+          resetStackAnimProgress()
+          setStackEnterAnim(null)
+          diagInfo('enterMorph', 'complete', {
+            stackId: stackEnterAnim.stackId,
+          })
+        }
+      } catch (err) {
+        diagError('enterMorph', 'tick failed', err)
         resetStackAnimProgress()
-        setStackEnterAnim(null)
+        try {
+          setStackEnterAnim(null)
+        } catch {
+          /* ignore */
+        }
       }
     }
     raf = requestAnimationFrame(tick)

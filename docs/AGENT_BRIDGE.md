@@ -38,11 +38,42 @@ Codex  →  ic2-mcp  →  %LOCALAPPDATA%/InfiniteCanvas/agent/req-*.json
 
 | Tool | Role |
 |------|------|
-| `ic2_status` | live vs file |
+| `ic2_status` | live vs file; `dirty` / `pendingUserSave` / `revision` |
 | `ic2_get_viewport` | place near what user sees |
 | `ic2_create_note` / `create_link` / `import_image_url` | primitives |
-| `ic2_create_stack` / `move_to_container` / `layout_grid` | structure |
+| `ic2_create_stack` / `ic2_get_stack` / `move_to_container` / `layout_grid` | structure |
 | `ic2_add_research_cluster` | **preferred** one-shot mood board dump |
+
+## Write response envelope (v2)
+
+Mutations return more than ids:
+
+```json
+{
+  "ok": true,
+  "createdIds": ["note_…"],
+  "createdStackIds": ["stack_…"],
+  "verified": { "items": ["note_…"], "stacks": ["stack_…"] },
+  "revision": 3,
+  "persisted": "live",
+  "visibleInLiveBoard": true,
+  "dirty": true,
+  "pendingUserSave": true,
+  "autoSaved": false,
+  "warnings": ["image download skipped: …"]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `createdIds` | **Items only** — never use with `get_item` for stacks |
+| `createdStackIds` | Stack folders — use `ic2_get_stack` / `list_items(containerId=stackId)` |
+| `verified` | Read-after-write; missing ids → error, not fake success |
+| `persisted` | `live` \| `memory` (file session) \| `disk` (after save) |
+| `pendingUserSave` | Live app needs Ctrl+S |
+| `dirty` | Unsaved changes exist |
+
+**Counts:** `meta.itemCount` is global; `meta.rootItemCount` / `list_items.total` are per-surface. Nested notes live inside stacks, so `itemCount > list_items(root).total` is normal.
 
 ## Security
 

@@ -25,6 +25,12 @@ export type AgentSessionFile = {
   boardName: string
   currentContainerId: string
   allowAgentWrite: boolean
+  /** App store dirty (needs user Save) */
+  dirty: boolean
+  /** Monotonic revision after agent/user mutations */
+  revision: number
+  itemCount: number
+  stackCount: number
 }
 
 export type CreateLinkInput = {
@@ -102,6 +108,13 @@ export type ResearchClusterInput = {
   }>
   columns?: number
   dryRun?: boolean
+  /** Idempotent cluster stack id */
+  clientRequestId?: string
+  /**
+   * When true (default), failed image downloads are skipped with warnings
+   * instead of aborting the whole cluster.
+   */
+  skipInvalidImages?: boolean
 }
 
 export type AgentOp =
@@ -117,6 +130,7 @@ export type AgentOp =
       offset?: number
     }
   | { op: 'get_item'; id: string }
+  | { op: 'get_stack'; id: string }
   | {
       op: 'export_text'
       containerId: string
@@ -180,6 +194,7 @@ export type ViewportInfo = {
 
 export type MutationApplyResult = {
   createdIds: string[]
+  createdStackIds?: string[]
   changedIds: string[]
   dryRun: boolean
   dirty: boolean
@@ -187,4 +202,12 @@ export type MutationApplyResult = {
   /** Extra fields for cluster etc. */
   stackId?: string
   itemIds?: string[]
+  warnings?: string[]
+  revision?: number
+  persisted?: 'live' | 'memory' | 'disk'
+  visibleInLiveBoard?: boolean
+  pendingUserSave?: boolean
+  autoSaved?: boolean
+  verified?: { items: string[]; stacks: string[] }
+  ok?: boolean
 }

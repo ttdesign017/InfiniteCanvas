@@ -38,6 +38,8 @@ export interface CanvasState {
   boardFilePath: string | null
   /** True when canvas has unsaved changes */
   dirty: boolean
+  /** Monotonic revision for MCP read-after-write / live session */
+  agentRevision: number
   animating: boolean
   /** Item currently in inline edit mode (text / textcard) */
   editingId: string | null

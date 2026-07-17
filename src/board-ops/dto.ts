@@ -71,14 +71,25 @@ export type StackTreeNodeDto = StackSummaryDto & {
 
 export type BoardMetaDto = {
   name: string
+  /** All items in every container (not comparable to list_items for one container) */
   itemCount: number
+  /** Items on home canvas only (containerId=root) */
+  rootItemCount: number
   stackCount: number
   currentContainerId: string
+  /** Items in currentContainerId */
+  currentContainerItemCount: number
   viewport: Viewport
   homeViewport?: Viewport
   nextZ: number
+  revision?: number
   /** format / api hints for agents */
   apiVersion: number
+  /**
+   * Hint for agents: itemCount includes nested stack members.
+   * Use list_items(containerId) for a single surface; use createdStackIds + list_items(stackId) after cluster.
+   */
+  countsNote: string
 }
 
 export type TextExportBlockDto = {
@@ -90,4 +101,4 @@ export type TextExportBlockDto = {
 }
 
 /** board-ops API version — bump when tool contracts break. */
-export const BOARD_OPS_API_VERSION = 1
+export const BOARD_OPS_API_VERSION = 2

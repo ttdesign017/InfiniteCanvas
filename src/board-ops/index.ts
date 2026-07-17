@@ -48,10 +48,20 @@ export {
   exportText,
   getBoardMeta,
   getItem,
+  getStack,
   listItems,
   requireStack,
   searchItems,
 } from './read'
+
+export {
+  buildWriteEnvelope,
+  nextRevision,
+  partitionCreatedIds,
+  verifyBoardHas,
+  withRevision,
+} from './writeResult'
+export type { PersistState, WriteResultEnvelope } from './writeResult'
 
 export {
   createNote,

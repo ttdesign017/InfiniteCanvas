@@ -91,7 +91,9 @@ describe('board-ops read', () => {
     expect(meta.name).toBe('Research')
     expect(meta.itemCount).toBe(4)
     expect(meta.stackCount).toBe(2)
-    expect(meta.apiVersion).toBe(1)
+    expect(meta.apiVersion).toBe(2)
+    expect(meta.rootItemCount).toBe(2)
+    expect(meta.countsNote).toMatch(/itemCount is global/)
   })
 
   it('listItems requires explicit container and does not leak media bytes', () => {

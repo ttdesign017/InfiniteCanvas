@@ -51,6 +51,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   dirty: false,
 
+  agentRevision: 0,
+
   animating: false,
 
   editingId: null,

@@ -20,6 +20,8 @@ export type BoardView = {
   homeViewport?: BoardSnapshot['viewport']
   nextZ: number
   currentContainerId: string
+  /** Monotonic revision for agent read-after-write (optional). */
+  revision?: number
 }
 
 export function boardViewFromSnapshot(snap: BoardSnapshot): BoardView {
@@ -31,6 +33,7 @@ export function boardViewFromSnapshot(snap: BoardSnapshot): BoardView {
     homeViewport: snap.homeViewport,
     nextZ: snap.nextZ ?? 1,
     currentContainerId: snap.currentContainerId || 'root',
+    revision: (snap as BoardSnapshot & { revision?: number }).revision,
   }
 }
 
@@ -50,12 +53,17 @@ export function snapshotFromBoardView(view: BoardView): BoardSnapshot {
 /** One undo-friendly mutation result (single history point for the whole batch). */
 export type BoardMutationResult = {
   board: BoardView
-  /** Ids created in this call */
+  /** Item ids created in this call (not stacks) */
   createdIds: string[]
+  /** Stack folder ids created */
+  createdStackIds?: string[]
   /** Ids patched / moved */
   changedIds: string[]
   /** When true, caller must not persist (preview only). */
   dryRun: boolean
+  stackId?: string
+  itemIds?: string[]
+  warnings?: string[]
 }
 
 export type ListItemsQuery = {
