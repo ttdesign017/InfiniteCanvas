@@ -10,6 +10,7 @@ import { useKeyboard } from './hooks/useKeyboard'
 import { useDesktopMenu } from './hooks/useDesktopMenu'
 import { useWindowDrag } from './hooks/useWindowDrag'
 import { useCloseGuard } from './hooks/useCloseGuard'
+import { useAgentBridge } from './hooks/useAgentBridge'
 import { getLaunchFilePath, isDesktop } from './utils/desktop'
 import { openBoardFromPath } from './utils/boardIO'
 
@@ -20,6 +21,7 @@ export default function App() {
   useDesktopMenu()
   useWindowDrag()
   useCloseGuard()
+  useAgentBridge()
   const immersiveMode = useCanvasStore((s) => s.immersiveMode)
 
   useEffect(() => {

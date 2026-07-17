@@ -156,10 +156,10 @@ ic2_board_open({ path })
 |------|------|------|
 | Phase 0 board-ops 只读 + DTO + 错误 | **Done** | `src/board-ops` |
 | Phase 0.5 受限写 + 文件 API 解耦 UI | **Done** | `write.ts`, `fileOps.ts`, `boardIO` 薄封装 |
-| Phase 1 MCP stdio server 骨架 | **Done** | `packages/ic2-mcp` — tools 已映射 board-ops；Node 文件后端 |
-| Phase 1.1 宿主配置 / 手测 | **Todo** | Claude Desktop / Cursor 接好并跑通 open→tree→export |
-| Phase 2 写权限产品化 | **Partial** | 已有 `IC2_MCP_ALLOW_WRITE` + dry_run；可再加路径 allowlist |
-| Phase 3 Live bridge | **Todo** | App token + history |
+| Phase 1 MCP stdio server 骨架 | **Done** | `packages/ic2-mcp` |
+| Phase 2 扩展写入 + 布局 + research cluster | **Done** | link / image / stack / layout / `add_research_cluster` |
+| Phase 3 Live bridge | **Done** | App `useAgentBridge` + MCP `liveClient`（见 `AGENT_BRIDGE.md`） |
+| Phase 4 路径 allowlist / UI 授权开关 | **Todo** | 产品加固 |
 
 ---
 
@@ -169,10 +169,11 @@ ic2_board_open({ path })
 - [x] 进程内 session：`snapshot` + path + dirty  
 - [x] tool 错误 → `boardErrorToJson`  
 - [x] README：Claude Desktop / Cursor 配置示例  
-- [x] 默认 `IC2_MCP_ALLOW_WRITE` 关闭  
+- [x] 默认写权限可开（`IC2_MCP_ALLOW_WRITE`，未设置时默认允许）  
 - [x] CI：`npm run check` 含 board-ops 单测  
-- [ ] 宿主侧真实 Agent 联调  
-- [ ] 可选：路径 allowlist  
+- [x] Live bridge 文件收件箱  
+- [ ] 宿主侧真实 Agent 联调（品牌调研端到端）  
+- [ ] 路径 allowlist / App 内「允许 Agent」开关  
 
 ### 本地启动
 

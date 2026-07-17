@@ -30,7 +30,7 @@ export function createIc2McpServer(): McpServer {
   }
 
   console.error(
-    `[ic2-mcp] ready (allowWrite=${config.allowWrite ? 'yes' : 'no'})`,
+    `[ic2-mcp] ready (allowWrite=${config.allowWrite ? 'yes' : 'no'}; prefers live Infinite Canvas session)`,
   )
 
   return server

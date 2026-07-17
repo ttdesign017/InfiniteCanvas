@@ -62,6 +62,26 @@ export {
 } from './write'
 
 export {
+  addResearchCluster,
+  createImage,
+  createLink,
+  createStack,
+  layoutGrid,
+  moveToContainer,
+  renameStack,
+  worldRectFromViewport,
+} from './writeExtras'
+
+export { dispatchAgentOp } from './dispatch'
+export type { DispatchContext, DispatchResult } from './dispatch'
+
+export {
+  applyMutationToStore,
+  liveBoardViewFromStore,
+  liveMetaFromStore,
+} from './applyLive'
+
+export {
   ensureIcanvasExt,
   loadBoardSnapshotFromPath,
   loadBoardViewFromPath,
@@ -76,3 +96,18 @@ export {
   toItemSummary,
   toStackSummary,
 } from './project'
+
+export { AGENT_PROTOCOL_VERSION } from './agentProtocol'
+export type {
+  AgentOp,
+  AgentRequest,
+  AgentResponse,
+  AgentSessionFile,
+  CreateImageInput,
+  CreateLinkInput,
+  CreateStackInput,
+  LayoutGridInput,
+  MoveToContainerInput,
+  ResearchClusterInput,
+  ViewportInfo,
+} from './agentProtocol'

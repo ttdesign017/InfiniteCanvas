@@ -1,124 +1,74 @@
 # @ic2/mcp
 
-MCP server for **Infinite Canvas 2** — external agents read/write boards through `src/board-ops` (file mode).
+MCP server for **Infinite Canvas 2** — agents research and **place content on the canvas**.
 
-| | |
-|--|--|
-| Transport | **stdio** |
-| Domain API | `src/board-ops` (repo root) |
-| Contract | `docs/MCP.md`, `docs/BOARD_OPS.md` |
-| Default write | **off** (`IC2_MCP_ALLOW_WRITE=1` to enable) |
+| Mode | When | Behavior |
+|------|------|----------|
+| **Live** | Infinite Canvas is open (heartbeat) | Ops appear on the **open window** immediately |
+| **File** | App closed + `ic2_board_open` | Mutate in-memory snapshot; `ic2_board_save` writes `.icanvas` |
+
+See `docs/AGENT_BRIDGE.md` and `docs/CODEX_BRAND_RESEARCH.md`.
 
 ## Setup
 
-From this directory:
-
 ```bash
-npm install
-```
-
-From repo root (optional convenience scripts — see root `package.json`):
-
-```bash
+# from repo root
 npm run mcp:install
 npm run mcp:start
 ```
 
-Requires **Node ≥ 20**.
+Node ≥ 20.
 
-## Run
+## Environment
 
-```bash
-# read-only
-npm start
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `IC2_MCP_ALLOW_WRITE` | **allow** (unset) | Set `0` to force read-only |
+| `IC2_MCP_BOARD_PATH` | — | Optional auto-open file session |
 
-# open a board at start + allow writes
-set IC2_MCP_ALLOW_WRITE=1
-set IC2_MCP_BOARD_PATH=D:\path\to\board.icanvas
-npm start
+## Codex (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.ic2]
+command = "npx"
+args = [
+  "--prefix", "C:/Users/…/InfiniteCanvas2/packages/ic2-mcp",
+  "tsx",
+  "C:/Users/…/InfiniteCanvas2/packages/ic2-mcp/src/index.ts",
+]
+startup_timeout_sec = 120
+
+[mcp_servers.ic2.env]
+IC2_MCP_ALLOW_WRITE = "1"
 ```
 
-Logs go to **stderr**; MCP JSON-RPC uses **stdout** (do not `console.log` in tools).
-
-## Claude Desktop / Cursor (example)
-
-```json
-{
-  "mcpServers": {
-    "infinite-canvas-2": {
-      "command": "npx",
-      "args": ["tsx", "C:/Users/YOU/Documents/trae_projects/InfiniteCanvas2/packages/ic2-mcp/src/index.ts"],
-      "env": {
-        "IC2_MCP_ALLOW_WRITE": "0"
-      }
-    }
-  }
-}
-```
-
-Or after `npm install` in this package:
-
-```json
-{
-  "mcpServers": {
-    "infinite-canvas-2": {
-      "command": "npx",
-      "args": [
-        "tsx",
-        "C:/…/InfiniteCanvas2/packages/ic2-mcp/src/index.ts"
-      ],
-      "cwd": "C:/…/InfiniteCanvas2/packages/ic2-mcp",
-      "env": {
-        "IC2_MCP_ALLOW_WRITE": "1",
-        "IC2_MCP_BOARD_PATH": "C:/…/my-board.icanvas"
-      }
-    }
-  }
-}
-```
-
-Use absolute paths. Prefer `allowWrite: 0` until you trust the agent.
+1. Start **Infinite Canvas 2**  
+2. Restart Codex  
+3. `/mcp` → see `ic2`  
+4. Prompt brand research (see `docs/CODEX_BRAND_RESEARCH.md`)
 
 ## Tools
 
-| Tool | Write? | Purpose |
-|------|--------|---------|
-| `ic2_board_open` | | Bind a `.icanvas` path |
-| `ic2_board_info` | | Meta + dirty + allowWrite |
-| `ic2_board_save` | ✓ | Atomic write (keeps packed assets) |
-| `ic2_tree` | | Nested stacks |
-| `ic2_list_items` | | Summaries in **one** `containerId` |
-| `ic2_get_item` | | Detail without media bytes |
-| `ic2_export_text` | | Notes/links as text |
-| `ic2_search` | | Substring search |
-| `ic2_create_note` | ✓ | One note (`dry_run` supported) |
-| `ic2_create_notes` | ✓ | Batch notes |
-| `ic2_update_text` | ✓ | Whitelist text fields |
-| `ic2_move_items` | ✓ | Absolute pose |
+| Tool | Notes |
+|------|--------|
+| `ic2_status` | live vs file |
+| `ic2_board_open` / `info` / `save` | file session |
+| `ic2_get_viewport` | place in view |
+| `ic2_tree` / `list_items` / `get_item` / `export_text` / `search` | read |
+| `ic2_create_note` / `create_link` / `import_image_url` | content |
+| `ic2_create_stack` / `rename_stack` / `move_to_container` | structure |
+| `ic2_layout_grid` | arrange |
+| **`ic2_add_research_cluster`** | **preferred** one-shot mood board |
 
-`containerId`: use `root` for the home canvas.
+`containerId`: use `root` for home.
 
 ## Architecture
 
 ```
-packages/ic2-mcp  →  src/board-ops  →  BoardSnapshot / DTOs
-       │
-       └─ nodeFile.ts (Node fs; no Tauri)
-```
-
-- **App UI** still uses Tauri `boardIO` / `fileOps`.
-- **MCP** uses `nodeFile` so it runs as a plain Node process.
-- Save preserves `packedAssets` from open (does not re-encode media from blob URLs).
-
-## Not in this package (yet)
-
-- Live session bridge into a running Tauri window  
-- Delete / nest / layout-suggest tools  
-- OAuth / remote HTTP transport  
-
-## Dev
-
-```bash
-npm run typecheck   # tsc --noEmit (paths into repo src)
-npm start
+packages/ic2-mcp
+  liveClient.ts  →  %LOCALAPPDATA%/InfiniteCanvas/agent/
+  backend.ts     →  live || file session
+  tools.ts       →  MCP surface
+src/board-ops    →  pure domain + dispatch
+src/hooks/useAgentBridge.ts  →  App poller
 ```

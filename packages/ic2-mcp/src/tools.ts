@@ -1,34 +1,25 @@
 /**
- * Register ic2_* MCP tools on an McpServer instance.
+ * Register ic2_* MCP tools — live app preferred, file session fallback.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import {
-  buildStackTree,
-  createNote,
-  createNotesBatch,
-  exportText,
-  getBoardMeta,
-  getItem,
-  listItems,
-  moveItems,
-  searchItems,
-  updateText,
-} from '../../../src/board-ops/index'
-import {
   boardErrorToJson,
   isBoardOpsError,
 } from '../../../src/board-ops/errors'
 import { ROOT_CONTAINER_ID } from '../../../src/types/canvas'
-import type { Session } from './session.js'
+import type { Session } from './session'
+import { assertWritable } from './session'
 import {
-  applyMutation,
-  assertWritable,
-  openBoard,
-  requireBoard,
-  saveBoard,
-} from './session.js'
+  getBackendMode,
+  openFileBoard,
+  runOp,
+  saveFileBoard,
+  statusInfo,
+} from './backend'
+import { getBoardMeta } from '../../../src/board-ops/index'
+import { fetchImageAsDataUrl } from './fetchImage'
 
 function textResult(data: unknown) {
   return {
@@ -46,181 +37,192 @@ function errorResult(err: unknown) {
   const payload = boardErrorToJson(err)
   return {
     isError: true as const,
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify(payload, null, 2),
-      },
-    ],
+    content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
   }
 }
 
 async function runTool<T>(fn: () => T | Promise<T>) {
   try {
-    const data = await fn()
-    return textResult(data)
+    return textResult(await fn())
   } catch (err) {
-    if (!isBoardOpsError(err)) {
-      console.error('[ic2-mcp]', err)
-    }
+    if (!isBoardOpsError(err)) console.error('[ic2-mcp]', err)
     return errorResult(err)
   }
 }
 
 export function registerTools(server: McpServer, session: Session): void {
   server.tool(
+    'ic2_status',
+    'Show whether Infinite Canvas is live, file session state, and write flags.',
+    {},
+    async () => runTool(() => statusInfo(session)),
+  )
+
+  server.tool(
     'ic2_board_open',
-    'Open an Infinite Canvas .icanvas (or legacy .json) file and bind it as the working board.',
-    {
-      path: z.string().describe('Absolute path to the .icanvas file'),
-    },
+    'Open a .icanvas file into the MCP file session (fallback when app is not live). Prefer live app for realtime canvas.',
+    { path: z.string() },
     async ({ path }) =>
       runTool(() => {
-        const view = openBoard(session, path)
+        const view = openFileBoard(session, path)
         return {
+          mode: 'file',
           path: session.path,
           meta: getBoardMeta(view),
-          dirty: session.dirty,
+          hint: isLiveHint(),
         }
       }),
   )
 
   server.tool(
     'ic2_board_info',
-    'Return metadata for the currently open board (counts, viewport, apiVersion).',
+    'Board metadata (live window or file session).',
     {},
     async () =>
-      runTool(() => {
-        const { view } = requireBoard(session)
+      runTool(async () => {
+        const status = statusInfo(session)
+        if (getBackendMode(session) === 'live') {
+          const meta = await runOp(session, { op: 'get_meta' })
+          return { mode: 'live', meta, status }
+        }
+        if (getBackendMode(session) === 'file') {
+          const meta = await runOp(session, { op: 'get_meta' })
+          return {
+            mode: 'file',
+            path: session.path,
+            dirty: session.dirty,
+            meta,
+            status,
+          }
+        }
         return {
-          path: session.path,
-          dirty: session.dirty,
-          allowWrite: session.config.allowWrite,
-          meta: getBoardMeta(view),
+          mode: 'none',
+          status,
+          hint: 'Open Infinite Canvas (live) or ic2_board_open a .icanvas file.',
         }
       }),
   )
 
   server.tool(
     'ic2_board_save',
-    'Save the working board to disk (requires IC2_MCP_ALLOW_WRITE=1). Preserves packed media assets from open.',
-    {
-      path: z
-        .string()
-        .optional()
-        .describe('Optional path; defaults to the path used at open'),
-    },
+    'Save the file-session board to disk (file mode only). Live mode keeps dirty state in the app — use the app Save.',
+    { path: z.string().optional() },
     async ({ path }) =>
       runTool(() => {
-        const out = saveBoard(session, path ?? null)
-        return { saved: true, ...out, dirty: session.dirty }
+        assertWritable(session)
+        if (getBackendMode(session) === 'live') {
+          return {
+            saved: false,
+            mode: 'live',
+            message:
+              'Live mode: content is already on the open canvas. Use Infinite Canvas Save (Ctrl+S).',
+          }
+        }
+        const out = saveFileBoard(session, path ?? null)
+        return { saved: true, mode: 'file', ...out }
       }),
+  )
+
+  server.tool(
+    'ic2_get_viewport',
+    'Current viewport + approximate visible world rect (best with live app).',
+    {},
+    async () => runTool(() => runOp(session, { op: 'get_viewport' })),
   )
 
   server.tool(
     'ic2_tree',
-    'List nested stack folders as a tree. containerId defaults to root (home canvas).',
+    'Nested stack tree. containerId defaults to root.',
     {
-      containerId: z
-        .string()
-        .optional()
-        .describe('Parent container id; default root'),
-      depth: z
-        .number()
-        .int()
-        .min(0)
-        .max(32)
-        .optional()
-        .describe('Max nesting depth (default 8)'),
+      containerId: z.string().optional(),
+      depth: z.number().int().min(0).max(32).optional(),
     },
     async ({ containerId, depth }) =>
-      runTool(() => {
-        const { view } = requireBoard(session)
-        return buildStackTree(view, {
+      runTool(() =>
+        runOp(session, {
+          op: 'tree',
           containerId: containerId ?? ROOT_CONTAINER_ID,
           depth,
-        })
-      }),
+        }),
+      ),
   )
 
   server.tool(
     'ic2_list_items',
-    'List item summaries in one container. Media bytes are never included.',
+    'List item summaries in one container (no media bytes).',
     {
-      containerId: z
-        .string()
-        .describe('Container id: root or a stack id (required)'),
-      type: z
-        .union([z.string(), z.array(z.string())])
-        .optional()
-        .describe('Filter by item type(s)'),
+      containerId: z.string(),
+      type: z.union([z.string(), z.array(z.string())]).optional(),
       limit: z.number().int().min(1).max(500).optional(),
       offset: z.number().int().min(0).optional(),
     },
-    async ({ containerId, type, limit, offset }) =>
-      runTool(() => {
-        const { view } = requireBoard(session)
-        return listItems(view, {
-          containerId,
-          type: type as never,
-          limit,
-          offset,
-        })
-      }),
+    async (args) =>
+      runTool(() =>
+        runOp(session, {
+          op: 'list_items',
+          containerId: args.containerId,
+          type: args.type,
+          limit: args.limit,
+          offset: args.offset,
+        }),
+      ),
   )
 
   server.tool(
     'ic2_get_item',
-    'Get one item detail by id (text content allowed; no media payloads).',
-    {
-      id: z.string(),
-    },
-    async ({ id }) =>
-      runTool(() => {
-        const { view } = requireBoard(session)
-        return getItem(view, { id })
-      }),
+    'Get one item detail (text ok; no media payloads).',
+    { id: z.string() },
+    async ({ id }) => runTool(() => runOp(session, { op: 'get_item', id })),
   )
 
   server.tool(
     'ic2_export_text',
-    'Export notes and link cards in a container as LLM-friendly text blocks.',
+    'Export notes/links in a container as text for reasoning.',
     {
       containerId: z.string(),
       ids: z.array(z.string()).optional(),
-      maxCharsPerItem: z.number().int().min(40).max(20000).optional(),
+      maxCharsPerItem: z.number().int().optional(),
     },
     async (args) =>
-      runTool(() => {
-        const { view } = requireBoard(session)
-        return exportText(view, args)
-      }),
+      runTool(() =>
+        runOp(session, {
+          op: 'export_text',
+          containerId: args.containerId,
+          ids: args.ids,
+          maxCharsPerItem: args.maxCharsPerItem,
+        }),
+      ),
   )
 
   server.tool(
     'ic2_search',
-    'Substring search over labels, note content, link fields, and filenames.',
+    'Search labels/content/filenames.',
     {
       query: z.string(),
       containerId: z.string().optional(),
       type: z.union([z.string(), z.array(z.string())]).optional(),
-      limit: z.number().int().min(1).max(100).optional(),
+      limit: z.number().int().optional(),
     },
-    async ({ query, containerId, type, limit }) =>
-      runTool(() => {
-        const { view } = requireBoard(session)
-        return searchItems(view, {
-          query,
-          containerId,
-          type: type as never,
-          limit,
-        })
-      }),
+    async (args) =>
+      runTool(() =>
+        runOp(session, {
+          op: 'search',
+          query: args.query,
+          containerId: args.containerId,
+          type: args.type,
+          limit: args.limit,
+        }),
+      ),
   )
+
+  // —— writes ——
+  const writeGuard = () => {
+    assertWritable(session)
+  }
 
   server.tool(
     'ic2_create_note',
-    'Create a textcard (default) or free text note. Requires write mode. Use dry_run to preview.',
+    'Create a note/textcard on the canvas (live preferred).',
     {
       containerId: z.string(),
       x: z.number(),
@@ -233,12 +235,11 @@ export function registerTools(server: McpServer, session: Session): void {
       dry_run: z.boolean().optional(),
     },
     async (args) =>
-      runTool(() => {
-        assertWritable(session)
-        const { view } = requireBoard(session)
-        const result = createNote(
-          view,
-          {
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'create_note',
+          input: {
             containerId: args.containerId,
             x: args.x,
             y: args.y,
@@ -248,110 +249,244 @@ export function registerTools(server: McpServer, session: Session): void {
             kind: args.kind,
             clientRequestId: args.clientRequestId,
           },
-          { dryRun: args.dry_run === true },
-        )
-        applyMutation(session, result)
-        return {
-          dryRun: result.dryRun,
-          createdIds: result.createdIds,
-          dirty: session.dirty,
-        }
+          options: { dryRun: args.dry_run === true },
+        })
       }),
   )
 
   server.tool(
-    'ic2_create_notes',
-    'Create multiple notes as one logical change (batch). Requires write mode.',
+    'ic2_create_link',
+    'Create a link/bookmark card.',
     {
-      notes: z.array(
-        z.object({
-          containerId: z.string(),
-          x: z.number(),
-          y: z.number(),
-          content: z.string().optional(),
-          width: z.number().optional(),
-          height: z.number().optional(),
-          kind: z.enum(['textcard', 'text']).optional(),
-          clientRequestId: z.string().optional(),
-        }),
-      ),
+      containerId: z.string(),
+      x: z.number(),
+      y: z.number(),
+      url: z.string(),
+      title: z.string().optional(),
+      description: z.string().optional(),
       dry_run: z.boolean().optional(),
     },
-    async ({ notes, dry_run }) =>
-      runTool(() => {
-        assertWritable(session)
-        const { view } = requireBoard(session)
-        const result = createNotesBatch(view, notes, {
-          dryRun: dry_run === true,
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'create_link',
+          input: {
+            containerId: args.containerId,
+            x: args.x,
+            y: args.y,
+            url: args.url,
+            title: args.title,
+            description: args.description,
+          },
+          options: { dryRun: args.dry_run === true },
         })
-        applyMutation(session, result)
-        return {
-          dryRun: result.dryRun,
-          createdIds: result.createdIds,
-          dirty: session.dirty,
-        }
       }),
   )
 
   server.tool(
-    'ic2_update_text',
-    'Update whitelist fields on a text/textcard item. Requires write mode.',
+    'ic2_create_stack',
+    'Create an enterable stack folder on a parent container.',
     {
-      id: z.string(),
-      content: z.string().optional(),
-      color: z.string().optional(),
-      backgroundColor: z.string().optional(),
-      fontSize: z.number().optional(),
+      parentId: z.string().default(ROOT_CONTAINER_ID),
+      x: z.number(),
+      y: z.number(),
+      name: z.string().optional(),
       width: z.number().optional(),
       height: z.number().optional(),
       dry_run: z.boolean().optional(),
     },
     async (args) =>
-      runTool(() => {
-        assertWritable(session)
-        const { view } = requireBoard(session)
-        const { dry_run, ...input } = args
-        const result = updateText(view, input, {
-          dryRun: dry_run === true,
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'create_stack',
+          input: {
+            parentId: args.parentId,
+            x: args.x,
+            y: args.y,
+            name: args.name,
+            width: args.width,
+            height: args.height,
+          },
+          options: { dryRun: args.dry_run === true },
         })
-        applyMutation(session, result)
-        return {
-          dryRun: result.dryRun,
-          changedIds: result.changedIds,
-          dirty: session.dirty,
-        }
       }),
   )
 
   server.tool(
-    'ic2_move_items',
-    'Set absolute poses for free items. Requires write mode.',
+    'ic2_rename_stack',
+    'Rename a stack folder.',
     {
-      moves: z.array(
-        z.object({
-          id: z.string(),
-          x: z.number().optional(),
-          y: z.number().optional(),
-          rotation: z.number().optional(),
-        }),
-      ),
+      id: z.string(),
+      name: z.string(),
       dry_run: z.boolean().optional(),
     },
-    async ({ moves, dry_run }) =>
-      runTool(() => {
-        assertWritable(session)
-        const { view } = requireBoard(session)
-        const result = moveItems(
-          view,
-          { moves },
-          { dryRun: dry_run === true },
-        )
-        applyMutation(session, result)
-        return {
-          dryRun: result.dryRun,
-          changedIds: result.changedIds,
-          dirty: session.dirty,
-        }
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'rename_stack',
+          id: args.id,
+          name: args.name,
+          options: { dryRun: args.dry_run === true },
+        })
       }),
   )
+
+  server.tool(
+    'ic2_import_image_url',
+    'Download an image URL and place it on the canvas.',
+    {
+      containerId: z.string(),
+      x: z.number(),
+      y: z.number(),
+      url: z.string(),
+      width: z.number().optional(),
+      height: z.number().optional(),
+      fileName: z.string().optional(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        const img = await fetchImageAsDataUrl(args.url)
+        return runOp(session, {
+          op: 'create_image',
+          input: {
+            containerId: args.containerId,
+            x: args.x,
+            y: args.y,
+            src: img.dataUrl,
+            fileName: args.fileName || img.fileName,
+            width: args.width,
+            height: args.height,
+            assetMime: img.mime,
+            assetBase64: img.dataUrl.includes('base64,')
+              ? img.dataUrl.split('base64,')[1]
+              : undefined,
+          },
+          options: { dryRun: args.dry_run === true },
+        })
+      }),
+  )
+
+  server.tool(
+    'ic2_layout_grid',
+    'Lay out existing items in a grid.',
+    {
+      itemIds: z.array(z.string()).min(1),
+      originX: z.number(),
+      originY: z.number(),
+      columns: z.number().int().optional(),
+      gapX: z.number().optional(),
+      gapY: z.number().optional(),
+      cellWidth: z.number().optional(),
+      cellHeight: z.number().optional(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'layout_grid',
+          input: {
+            itemIds: args.itemIds,
+            originX: args.originX,
+            originY: args.originY,
+            columns: args.columns,
+            gapX: args.gapX,
+            gapY: args.gapY,
+            cellWidth: args.cellWidth,
+            cellHeight: args.cellHeight,
+          },
+          options: { dryRun: args.dry_run === true },
+        })
+      }),
+  )
+
+  server.tool(
+    'ic2_move_to_container',
+    'Move items into a stack (or root) by containerId.',
+    {
+      itemIds: z.array(z.string()).min(1),
+      containerId: z.string(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'move_to_container',
+          input: {
+            itemIds: args.itemIds,
+            containerId: args.containerId,
+          },
+          options: { dryRun: args.dry_run === true },
+        })
+      }),
+  )
+
+  server.tool(
+    'ic2_add_research_cluster',
+    'High-level: create a named stack filled with notes, links, and images (mood-board cluster). Prefer this for brand research dumps.',
+    {
+      title: z.string(),
+      parentId: z.string().optional(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      columns: z.number().int().optional(),
+      notes: z
+        .array(
+          z.object({
+            content: z.string(),
+            kind: z.enum(['textcard', 'text']).optional(),
+          }),
+        )
+        .optional(),
+      links: z
+        .array(
+          z.object({
+            url: z.string(),
+            title: z.string().optional(),
+            description: z.string().optional(),
+          }),
+        )
+        .optional(),
+      images: z
+        .array(
+          z.object({
+            url: z.string().optional(),
+            dataUrl: z.string().optional(),
+            fileName: z.string().optional(),
+            caption: z.string().optional(),
+          }),
+        )
+        .optional(),
+      dry_run: z.boolean().optional(),
+    },
+    async (args) =>
+      runTool(async () => {
+        writeGuard()
+        return runOp(session, {
+          op: 'add_research_cluster',
+          input: {
+            title: args.title,
+            parentId: args.parentId,
+            x: args.x,
+            y: args.y,
+            columns: args.columns,
+            notes: args.notes,
+            links: args.links,
+            images: args.images,
+            dryRun: args.dry_run,
+          },
+          options: { dryRun: args.dry_run === true },
+        })
+      }),
+  )
+}
+
+function isLiveHint() {
+  return 'If Infinite Canvas is open, tools auto-use live mode and appear on the canvas immediately.'
 }
