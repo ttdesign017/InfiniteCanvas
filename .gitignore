@@ -34,6 +34,3 @@ release/
 .env
 .env.*
 !.env.example
-
-# Local-only docs (architecture, reviews, backlog — not for git)
-docs/
