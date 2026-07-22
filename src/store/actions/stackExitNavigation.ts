@@ -20,6 +20,7 @@ import {
   folderBoundsFromFan,
   freeFanRelFromLocalFan,
   itemsInContainer,
+  participatesInStackFan,
   resolveNestedFreeFan,
   stackLabelName,
   stacksInContainer,
@@ -50,6 +51,8 @@ export function runStackExitNavigation(
     const chainSilent = needsChaining && wantAnim
     const runExitAnim = wantAnim
     const members = itemsInContainer(s.items, leavingId)
+    // Scribbles stay free-local only — never gather into fan / folder geometry
+    const fanMembers = members.filter(participatesInStackFan)
     // Nested stacks on this canvas are atomic bodies (same as free items for fan)
     const childStacks = stacksInContainer(s.stacks, leavingId)
     if (members.length > 0 || childStacks.length > 0) {
@@ -152,7 +155,7 @@ export function runStackExitNavigation(
         })
       }
 
-      const itemBodies = members.map((m) => ({
+      const itemBodies = fanMembers.map((m) => ({
         id: m.id,
         x: m.x,
         y: m.y,
@@ -210,7 +213,7 @@ export function runStackExitNavigation(
           ]),
       )
       if (nestedUnits.length === 0) {
-        const fanFromPreview = members.map((m) => {
+        const fanFromPreview = fanMembers.map((m) => {
           const sp = m.stackPreview
           if (sp) {
             return {
@@ -223,7 +226,7 @@ export function runStackExitNavigation(
           return null
         })
         if (
-          members.length > 0 &&
+          fanMembers.length > 0 &&
           fanFromPreview.every((t) => t != null)
         ) {
           freeFanRaw = new Map(
@@ -459,8 +462,18 @@ export function runStackExitNavigation(
             if (memberIds.has(item.id)) {
               const free = freeMap.get(item.id)
               const f = fanMap.get(item.id)
-              if (!f) {
-                return z != null ? { ...item, zIndex: z } : item
+              // Scribbles: restore free pose only — never parent fan preview
+              if (!participatesInStackFan(item) || !f) {
+                return {
+                  ...item,
+                  stacked: false,
+                  stackGroupId: undefined,
+                  x: free?.x ?? item.x,
+                  y: free?.y ?? item.y,
+                  rotation: free?.rotation ?? item.rotation ?? 0,
+                  zIndex: z ?? item.zIndex,
+                  stackPreview: undefined,
+                } as CanvasItem
               }
               return {
                 ...item,
@@ -505,7 +518,7 @@ export function runStackExitNavigation(
             const sz = frozenZ.stackZMap.get(st.id)
             if (st.id === leavingId) {
               const freeFanRel = freeFanRelFromLocalFan(
-                members
+                fanMembers
                   .map((m) => {
                     const f = fanMap.get(m.id)
                     if (!f) return null
@@ -659,6 +672,8 @@ export function runStackExitNavigation(
         viewport: exitVp0,
         items: get().items.map((item) => {
           if (memberIds.has(item.id)) {
+            // Scribbles do not gather — stay free and fade out in the UI
+            if (!participatesInStackFan(item)) return item
             return {
               ...item,
               stacked: true,

@@ -1,11 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from 'react'
 import type { MediaItem } from '../../types/canvas'
 import { cropMediaStyle, getCrop } from '../../utils/crop'
 import { registerVideoToggle } from '../../utils/videoRegistry'
+import {
+  captureVideoPosterAfterPaint,
+  captureVideoPosterFromElement,
+  ensureVideoPoster,
+  getVideoPoster,
+  getVideoPosterCacheVersion,
+  subscribeVideoPosterCache,
+} from '../../utils/videoPosterCache'
 
 interface Props {
   item: MediaItem
   selected: boolean
+  /**
+   * Stack enter/exit peer ghost: never mount a live <video>.
+   * Paint cached still (or lazy shell) so remount does not flash.
+   */
+  staticPreview?: boolean
 }
 
 function formatTime(sec: number): string {
@@ -13,6 +34,63 @@ function formatTime(sec: number): string {
   const m = Math.floor(sec / 60)
   const s = Math.floor(sec % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+function useVideoPoster(itemId: string, src: string): string | null {
+  return useSyncExternalStore(
+    subscribeVideoPosterCache,
+    () => {
+      void getVideoPosterCacheVersion()
+      return getVideoPoster(itemId, src)
+    },
+    () => null,
+  )
+}
+
+/** Always an <img> or gray shell — never an empty <video> (browsers paint that black). */
+function VideoStill({
+  item,
+  mediaStyle,
+  className = '',
+  ensureIfMissing = false,
+}: {
+  item: MediaItem
+  mediaStyle: CSSProperties
+  className?: string
+  /** Kick offline capture when ghost has no still yet */
+  ensureIfMissing?: boolean
+}) {
+  const poster = useVideoPoster(item.id, item.src)
+
+  useEffect(() => {
+    if (!ensureIfMissing || poster || !item.src) return
+    let cancelled = false
+    void ensureVideoPoster(item.id, item.src).then(() => {
+      if (cancelled) return
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [ensureIfMissing, poster, item.id, item.src])
+
+  if (poster) {
+    return (
+      <img
+        src={poster}
+        alt=""
+        draggable={false}
+        className={`media-content video-el video-still ${className}`.trim()}
+        style={mediaStyle}
+      />
+    )
+  }
+  return (
+    <div
+      className={`media-content video-el video-lazy-poster ${className}`.trim()}
+      style={mediaStyle}
+      aria-hidden
+    />
+  )
 }
 
 function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean }) {
@@ -29,8 +107,38 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
    */
   const [mediaAttached, setMediaAttached] = useState(false)
   const [inView, setInView] = useState(false)
+  /** True once we have a non-black still for this src */
+  const hasGoodPosterRef = useRef(Boolean(getVideoPoster(item.id, item.src)))
 
   const mediaStyle = cropMediaStyle(item)
+  const poster = useVideoPoster(item.id, item.src)
+
+  useEffect(() => {
+    hasGoodPosterRef.current = Boolean(getVideoPoster(item.id, item.src))
+  }, [item.src, item.id])
+
+  useEffect(() => {
+    if (poster) hasGoodPosterRef.current = true
+  }, [poster])
+
+  const freezeFrame = useCallback(
+    (v: HTMLVideoElement, allowOverwrite = false) => {
+      const url = captureVideoPosterFromElement(v, item.id, item.src, {
+        allowOverwrite,
+      })
+      if (url) {
+        hasGoodPosterRef.current = true
+        return Promise.resolve(url)
+      }
+      return captureVideoPosterAfterPaint(v, item.id, item.src, {
+        allowOverwrite,
+      }).then((u) => {
+        if (u) hasGoodPosterRef.current = true
+        return u
+      })
+    },
+    [item.id, item.src],
+  )
 
   useEffect(() => {
     const el = wrapRef.current
@@ -43,26 +151,29 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     const io = new IntersectionObserver(
       (entries) => {
         const hit = entries.some((e) => e.isIntersecting)
+        if (!hit) {
+          const v = videoRef.current
+          if (v && v.readyState >= 2) {
+            void freezeFrame(v, true)
+          }
+        }
         setInView(hit)
         if (hit) setMediaAttached(true)
       },
-      // Start loading slightly before the tile is fully on screen
       { root: null, rootMargin: '120px', threshold: 0 },
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [])
+  }, [item.id, item.src, freezeFrame])
 
   // Detach decoder when far off-screen (unless playing or selected)
   const keepAttached = mediaAttached && (inView || playing || selected)
   const activeSrc = keepAttached ? item.src : undefined
 
   const togglePlay = useCallback(() => {
-    // Ensure src is attached before play (e.g. spacebar while barely off-screen)
     setMediaAttached(true)
     const v = videoRef.current
     if (!v) {
-      // src may attach next paint — retry on next frame
       requestAnimationFrame(() => {
         const el = videoRef.current
         if (!el) return
@@ -78,10 +189,16 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       void v.play()
       setPlaying(true)
     } else {
-      v.pause()
+      // Pause first so the decoder holds the current frame, then freeze it
+      try {
+        v.pause()
+      } catch {
+        /* ignore */
+      }
       setPlaying(false)
+      void freezeFrame(v, true)
     }
-  }, [item.src])
+  }, [item.src, freezeFrame])
 
   useEffect(() => {
     return registerVideoToggle(item.id, togglePlay)
@@ -90,32 +207,69 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
   useEffect(() => {
     const v = videoRef.current
     if (!v || !activeSrc) return
+
     const onTime = () => setProgress(v.currentTime)
     const onMeta = () => setDuration(v.duration || 0)
     const onEnd = () => setPlaying(false)
     const onPlay = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
+    const onPause = () => {
+      setPlaying(false)
+      void freezeFrame(v, true)
+    }
+    const onUsefulFrame = () => {
+      // First good frame only unless we already have one — avoid t=0 black lock-in
+      void freezeFrame(v, !hasGoodPosterRef.current)
+    }
+
     v.addEventListener('timeupdate', onTime)
     v.addEventListener('loadedmetadata', onMeta)
+    v.addEventListener('loadeddata', onUsefulFrame)
+    v.addEventListener('seeked', onUsefulFrame)
     v.addEventListener('ended', onEnd)
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
+
+    // Nudge off pure black t=0 once metadata is known (paused preview)
+    const onMetaSeek = () => {
+      if (!v.paused) return
+      if (hasGoodPosterRef.current) return
+      const dur = Number.isFinite(v.duration) ? v.duration : 0
+      if (dur > 0.05 && v.currentTime < 0.001) {
+        try {
+          v.currentTime = Math.min(0.12, dur * 0.04)
+        } catch {
+          /* ignore */
+        }
+      } else {
+        void freezeFrame(v, false)
+      }
+    }
+    v.addEventListener('loadedmetadata', onMetaSeek)
+
+    if (v.readyState >= 2) onUsefulFrame()
+
     return () => {
       v.removeEventListener('timeupdate', onTime)
       v.removeEventListener('loadedmetadata', onMeta)
+      v.removeEventListener('loadedmetadata', onMetaSeek)
+      v.removeEventListener('loadeddata', onUsefulFrame)
+      v.removeEventListener('seeked', onUsefulFrame)
       v.removeEventListener('ended', onEnd)
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
     }
-  }, [activeSrc])
+  }, [activeSrc, freezeFrame])
 
-  // Pause when detaching
-  useEffect(() => {
+  // Before paint removes the live element, freeze the current frame
+  useLayoutEffect(() => {
     if (keepAttached) return
     const v = videoRef.current
-    if (v && !v.paused) v.pause()
+    if (v && v.readyState >= 2) {
+      void freezeFrame(v, true)
+      if (!v.paused) v.pause()
+    }
     setPlaying(false)
-  }, [keepAttached])
+  }, [keepAttached, freezeFrame])
 
   const seeking = useRef(false)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -152,6 +306,8 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     if (!seeking.current) return
     e.stopPropagation()
     seeking.current = false
+    const v = videoRef.current
+    if (v && v.readyState >= 2) void freezeFrame(v, true)
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {
@@ -174,24 +330,25 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
+      {/*
+        Never paint <video> without src — browsers show solid black.
+        Detached / lazy state always uses <img> still (or gray shell).
+      */}
       {keepAttached ? (
         <video
           ref={videoRef}
           data-playback-id={item.id}
           src={activeSrc}
+          poster={poster || undefined}
           loop
           playsInline
-          preload="metadata"
+          preload="auto"
           draggable={false}
           className="media-content video-el"
           style={mediaStyle}
         />
       ) : (
-        <div
-          className="media-content video-el video-lazy-poster"
-          style={mediaStyle}
-          aria-hidden
-        />
+        <VideoStill item={item} mediaStyle={mediaStyle} ensureIfMissing />
       )}
 
       {showChrome && !playing && (
@@ -250,7 +407,10 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
   )
 }
 
-export function MediaItemView({ item, selected }: Props) {
+const CROP_BADGE_HOVER_MS = 600
+const FILENAME_HOVER_MS = 2000
+
+export function MediaItemView({ item, selected, staticPreview = false }: Props) {
   const mediaStyle = cropMediaStyle(item)
   const cropped = getCrop(item)
   const isCropped =
@@ -259,48 +419,80 @@ export function MediaItemView({ item, selected }: Props) {
     cropped.x > 0.001 ||
     cropped.y > 0.001
   const [showName, setShowName] = useState(false)
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showCropBadge, setShowCropBadge] = useState(false)
+  const nameTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cropTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearHoverTimers = () => {
+    if (nameTimer.current) {
+      clearTimeout(nameTimer.current)
+      nameTimer.current = null
+    }
+    if (cropTimer.current) {
+      clearTimeout(cropTimer.current)
+      cropTimer.current = null
+    }
+  }
 
   useEffect(() => {
-    // Leaving selection hides immediately
     if (!selected) {
       setShowName(false)
-      if (hoverTimer.current) {
-        clearTimeout(hoverTimer.current)
-        hoverTimer.current = null
+      if (nameTimer.current) {
+        clearTimeout(nameTimer.current)
+        nameTimer.current = null
       }
     }
   }, [selected])
 
   useEffect(() => {
-    return () => {
-      if (hoverTimer.current) clearTimeout(hoverTimer.current)
-    }
+    return () => clearHoverTimers()
   }, [])
 
   const onEnter = () => {
-    if (!selected || !item.fileName) return
-    if (hoverTimer.current) clearTimeout(hoverTimer.current)
-    hoverTimer.current = setTimeout(() => setShowName(true), 2000)
+    if (staticPreview) return
+    if (selected && item.fileName) {
+      if (nameTimer.current) clearTimeout(nameTimer.current)
+      nameTimer.current = setTimeout(() => setShowName(true), FILENAME_HOVER_MS)
+    }
+    if (isCropped) {
+      if (cropTimer.current) clearTimeout(cropTimer.current)
+      cropTimer.current = setTimeout(
+        () => setShowCropBadge(true),
+        CROP_BADGE_HOVER_MS,
+      )
+    }
   }
 
   const onLeave = () => {
-    if (hoverTimer.current) {
-      clearTimeout(hoverTimer.current)
-      hoverTimer.current = null
-    }
+    clearHoverTimers()
     setShowName(false)
+    setShowCropBadge(false)
   }
 
   return (
     <div
-      className={`media-item ${selected ? 'is-selected' : ''} type-${item.type} ${item.stacked ? 'is-stacked' : ''}`}
+      className={`media-item ${selected ? 'is-selected' : ''} type-${item.type} ${item.stacked ? 'is-stacked' : ''} ${staticPreview ? 'is-static-preview' : ''}`}
       onPointerEnter={onEnter}
       onPointerLeave={onLeave}
     >
       <div className="media-crop-viewport">
         {item.type === 'video' ? (
-          <VideoPlayer item={item} selected={selected} />
+          staticPreview ? (
+            <div className="video-player is-lazy is-static-preview">
+              <VideoStill
+                item={item}
+                mediaStyle={mediaStyle}
+                ensureIfMissing
+              />
+              <span className="video-play-btn" aria-hidden>
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+                  <path d="M8 5.5v13l11-6.5-11-6.5z" />
+                </svg>
+              </span>
+            </div>
+          ) : (
+            <VideoPlayer item={item} selected={selected} />
+          )
         ) : (
           <img
             src={item.src}
@@ -311,13 +503,17 @@ export function MediaItemView({ item, selected }: Props) {
           />
         )}
       </div>
-      {item.fileName && showName && (
+      {!staticPreview && item.fileName && showName && (
         <div className="media-caption top visible" title={item.fileName}>
           {item.fileName}
         </div>
       )}
-      {item.type === 'gif' && <span className="media-badge">GIF</span>}
-      {isCropped && <span className="media-badge crop-badge">CROP</span>}
+      {!staticPreview && item.type === 'gif' && (
+        <span className="media-badge">GIF</span>
+      )}
+      {!staticPreview && isCropped && showCropBadge && (
+        <span className="media-badge crop-badge">CROP</span>
+      )}
     </div>
   )
 }

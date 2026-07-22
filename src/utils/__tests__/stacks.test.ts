@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasItem, StackRecord } from '../../types/canvas'
 import {
+  collapsedStackFanCards,
   collectDescendantStackIds,
   collectItemsInStackTree,
   containerOf,
   countLeafItemsInStack,
   itemsInContainer,
+  participatesInStackFan,
   stackLabelName,
   stackPath,
 } from '../stacks'
@@ -54,6 +56,50 @@ describe('nested stack traversal', () => {
         'a',
       ),
     ).toBe(3)
+  })
+
+  it('excludes scribbles from leaf count and collapsed fan cards', () => {
+    const scribble: CanvasItem = {
+      id: 'ink',
+      type: 'scribble',
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 40,
+      rotation: 0,
+      zIndex: 2,
+      containerId: 'a',
+      paths: [
+        {
+          id: 'p1',
+          points: [
+            { x: 4, y: 4 },
+            { x: 20, y: 20 },
+          ],
+          color: '#000',
+          width: 2,
+        },
+      ],
+      strokeColor: '#000',
+      strokeWidth: 2,
+      stackPreview: { x: 50, y: 50, rotation: 0 },
+    }
+    expect(participatesInStackFan(scribble)).toBe(false)
+    expect(
+      countLeafItemsInStack([note('in-a', 'a'), scribble], stacks, 'a'),
+    ).toBe(1)
+    const fan = collapsedStackFanCards(
+      stacks[0],
+      [
+        {
+          ...note('card', 'a'),
+          stackPreview: { x: 10, y: 10, rotation: 0 },
+        },
+        scribble,
+      ],
+      stacks,
+    )
+    expect(fan.map((c) => c.id)).toEqual(['card'])
   })
 
   it('treats missing containerId as the root canvas', () => {

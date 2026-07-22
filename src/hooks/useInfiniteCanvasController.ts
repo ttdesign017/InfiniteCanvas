@@ -254,13 +254,15 @@ export function useInfiniteCanvasController() {
             : 'grab'
           : effectiveTool === 'crop'
             ? 'crosshair'
-            : effectiveTool === 'scribble' || effectiveTool === 'erase'
+            : effectiveTool === 'scribble'
               ? 'crosshair'
-              : effectiveTool === 'text' ||
-                  effectiveTool === 'textcard' ||
-                  effectiveTool === 'link'
-                ? 'cell'
-                : 'default'
+              : effectiveTool === 'erase'
+                ? 'none'
+                : effectiveTool === 'text' ||
+                    effectiveTool === 'textcard' ||
+                    effectiveTool === 'link'
+                  ? 'cell'
+                  : 'default'
 
   const {
     animStackRec,

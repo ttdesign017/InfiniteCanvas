@@ -18,6 +18,16 @@ function hashUnit(id: string, salt: number): number {
   return ((h >>> 0) % 2001) / 1000 - 1
 }
 
+/**
+ * Fan-card rotation in degrees (−8…8).
+ * Uses the full id + salt so cards with a shared id prefix do not share one angle.
+ * Bottom card of a brand-new pile stays flat when `index === 0`.
+ */
+export function fanCardRotation(id: string, index: number): number {
+  if (index === 0) return 0
+  return Math.max(-8, Math.min(8, hashUnit(id, index) * 8))
+}
+
 /** Rect body for fan layout (free item or nested stack folder) */
 export type FanBody = {
   id: string
@@ -55,15 +65,13 @@ export function computeQuickStackBodies(
 
   return sorted.map((item, index) => {
     const offset = index * gap
-    const rotation =
-      index === 0 ? 0 : Math.max(-8, Math.min(8, hashUnit(item.id, index) * 8))
     return {
       id: item.id,
       x: baseX + offset,
       y: baseY + offset * 0.75,
       width: item.width,
       height: item.height,
-      rotation,
+      rotation: fanCardRotation(item.id, index),
     }
   })
 }
@@ -236,7 +244,7 @@ export function stackCollapsedSnapBounds(
   leafItems: CanvasItem[],
 ): BoundsRect {
   const previews = leafItems
-    .filter((i) => i.stackPreview)
+    .filter((i) => i.type !== 'scribble' && i.type !== 'embed' && i.stackPreview)
     .map((i) => {
       const p = i.stackPreview!
       const nested = (i.containerId || 'root') !== stack.id

@@ -107,4 +107,22 @@ describe('computePackPatches', () => {
     // edge after a = 80 + 5 = 85; b.y 120 → dx=0 dy=-35
     expect(b).toMatchObject({ id: 'b', dx: 0, dy: -35 })
   })
+
+  it('falls to the left wall even when Y ranges do not overlap', () => {
+    // Column layout: a top-left, b below with no Y overlap — both share wall x=0
+    // so b still slides left to the wall (true gravity pack / 聚拢)
+    const items = [media('a', 0, 0), media('b', 200, 200)]
+    const { itemPatches } = computePackPatches(['a', 'b'], items, 'left')
+    const b = itemPatches.find((p) => p.id === 'b')
+    expect(b).toMatchObject({ id: 'b', dx: -200, dy: 0 })
+  })
+
+  it('packs right to the rightmost wall with margin when rows overlap', () => {
+    // a 0..100, b 150..250, wall right = 250; a moves so right edge is at 150-5=145
+    const items = [media('a', 0, 0), media('b', 150, 0)]
+    const { itemPatches } = computePackPatches(['a', 'b'], items, 'right')
+    const a = itemPatches.find((p) => p.id === 'a')
+    // targetRight for a = 150 - 5 = 145; targetX = 45; dx = 45
+    expect(a).toMatchObject({ id: 'a', dx: 45, dy: 0 })
+  })
 })

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
-import { togglePlaybacks } from '../utils/videoRegistry'
+import { stepVideoFrames, togglePlaybacks } from '../utils/videoRegistry'
 import { normalizeUrl } from '../utils/linkMeta'
 import { looksLikeMediaFilePath, looksLikeUrl } from '../utils/dropImport'
 import { parseEmbedHtml } from '../utils/embed'
@@ -12,6 +12,8 @@ import {
   pasteMediaFiles,
 } from '../utils/openMedia'
 import { createMediaFromPath, fileUrlToPath } from '../utils/media'
+import { copySelectionToSystemClipboard } from '../utils/systemClipboard'
+import { snapshotSelectedVideos } from '../utils/videoFrameCapture'
 import * as desktop from '../utils/desktop'
 import { requestAppClose } from './useCloseGuard'
 
@@ -109,6 +111,18 @@ export function useKeyboard() {
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
 
+      // Video frame snapshot: Shift+C (full-res still → image on canvas)
+      if (
+        e.shiftKey &&
+        !mod &&
+        !e.altKey &&
+        (key === 'c' || e.code === 'KeyC')
+      ) {
+        e.preventDefault()
+        void snapshotSelectedVideos()
+        return
+      }
+
       // Restore crop: Alt+C
       if (e.altKey && !mod && !e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
         e.preventDefault()
@@ -129,14 +143,20 @@ export function useKeyboard() {
       }
 
       // Copy / Cut / Paste canvas selection (move items between stacks)
+      // Ctrl+C also mirrors image/text content to the OS clipboard when possible.
       if (mod && !e.altKey && !e.shiftKey && (key === 'c' || e.code === 'KeyC')) {
         e.preventDefault()
         store.copySelection()
+        const selected = store.getSelectedItems()
+        void copySelectionToSystemClipboard(selected)
         return
       }
       if (mod && !e.altKey && !e.shiftKey && (key === 'x' || e.code === 'KeyX')) {
         e.preventDefault()
+        // Snapshot before cut clears selection, so external paste still gets content
+        const selected = store.getSelectedItems()
         store.cutSelection()
+        void copySelectionToSystemClipboard(selected)
         return
       }
       if (mod && !e.altKey && !e.shiftKey && (key === 'v' || e.code === 'KeyV')) {
@@ -220,7 +240,7 @@ export function useKeyboard() {
         store.resetView()
         return
       }
-      // Escape: exit text/embed edit first, then leave nested stack
+      // Escape: exit text/embed edit → leave pen layer → leave nested stack
       if (key === 'escape' || e.code === 'Escape') {
         if (store.editingId || store.editingStackGroupId) {
           e.preventDefault()
@@ -228,6 +248,12 @@ export function useKeyboard() {
             editingId: null,
             editingStackGroupId: null,
           })
+          return
+        }
+        // Finalize active scribble layer and return to select
+        if (store.tool === 'scribble') {
+          e.preventDefault()
+          store.setTool('select')
           return
         }
         if (store.currentContainerId !== ROOT_CONTAINER_ID) {
@@ -296,6 +322,36 @@ export function useKeyboard() {
         return
       }
 
+      // Video frame step: [ previous · ] next (keep video selected to scrub repeatedly)
+      {
+        const isBracketLeft =
+          key === '[' || e.code === 'BracketLeft' || e.key === '【'
+        const isBracketRight =
+          key === ']' || e.code === 'BracketRight' || e.key === '】'
+        if (!mod && !e.altKey && (isBracketLeft || isBracketRight)) {
+          const videoIds = store
+            .getSelectedItems()
+            .filter((i) => i.type === 'video')
+            .map((i) => i.id)
+          if (videoIds.length > 0) {
+            e.preventDefault()
+            stepVideoFrames(videoIds, isBracketLeft ? -1 : 1)
+            return
+          }
+        }
+        // Z-order moved here so bare [ / ] can step frames
+        if (mod && !e.altKey && !e.shiftKey && isBracketLeft) {
+          e.preventDefault()
+          store.sendToBack()
+          return
+        }
+        if (mod && !e.altKey && !e.shiftKey && isBracketRight) {
+          e.preventDefault()
+          store.bringToFront()
+          return
+        }
+      }
+
       switch (key) {
         case 'v':
           if (!mod) store.setTool('select')
@@ -318,12 +374,6 @@ export function useKeyboard() {
           break
         case 'l':
           if (!mod) store.setTool('link')
-          break
-        case ']':
-          store.bringToFront()
-          break
-        case '[':
-          store.sendToBack()
           break
       }
     }

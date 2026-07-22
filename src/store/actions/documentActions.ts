@@ -8,7 +8,16 @@ import { computeAlignPatches, computePackPatches } from '../../utils/align'
 import { applyItemPatch, applyItemPatches } from '../itemPatch'
 import { revokeUnreferencedBlobs } from '../../utils/blobUrls'
 import { type AlignMode, type PackDir } from '../../utils/align'
-import { blobUrlsStillReachable, tagContainer, measureNoteCardHeight, extractHost } from '../actionHelpers'
+import {
+  blobUrlsStillReachable,
+  tagContainer,
+  measureNoteCardHeight,
+  measurePlainTextSize,
+  resolveNoteCardWidth,
+  NOTE_CARD_DEFAULT_HEIGHT,
+  LINK_CARD_DEFAULT_WIDTH,
+  extractHost,
+} from '../actionHelpers'
 import {
   loadBoardIntoRuntimeFields,
   snapshotBoard,
@@ -33,6 +42,8 @@ export type DocumentActionKey =
   | 'startScribble'
   | 'appendScribblePoint'
   | 'endScribble'
+  | 'finalizeScribbleLayer'
+  | 'enterScribbleEdit'
   | 'eraseAt'
   | 'applyCrop'
   | 'restoreCrop'
@@ -180,9 +191,10 @@ export function createDocumentActions(
     // Always coerce to string — empty only when truly absent
     const content =
       options && typeof options.content === 'string' ? options.content : ''
-    // Default width fixed; height wraps to content when pasting text
-    const width = options?.width ?? 240
-    let height = options?.height ?? 180
+    // Short notes stay compact (240); long pastes use link-card width (476)
+    // and full content-driven height (no 900px hard clip).
+    const width = resolveNoteCardWidth(content, options?.width)
+    let height = options?.height ?? NOTE_CARD_DEFAULT_HEIGHT
     if (content.length > 0 && options?.height == null) {
       height = measureNoteCardHeight(content, width, 14)
     }
@@ -194,7 +206,6 @@ export function createDocumentActions(
         x: world.x,
         y: world.y,
         width: Math.max(120, width),
-
         height: Math.max(80, height),
         rotation: 0,
         zIndex: z,
@@ -228,43 +239,66 @@ export function createDocumentActions(
       if (!targetIds.has(item.id) || item.stacked) return item
       if (to === 'text' && item.type === 'textcard') {
         changed = true
+        const content = item.content ?? ''
+        const fontSize = Math.max(14, item.fontSize || 14)
+        const fontFamily = FONT_STACKS[0].value
+        // Wrap near the note's width so long notes don't become one ultra-wide line
+        const maxWidth = Math.max(160, Math.min(900, item.width))
+        const size = measurePlainTextSize(content, {
+          fontSize,
+          fontFamily,
+          fontWeight: 500,
+          maxWidth,
+          minWidth: 48,
+          minHeight: 28,
+        })
         const next: TextItem = {
           id: item.id,
           type: 'text',
           x: item.x,
           y: item.y,
-          width: item.width,
-          height: Math.max(36, Math.min(item.height, 160)),
+          width: size.width,
+          height: size.height,
           rotation: item.rotation ?? 0,
           zIndex: item.zIndex,
-          content: item.content ?? '',
-          fontSize: Math.max(14, item.fontSize || 14),
-          fontFamily: FONT_STACKS[0].value,
+          content,
+          fontSize,
+          fontFamily,
           fontWeight: 500,
           color: item.color || '#1e1e1e',
           backgroundColor: 'transparent',
           locked: item.locked,
+          ...(item.containerId ? { containerId: item.containerId } : {}),
         }
         return next
       }
       if (to === 'textcard' && item.type === 'text') {
         changed = true
+        const content = item.content ?? ''
+        const fontSize = Math.min(18, Math.max(12, item.fontSize || 14))
+        // Content-driven note size (same rules as paste / long-article notes)
+        const width = resolveNoteCardWidth(content)
+        const height =
+          content.trim().length > 0
+            ? measureNoteCardHeight(content, width, fontSize)
+            : NOTE_CARD_DEFAULT_HEIGHT
         const next: TextCardItem = {
           id: item.id,
           type: 'textcard',
           x: item.x,
           y: item.y,
-          width: Math.max(160, item.width),
-          height: Math.max(100, item.height),
+          width: Math.max(120, width),
+          height: Math.max(80, height),
           rotation: item.rotation ?? 0,
           zIndex: item.zIndex,
-          content: item.content ?? '',
-          fontSize: Math.min(18, Math.max(12, item.fontSize || 14)),
+          content,
+          fontSize,
           color: item.color || '#6b6b6b',
           backgroundColor: '#ffffff',
           labelColor: '#8c8c8c',
           labelBackground: 'transparent',
           locked: item.locked,
+          ...(item.containerId ? { containerId: item.containerId } : {}),
         }
         return next
       }
@@ -389,7 +423,7 @@ export function createDocumentActions(
         type: 'link',
         x: world.x,
         y: world.y,
-        width: 476,
+        width: LINK_CARD_DEFAULT_WIDTH,
         height: 160,
         rotation: 0,
         zIndex: z,
@@ -412,16 +446,78 @@ export function createDocumentActions(
 
 
   startScribble: (world) => {
+    const state = get()
+    const pad = Math.max(state.scribbleWidth, 8)
+    const color = state.scribbleColor
+    const width = state.scribbleWidth
+
+    // Continue the open layer session when present
+    const existingId = state.activeScribbleId
+    const existing = existingId
+      ? state.items.find(
+          (i): i is ScribbleItem => i.id === existingId && i.type === 'scribble',
+        )
+      : undefined
+
+    if (existing) {
+      get().pushHistory()
+      const newPath: ScribblePath = {
+        id: uid('path'),
+        // Temporary local; bounds recompute maps everything to world then back
+        points: [{ x: world.x - existing.x, y: world.y - existing.y }],
+        color,
+        width,
+      }
+      const paths = [...existing.paths, newPath]
+      const worldPaths = paths.map((p) => ({
+        ...p,
+        points: p.points.map((pt) => ({
+          x: pt.x + existing.x,
+          y: pt.y + existing.y,
+        })),
+      }))
+      const boundsPad = Math.max(
+        width,
+        existing.strokeWidth,
+        ...paths.map((p) => p.width),
+        8,
+      )
+      const bounds = recomputeScribbleBounds(worldPaths, boundsPad)
+      if (!bounds) return existing.id
+
+      set((s) => ({
+        dirty: true,
+        items: s.items.map((item) =>
+          item.id === existing.id
+            ? {
+                ...item,
+                paths: bounds.paths,
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+                strokeColor: color,
+                strokeWidth: width,
+              }
+            : item,
+        ),
+        activeScribbleId: existing.id,
+        // Keep selection on the layer for move/delete, but pen toolbar uses store style
+        selectedIds: [existing.id],
+        selectedStackIds: [],
+      }))
+      return existing.id
+    }
+
+    // New layer for this pen-tool session
     get().pushHistory()
     const z = get().nextZ
-    const pad = Math.max(get().scribbleWidth, 8)
     const containerId = get().currentContainerId
-    // Local coords: first point at (pad, pad)
     const path: ScribblePath = {
       id: uid('path'),
       points: [{ x: pad, y: pad }],
-      color: get().scribbleColor,
-      width: get().scribbleWidth,
+      color,
+      width,
     }
     const item: ScribbleItem = tagContainer(
       {
@@ -434,12 +530,13 @@ export function createDocumentActions(
         rotation: 0,
         zIndex: z,
         paths: [path],
-        strokeColor: get().scribbleColor,
-        strokeWidth: get().scribbleWidth,
+        strokeColor: color,
+        strokeWidth: width,
       },
       containerId,
     )
     set((s) => ({
+      dirty: true,
       items: [...s.items, item],
       nextZ: z + 1,
       activeScribbleId: item.id,
@@ -452,6 +549,7 @@ export function createDocumentActions(
 
   appendScribblePoint: (id, world) => {
     set((s) => ({
+      dirty: true,
       items: s.items.map((item) => {
         if (item.id !== id || item.type !== 'scribble') return item
 
@@ -470,7 +568,11 @@ export function createDocumentActions(
             y: pt.y + item.y,
           })),
         }))
-        const pad = Math.max(item.strokeWidth, 8)
+        const pad = Math.max(
+          item.strokeWidth,
+          ...paths.map((p) => p.width),
+          8,
+        )
         const bounds = recomputeScribbleBounds(worldPaths, pad)
         if (!bounds) return item
 
@@ -487,13 +589,39 @@ export function createDocumentActions(
   },
 
 
-  endScribble: () => set({ activeScribbleId: null }),
+  /**
+   * Stroke finished (pointer up). Layer session stays open so the next stroke
+   * still appends to the same scribble item.
+   */
+  endScribble: () => {
+    /* intentionally keep activeScribbleId */
+  },
+
+
+  finalizeScribbleLayer: () => {
+    if (!get().activeScribbleId) return
+    set({ activeScribbleId: null })
+  },
+
+
+  enterScribbleEdit: (id) => {
+    const item = get().items.find((i) => i.id === id && i.type === 'scribble')
+    if (!item || item.stacked) return
+    set({
+      tool: 'scribble',
+      activeScribbleId: id,
+      selectedIds: [id],
+      selectedStackIds: [],
+      editingId: null,
+      editingStackGroupId: null,
+    })
+  },
 
 
   eraseAt: (world, radius) => {
     const r = radius ?? get().eraseWidth
-    set((s) => ({
-      items: s.items
+    set((s) => {
+      const nextItems = s.items
         .map((item) => {
           if (item.type !== 'scribble') return item
           // Only erase if near the scribble bbox (expanded by radius)
@@ -531,20 +659,21 @@ export function createDocumentActions(
             height: bounds.height,
           } as ScribbleItem
         })
-        .filter(Boolean) as CanvasItem[],
-      selectedIds: s.selectedIds.filter((id) =>
-        s.items.some((i) => {
-          // drop selection of fully erased items
-          if (i.id !== id) return true
-          // will be filtered after map - check if still present
-          return true
-        }),
-      ),
-    }))
-    // Clean selection of removed items
-    set((s) => ({
-      selectedIds: s.selectedIds.filter((id) => s.items.some((i) => i.id === id)),
-    }))
+        .filter(Boolean) as CanvasItem[]
+
+      const activeStillExists =
+        !!s.activeScribbleId &&
+        nextItems.some((i) => i.id === s.activeScribbleId)
+
+      return {
+        dirty: true,
+        items: nextItems,
+        selectedIds: s.selectedIds.filter((id) =>
+          nextItems.some((i) => i.id === id),
+        ),
+        activeScribbleId: activeStillExists ? s.activeScribbleId : null,
+      }
+    })
   },
 
 
@@ -766,6 +895,7 @@ export function createDocumentActions(
       selectedStackIds: [],
       editingId: null,
       editingStackGroupId: null,
+      activeScribbleId: null,
       animating: false,
       stackEnterAnim: null,
       pendingNavigation: null,

@@ -1,13 +1,21 @@
 /**
- * Peer scatter for stack enter/exit: radial push away from the focus stack,
- * slight scale-up, and light blur — driven only by peer opacity so enter/exit
- * stay symmetric and handoff does not jump (same formula on ghost + real layer).
+ * Peer scatter for stack enter/exit: radial push **away** from the focus stack
+ * center, slight scale-up, and light blur — driven only by peer opacity so
+ * enter/exit stay symmetric and handoff does not jump (same formula on ghost +
+ * real layer).
+ *
+ * Origin must be the **visual** folder center (collapsed hull), not merely
+ * stack.width/2 — asymmetric fan bounds otherwise make peers between the two
+ * centers slide *toward* the pile.
  */
 
-export const PEER_SCATTER_MAX_PX = 56
-/** Extra scale at full scatter (1 → 1.12) */
-export const PEER_SCATTER_MAX_SCALE_ADD = 0.12
-export const PEER_SCATTER_MAX_BLUR_PX = 6
+export const PEER_SCATTER_MAX_PX = 96
+/** Extra push as a fraction of distance from focus (capped). */
+export const PEER_SCATTER_DIST_FACTOR = 0.18
+export const PEER_SCATTER_DIST_CAP_PX = 72
+/** Extra scale at full scatter (kept mild so near edges do not read as inward). */
+export const PEER_SCATTER_MAX_SCALE_ADD = 0.06
+export const PEER_SCATTER_MAX_BLUR_PX = 5
 
 export function clamp01(t: number): number {
   return Math.max(0, Math.min(1, t))
@@ -32,6 +40,10 @@ export function peerFallbackAngle(seed: string): number {
   return ((h >>> 0) % 360) * (Math.PI / 180)
 }
 
+/**
+ * Unit direction from `origin` (focus stack) → `center` (peer), plus push distance.
+ * Always radiates **outward** from the opened / exiting stack.
+ */
 export function peerRadialOffset(
   center: { x: number; y: number },
   origin: { x: number; y: number },
@@ -41,6 +53,7 @@ export function peerRadialOffset(
   const a = clamp01(amount)
   if (a < 1e-6) return { dx: 0, dy: 0 }
 
+  // Peer − focus ⇒ away from the stack the user opened
   let vx = center.x - origin.x
   let vy = center.y - origin.y
   let len = Math.hypot(vx, vy)
@@ -49,9 +62,13 @@ export function peerRadialOffset(
     vx = Math.cos(ang)
     vy = Math.sin(ang)
     len = 1
+  } else {
+    vx /= len
+    vy /= len
   }
-  const dist = PEER_SCATTER_MAX_PX * a
-  return { dx: (vx / len) * dist, dy: (vy / len) * dist }
+  const distBoost = Math.min(PEER_SCATTER_DIST_CAP_PX, len * PEER_SCATTER_DIST_FACTOR)
+  const dist = (PEER_SCATTER_MAX_PX + distBoost) * a
+  return { dx: vx * dist, dy: vy * dist }
 }
 
 export type PeerScatterStyle = {
@@ -81,8 +98,12 @@ export function peerScatterStyle(
   const scale = 1 + PEER_SCATTER_MAX_SCALE_ADD * amount
   const blur = PEER_SCATTER_MAX_BLUR_PX * amount
 
-  // Translate scatter, then scale about the peer center (same space as children).
-  const transform = `translate(${dx}px, ${dy}px) translate(${center.x}px, ${center.y}px) scale(${scale}) translate(${-center.x}px, ${-center.y}px)`
+  // Pure radial translate first (reads as scatter from focus), then mild scale
+  // about the peer center — not about the focus origin.
+  const transform =
+    scale > 1.001
+      ? `translate3d(${dx}px, ${dy}px, 0) translate3d(${center.x}px, ${center.y}px, 0) scale(${scale}) translate3d(${-center.x}px, ${-center.y}px, 0)`
+      : `translate3d(${dx}px, ${dy}px, 0)`
 
   return {
     opacity,

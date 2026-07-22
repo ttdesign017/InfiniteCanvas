@@ -663,132 +663,105 @@ fn urlencoding_encode(s: &str) -> String {
     out
 }
 
-/// FxTwitter / VxTwitter — X blocks direct HTML scrapers and Microlink often
-/// returns success with no post image.
-async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPreview> {
-    let status_id = extract_x_status_id(url)?;
-    let endpoints = [
-        format!("https://api.fxtwitter.com/status/{status_id}"),
-        format!("https://api.vxtwitter.com/Twitter/status/{status_id}"),
-    ];
+/// Parse one FxTwitter / VxTwitter JSON payload into a LinkPreview.
+fn parse_x_provider_json(json: &serde_json::Value, screen_from_url: &str) -> Option<LinkPreview> {
+    let tweet = json
+        .get("tweet")
+        .cloned()
+        .unwrap_or_else(|| json.clone());
 
-    for endpoint in endpoints {
-        let Ok(resp) = client.get(&endpoint).send().await else {
-            continue;
-        };
-        if !resp.status().is_success() {
-            continue;
+    // Reject empty / non-tweet payloads early
+    let has_tweet_signal = tweet.get("text").is_some()
+        || tweet.get("full_text").is_some()
+        || tweet.get("tweetID").is_some()
+        || tweet.get("tweetURL").is_some()
+        || tweet.get("author").is_some()
+        || tweet.get("user").is_some()
+        || tweet.get("media").is_some()
+        || tweet.get("article").is_some();
+    if !has_tweet_signal {
+        return None;
+    }
+
+    let text = tweet
+        .get("text")
+        .or_else(|| tweet.get("full_text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let author = tweet
+        .get("author")
+        .or_else(|| tweet.get("user"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let screen_name = author
+        .get("screen_name")
+        .or_else(|| author.get("screenName"))
+        .or_else(|| tweet.get("user_screen_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(screen_from_url)
+        .trim()
+        .trim_start_matches('@')
+        .to_string();
+
+    let display_name = author
+        .get("name")
+        .or_else(|| tweet.get("user_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(screen_name.as_str())
+        .trim()
+        .to_string();
+
+    let mut avatar = author
+        .get("avatar_url")
+        .or_else(|| author.get("profile_image_url_https"))
+        .or_else(|| tweet.get("user_profile_image_url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(ref a) = avatar {
+        // Prefer higher-res avatar for the card thumb fallback
+        let upgraded = a
+            .replace("_normal.", "_400x400.")
+            .replace("_bigger.", "_400x400.")
+            .replace("_mini.", "_400x400.")
+            .replace("_200x200.", "_400x400.");
+        avatar = Some(upgraded);
+    }
+
+    let banner = author
+        .get("banner_url")
+        .or_else(|| tweet.get("user_banner_url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut image: Option<String> = None;
+    if let Some(media) = tweet.get("media") {
+        if let Some(photos) = media.get("photos").and_then(|v| v.as_array()) {
+            if let Some(url) = photos
+                .first()
+                .and_then(|p| p.get("url"))
+                .and_then(|v| v.as_str())
+            {
+                image = Some(url.to_string());
+            }
         }
-        let Some(json) = read_json_limited(resp).await else {
-            continue;
-        };
-
-        let tweet = json
-            .get("tweet")
-            .cloned()
-            .unwrap_or_else(|| json.clone());
-
-        let text = tweet
-            .get("text")
-            .or_else(|| tweet.get("full_text"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        let author = tweet
-            .get("author")
-            .or_else(|| tweet.get("user"))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-
-        let screen_name = author
-            .get("screen_name")
-            .or_else(|| author.get("screenName"))
-            .or_else(|| tweet.get("user_screen_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .trim_start_matches('@')
-            .to_string();
-
-        let display_name = author
-            .get("name")
-            .or_else(|| tweet.get("user_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(screen_name.as_str())
-            .trim()
-            .to_string();
-
-        let mut avatar = author
-            .get("avatar_url")
-            .or_else(|| author.get("profile_image_url_https"))
-            .or_else(|| tweet.get("user_profile_image_url"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        if let Some(ref a) = avatar {
-            // Prefer higher-res avatar for the card thumb fallback
-            let upgraded = a
-                .replace("_normal.", "_400x400.")
-                .replace("_bigger.", "_400x400.")
-                .replace("_mini.", "_400x400.")
-                .replace("_200x200.", "_400x400.");
-            avatar = Some(upgraded);
-        }
-
-        let banner = author
-            .get("banner_url")
-            .or_else(|| tweet.get("user_banner_url"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let mut image: Option<String> = None;
-        if let Some(media) = tweet.get("media") {
-            if let Some(photos) = media.get("photos").and_then(|v| v.as_array()) {
-                if let Some(url) = photos
+        if image.is_none() {
+            if let Some(videos) = media.get("videos").and_then(|v| v.as_array()) {
+                if let Some(url) = videos
                     .first()
-                    .and_then(|p| p.get("url"))
+                    .and_then(|p| p.get("thumbnail_url").or_else(|| p.get("url")))
                     .and_then(|v| v.as_str())
                 {
                     image = Some(url.to_string());
                 }
             }
-            if image.is_none() {
-                if let Some(videos) = media.get("videos").and_then(|v| v.as_array()) {
-                    if let Some(url) = videos
-                        .first()
-                        .and_then(|p| p.get("thumbnail_url").or_else(|| p.get("url")))
-                        .and_then(|v| v.as_str())
-                    {
-                        image = Some(url.to_string());
-                    }
-                }
-            }
-            if image.is_none() {
-                if let Some(all) = media.get("all").and_then(|v| v.as_array()) {
-                    for item in all {
-                        if let Some(url) = item
-                            .get("thumbnail_url")
-                            .or_else(|| item.get("url"))
-                            .and_then(|v| v.as_str())
-                        {
-                            image = Some(url.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
         }
         if image.is_none() {
-            if let Some(urls) = tweet.get("mediaURLs").and_then(|v| v.as_array()) {
-                if let Some(url) = urls.first().and_then(|v| v.as_str()) {
-                    image = Some(url.to_string());
-                }
-            }
-        }
-        if image.is_none() {
-            if let Some(ext) = tweet.get("media_extended").and_then(|v| v.as_array()) {
-                for item in ext {
+            if let Some(all) = media.get("all").and_then(|v| v.as_array()) {
+                for item in all {
                     if let Some(url) = item
                         .get("thumbnail_url")
                         .or_else(|| item.get("url"))
@@ -800,86 +773,198 @@ async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPrev
                 }
             }
         }
-
-        // X Articles put the cover under `article`, while `media` stays null.
-        // e.g. https://x.com/LexnLin/status/2076422557180608888
-        let mut article_title: Option<String> = None;
-        let mut article_desc: Option<String> = None;
-        if let Some(article) = tweet.get("article") {
-            article_title = article
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            article_desc = article
-                .get("preview_text")
-                .or_else(|| article.get("description"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            if image.is_none() {
-                // vxtwitter: article.image
-                if let Some(url) = article.get("image").and_then(|v| v.as_str()) {
-                    image = Some(url.to_string());
-                }
+    }
+    if image.is_none() {
+        if let Some(urls) = tweet.get("mediaURLs").and_then(|v| v.as_array()) {
+            if let Some(url) = urls.first().and_then(|v| v.as_str()) {
+                image = Some(url.to_string());
             }
-            if image.is_none() {
-                // fxtwitter: article.cover_media.media_info.original_img_url
-                if let Some(url) = article
-                    .get("cover_media")
-                    .and_then(|c| c.get("media_info"))
-                    .and_then(|m| {
-                        m.get("original_img_url")
-                            .or_else(|| m.get("original_img_url_https"))
-                    })
+        }
+    }
+    if image.is_none() {
+        if let Some(ext) = tweet.get("media_extended").and_then(|v| v.as_array()) {
+            for item in ext {
+                if let Some(url) = item
+                    .get("thumbnail_url")
+                    .or_else(|| item.get("url"))
                     .and_then(|v| v.as_str())
                 {
                     image = Some(url.to_string());
+                    break;
                 }
             }
         }
-
-        // Text-only posts: still show author banner/avatar so the card isn't blank
-        if image.is_none() {
-            image = banner.or(avatar.clone());
-        }
-
-        let author_label = if !display_name.is_empty() && !screen_name.is_empty() {
-            format!("{display_name} (@{screen_name})")
-        } else if !display_name.is_empty() {
-            display_name
-        } else if !screen_name.is_empty() {
-            format!("@{screen_name}")
-        } else {
-            "Post on X".into()
-        };
-
-        let has_article_title = article_title.is_some();
-        let title = article_title.unwrap_or_else(|| author_label.clone());
-
-        let description = if let Some(d) = article_desc {
-            d.chars().take(280).collect()
-        } else if text.is_empty() {
-            if has_article_title {
-                author_label
-            } else {
-                "X".into()
-            }
-        } else {
-            text.chars().take(280).collect()
-        };
-
-        return Some(LinkPreview {
-            title: Some(title),
-            description: Some(description),
-            image,
-            favicon: Some("https://x.com/favicon.ico".into()),
-            site_name: Some("X".into()),
-        });
     }
 
-    None
+    // X Articles put the cover under `article`, while `media` stays null.
+    // e.g. https://x.com/LexnLin/status/2076422557180608888
+    let mut article_title: Option<String> = None;
+    let mut article_desc: Option<String> = None;
+    if let Some(article) = tweet.get("article") {
+        article_title = article
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        article_desc = article
+            .get("preview_text")
+            .or_else(|| article.get("description"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if image.is_none() {
+            // vxtwitter: article.image
+            if let Some(url) = article.get("image").and_then(|v| v.as_str()) {
+                image = Some(url.to_string());
+            }
+        }
+        if image.is_none() {
+            // fxtwitter: article.cover_media.media_info.original_img_url
+            if let Some(url) = article
+                .get("cover_media")
+                .and_then(|c| c.get("media_info"))
+                .and_then(|m| {
+                    m.get("original_img_url")
+                        .or_else(|| m.get("original_img_url_https"))
+                })
+                .and_then(|v| v.as_str())
+            {
+                image = Some(url.to_string());
+            }
+        }
+    }
+
+    // Text-only posts: still show author banner/avatar so the card isn't blank
+    if image.is_none() {
+        image = banner.or(avatar.clone());
+    }
+
+    let author_label = if !display_name.is_empty() && !screen_name.is_empty() {
+        format!("{display_name} (@{screen_name})")
+    } else if !display_name.is_empty() {
+        display_name
+    } else if !screen_name.is_empty() {
+        format!("@{screen_name}")
+    } else {
+        "Post on X".into()
+    };
+
+    let has_article_title = article_title.is_some();
+    let title = article_title.unwrap_or_else(|| author_label.clone());
+
+    let description = if let Some(d) = article_desc {
+        d.chars().take(280).collect()
+    } else if text.is_empty() {
+        if has_article_title {
+            author_label
+        } else {
+            "X".into()
+        }
+    } else {
+        text.chars().take(280).collect()
+    };
+
+    Some(LinkPreview {
+        title: Some(title),
+        description: Some(description),
+        image,
+        favicon: Some("https://x.com/favicon.ico".into()),
+        site_name: Some("X".into()),
+    })
+}
+
+fn x_preview_image_score(preview: &LinkPreview) -> i32 {
+    match preview.image.as_deref() {
+        None => 0,
+        Some(img) if img.contains("profile_images") || img.contains("profile_banners") => 1,
+        Some(_) => 3,
+    }
+}
+
+async fn fetch_x_endpoint(
+    client: &reqwest::Client,
+    endpoint: &str,
+    screen_from_url: &str,
+) -> Option<LinkPreview> {
+    let Ok(resp) = client.get(endpoint).send().await else {
+        return None;
+    };
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json = read_json_limited(resp).await?;
+    parse_x_provider_json(&json, screen_from_url)
+}
+
+fn merge_x_previews(best: Option<LinkPreview>, candidate: LinkPreview) -> Option<LinkPreview> {
+    match best {
+        None => Some(candidate),
+        Some(prev) => {
+            if x_preview_image_score(&candidate) > x_preview_image_score(&prev) {
+                let mut merged = candidate;
+                if merged.title.is_none() {
+                    merged.title = prev.title;
+                }
+                if merged.description.is_none() {
+                    merged.description = prev.description;
+                }
+                Some(merged)
+            } else {
+                let mut merged = prev;
+                if merged.image.is_none() {
+                    merged.image = candidate.image;
+                }
+                if merged.title.is_none() {
+                    merged.title = candidate.title;
+                }
+                if merged.description.is_none() {
+                    merged.description = candidate.description;
+                }
+                Some(merged)
+            }
+        }
+    }
+}
+
+/// FxTwitter / VxTwitter — X blocks direct HTML scrapers and Microlink often
+/// returns success with no post image. Try providers until we get real media
+/// (avatar/banner-only results keep searching).
+async fn fetch_x_preview(client: &reqwest::Client, url: &Url) -> Option<LinkPreview> {
+    let status_id = extract_x_status_id(url)?;
+
+    let mut screen_from_url = String::new();
+    if let Some(mut segs) = url.path_segments() {
+        if let Some(first) = segs.next() {
+            if first != "i" && first != "status" && !first.is_empty() {
+                screen_from_url = first.to_string();
+            }
+        }
+    }
+
+    let mut endpoints = vec![format!("https://api.fxtwitter.com/status/{status_id}")];
+    if !screen_from_url.is_empty() {
+        endpoints.push(format!(
+            "https://api.vxtwitter.com/{screen_from_url}/status/{status_id}"
+        ));
+    }
+    endpoints.push(format!(
+        "https://api.vxtwitter.com/Twitter/status/{status_id}"
+    ));
+
+    let mut best = None;
+    for endpoint in endpoints {
+        if let Some(candidate) = fetch_x_endpoint(client, &endpoint, &screen_from_url).await {
+            best = merge_x_previews(best, candidate);
+            if best
+                .as_ref()
+                .is_some_and(|p| x_preview_image_score(p) >= 3)
+            {
+                return best;
+            }
+        }
+    }
+    best
 }
 
 async fn embed_best_favicon(

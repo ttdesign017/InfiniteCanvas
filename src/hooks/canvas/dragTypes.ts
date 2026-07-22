@@ -18,6 +18,8 @@ export type DragMode =
       isStacked: boolean
       stackGroupId?: string
       canEditText: boolean
+      /** Double-click reopens a scribble layer for more strokes */
+      canEditScribble?: boolean
       /** Link double-click open (pointer-capture often kills native dblclick) */
       canOpenLink?: boolean
       linkUrl?: string

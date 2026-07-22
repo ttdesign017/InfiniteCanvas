@@ -271,6 +271,7 @@ export function useCanvasPointerGestures(deps: {
       const isStacked = !!(item.stacked && item.stackGroupId)
       const canEditText =
         !isStacked && (item.type === 'text' || item.type === 'textcard')
+      const canEditScribble = !isStacked && item.type === 'scribble'
 
       // Crop mode (hold C)
       if (store.cHeld) {
@@ -307,10 +308,15 @@ export function useCanvasPointerGestures(deps: {
 
       e.stopPropagation()
 
-      // Double-click (detail>=2): text edit, open link, or enter stack
+      // Double-click (detail>=2): text edit, scribble re-edit, open link, or enter stack
       if (e.detail >= 2) {
         if (canEditText) {
           enterTextEdit(item.id)
+          return
+        }
+        if (canEditScribble) {
+          e.preventDefault()
+          store.enterScribbleEdit(item.id)
           return
         }
         if (item.type === 'link' && !isStacked) {
@@ -398,6 +404,7 @@ export function useCanvasPointerGestures(deps: {
         isStacked,
         stackGroupId: item.stackGroupId,
         canEditText,
+        canEditScribble,
         canOpenLink,
         linkUrl,
         startClientX: e.clientX,
@@ -1051,6 +1058,8 @@ export function useCanvasPointerGestures(deps: {
         if (isDbl) {
           if (drag.canEditText) {
             enterTextEdit(drag.itemId)
+          } else if (drag.canEditScribble) {
+            store.enterScribbleEdit(drag.itemId)
           } else if (drag.canOpenLink && drag.linkUrl) {
             // pointer-capture often suppresses native dblclick — open here
             void openExternal(drag.linkUrl)

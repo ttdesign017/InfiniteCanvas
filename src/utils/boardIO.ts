@@ -13,6 +13,10 @@ import {
 } from '../board-ops/fileOps'
 import { formatBoardError } from '../board-ops/errors'
 import { perfMark, perfMeasure } from './perfMarks'
+import {
+  askUnsavedPrompt,
+  UNSAVED_PROMPT_COPY,
+} from '../hooks/unsavedPrompt'
 
 /**
  * Save current board. Uses existing path when `saveAs` is false and a path is known.
@@ -97,13 +101,14 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
 export async function openBoardFromDisk(): Promise<boolean> {
   const store = useCanvasStore.getState()
   if (store.dirty) {
-    const saveFirst = await desktop.askYesNo(
-      'This canvas has unsaved changes. Save it before opening another file?\n\nChoosing No will discard the changes and open the selected file.',
-    )
-    if (saveFirst) {
+    // Same in-app Save / Discard / Cancel chrome as exit prompt
+    const choice = await askUnsavedPrompt(UNSAVED_PROMPT_COPY.open)
+    if (choice === 'cancel') return false
+    if (choice === 'save') {
       const ok = await saveCurrentBoard()
       if (!ok) return false
     }
+    // 'discard' → continue to file picker without saving
   }
 
   const path = await desktop.loadBoardDialog()
@@ -115,28 +120,8 @@ export async function openBoardFromDisk(): Promise<boolean> {
 /**
  * Prompt before discarding work.
  * Returns: 'save' | 'discard' | 'cancel'
+ * Uses the same in-app dialog as exit / open-file.
  */
 export async function promptUnsavedChanges(): Promise<'save' | 'discard' | 'cancel'> {
-  const store = useCanvasStore.getState()
-  if (!store.dirty) return 'discard'
-
-  // Two-step native ask: Save? then if no, Discard?
-  if (desktop.isDesktop()) {
-    const wantSave = await desktop.askYesNo(
-      'This canvas has unsaved changes.\n\nSave it as an Infinite Canvas project (.icanvas)?\n\nYes = save and exit\nNo = continue to the discard/cancel step',
-      'Save Canvas',
-    )
-    if (wantSave) return 'save'
-
-    const discard = await desktop.askYesNo(
-      'Continue without saving? Unsaved changes will be lost.\n\nYes = discard changes\nNo = cancel and return to editing',
-      'Discard Changes',
-    )
-    return discard ? 'discard' : 'cancel'
-  }
-
-  // Browser fallback
-  if (window.confirm('This canvas has unsaved changes. Save it?')) return 'save'
-  if (window.confirm('Discard the unsaved changes?')) return 'discard'
-  return 'cancel'
+  return askUnsavedPrompt(UNSAVED_PROMPT_COPY.close)
 }

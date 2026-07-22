@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { LinkCardItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import {
+  clearLinkPreviewGaveUp,
   extractDomain,
   fetchLinkPreview,
   linkPreviewHasGaveUp,
@@ -49,6 +50,10 @@ export function LinkCardView({ item, selected }: Props) {
   const [loading, setLoading] = useState(false)
   const [imgBroken, setImgBroken] = useState(false)
   const [menu, setMenu] = useState<MenuState>(null)
+  /** Bumps to re-run the fetch effect after a manual retry. */
+  const [retryToken, setRetryToken] = useState(0)
+  /** Consumed once by the effect so a successful retry does not loop forever. */
+  const forceRetryRef = useRef(false)
   const fetchGen = useRef(0)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -96,13 +101,15 @@ export function LinkCardView({ item, selected }: Props) {
       imageLooksWeak &&
       isPreviewSpecialHost(url) &&
       !missingImageRetried.has(item.id)
+    const forceRetry = forceRetryRef.current
+    if (forceRetry) forceRetryRef.current = false
 
-    if (hasStoredPreview && !canRetryMissingImage) {
+    if (hasStoredPreview && !canRetryMissingImage && !forceRetry) {
       setLoading(false)
       return
     }
     // Already timed out / failed this session — settle as complete, no spinner
-    if (linkPreviewHasGaveUp(url) && !canRetryMissingImage) {
+    if (linkPreviewHasGaveUp(url) && !canRetryMissingImage && !forceRetry) {
       if (item.previewStatus !== 'complete') {
         updateItem(item.id, { previewStatus: 'complete' }, { dirty: false })
       }
@@ -169,7 +176,28 @@ export function LinkCardView({ item, selected }: Props) {
     return () => {
       cancelled = true
     }
-  }, [item.id, item.url, updateItem, item.previewStatus])
+  }, [item.id, item.url, updateItem, item.previewStatus, retryToken])
+
+  const retryPreview = (e: ReactMouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const url = item.url?.trim()
+    if (!url) return
+    clearLinkPreviewGaveUp(url)
+    missingImageRetried.delete(item.id)
+    forceRetryRef.current = true
+    setImgBroken(false)
+    updateItem(
+      item.id,
+      {
+        previewStatus: 'pending',
+        // Drop broken/weak image so the skeleton + re-fetch path runs cleanly
+        image: undefined,
+      },
+      { dirty: false },
+    )
+    setRetryToken((n) => n + 1)
+  }
 
   // Dismiss context menu on outside click / scroll / Escape
   useEffect(() => {
@@ -240,6 +268,11 @@ export function LinkCardView({ item, selected }: Props) {
       : item.siteName && item.siteName !== domain
         ? item.siteName
         : ''
+  const canManualRetry =
+    Boolean(item.url?.trim()) &&
+    !loading &&
+    !editing &&
+    (!showImage || imgBroken)
 
   return (
     <div
@@ -269,16 +302,24 @@ export function LinkCardView({ item, selected }: Props) {
     >
       <div className="bookmark-body">
         <div className="bookmark-text">
-          <div className="bookmark-title" title={item.title}>
-            {item.title || 'Untitled link'}
-          </div>
-          {subtitle ? (
-            <div className="bookmark-desc" title={subtitle}>
-              {subtitle}
+          {loading && !subtitle ? (
+            <div className="bookmark-skeleton" aria-busy="true" aria-label="Loading preview">
+              <span className="bookmark-skeleton-line" style={{ width: '88%' }} />
+              <span className="bookmark-skeleton-line" style={{ width: '62%' }} />
+              <span className="bookmark-skeleton-line" style={{ width: '74%' }} />
             </div>
-          ) : loading ? (
-            <div className="bookmark-desc bookmark-desc-loading">Fetching preview…</div>
-          ) : null}
+          ) : (
+            <>
+              <div className="bookmark-title" title={item.title}>
+                {item.title || 'Untitled link'}
+              </div>
+              {subtitle ? (
+                <div className="bookmark-desc" title={subtitle}>
+                  {subtitle}
+                </div>
+              ) : null}
+            </>
+          )}
           <div className="bookmark-footer">
             <span className="bookmark-favicon" aria-hidden>
               {item.favicon ? (
@@ -298,7 +339,6 @@ export function LinkCardView({ item, selected }: Props) {
             <span className="bookmark-url" title={displayUrl || 'No URL'}>
               {displayUrl || 'No URL'}
             </span>
-            {loading && <span className="bookmark-spinner" aria-label="Loading" />}
           </div>
         </div>
 
@@ -360,8 +400,37 @@ export function LinkCardView({ item, selected }: Props) {
         ) : loading ? (
           <div className="bookmark-thumb bookmark-thumb-skeleton" aria-hidden />
         ) : (
-          <div className="bookmark-thumb bookmark-thumb-empty" aria-hidden>
-            <span>↗</span>
+          <div className="bookmark-thumb bookmark-thumb-empty">
+            {canManualRetry ? (
+              <button
+                type="button"
+                className="bookmark-thumb-retry"
+                title="Retry preview"
+                aria-label="Retry preview"
+                onPointerDown={(e) => {
+                  e.stopPropagation()
+                }}
+                onClick={retryPreview}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M13.5 8a5.5 5.5 0 1 1-1.4-3.6"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M13.5 3.5v3h-3"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            ) : (
+              <span aria-hidden>↗</span>
+            )}
           </div>
         )}
       </div>

@@ -34,7 +34,27 @@ export function createViewportActions(
 ): Pick<CanvasState, ViewportActionKey> {
   return {
 
-  setTool: (tool) => set({ tool, editingId: null, editingStackGroupId: null }),
+  setTool: (tool) => {
+    const s = get()
+    // Leaving the pen tool closes the current scribble layer session
+    const leavingScribble = s.tool === 'scribble' && tool !== 'scribble'
+    const activeId = s.activeScribbleId
+    set({
+      tool,
+      editingId: null,
+      editingStackGroupId: null,
+      ...(leavingScribble
+        ? {
+            activeScribbleId: null,
+            // Drop the layer selection so its raise-z chrome does not block picks
+            selectedIds: activeId
+              ? s.selectedIds.filter((id) => id !== activeId)
+              : s.selectedIds,
+            selectedStackIds: [],
+          }
+        : {}),
+    })
+  },
 
   setEditingId: (id) => set({ editingId: id, editingStackGroupId: null }),
 

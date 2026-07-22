@@ -933,7 +933,7 @@ body,
   top: 0;
   border-radius: 10px;
   background: linear-gradient(165deg, #f7f8fa 0%, #e8ecf1 100%);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: none;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
   transform-origin: top left;
   pointer-events: none !important;
@@ -989,7 +989,8 @@ body,
   left: 0;
   top: 0;
   box-sizing: border-box;
-  border: 1.5px solid var(--accent);
+  /* 1 screen-px stroke regardless of canvas zoom (parent applies scale(zoom)) */
+  border: calc(1px / var(--canvas-zoom, 1)) solid var(--accent);
   background: rgba(13, 153, 255, 0.04);
   pointer-events: auto;
   cursor: move;
@@ -997,15 +998,18 @@ body,
 }
 .group-scale-handle {
   position: absolute;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
   background: #fff;
-  border: 1.5px solid var(--accent);
-  border-radius: 2px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--accent);
+  border-radius: 1px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
   pointer-events: auto;
   z-index: 3;
+  /* Same screen-constant size as single-item corner handles */
+  transform: scale(calc(1 / var(--canvas-zoom, 1)));
+  transform-origin: center center;
 }
 .group-scale-handle.handle-nw {
   left: 0;
@@ -1281,42 +1285,49 @@ body,
   z-index: 100000 !important;
 }
 
-/* Corner handles — above item content, own pointer path (not parent move) */
+/*
+ * Corner handles — screen-constant 7px under canvas zoom.
+ * Parent .canvas-world sets --canvas-zoom; counter-scale keeps size fixed on screen.
+ */
 .resize-handle {
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 7px;
+  height: 7px;
   background: #ffffff;
-  border: 1.5px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 1px;
   z-index: 50;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
   pointer-events: auto !important;
   touch-action: none;
+  transform: scale(calc(1 / var(--canvas-zoom, 1)));
+  transform-origin: center center;
 }
 
-.resize-handle.nw { left: -5px; top: -5px; cursor: nwse-resize; }
-.resize-handle.ne { right: -5px; top: -5px; cursor: nesw-resize; }
-.resize-handle.sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
-.resize-handle.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.resize-handle.nw { left: -3.5px; top: -3.5px; cursor: nwse-resize; }
+.resize-handle.ne { right: -3.5px; top: -3.5px; cursor: nesw-resize; }
+.resize-handle.sw { left: -3.5px; bottom: -3.5px; cursor: nesw-resize; }
+.resize-handle.se { right: -3.5px; bottom: -3.5px; cursor: nwse-resize; }
 
 /* Audio selection is visual only: show familiar card corners without resize. */
 .audio-selection-handle {
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 7px;
+  height: 7px;
   background: #ffffff;
-  border: 1.5px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 1px;
   z-index: 50;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
   pointer-events: none !important;
+  transform: scale(calc(1 / var(--canvas-zoom, 1)));
+  transform-origin: center center;
 }
 
-.audio-selection-handle.nw { left: -5px; top: -5px; }
-.audio-selection-handle.ne { right: -5px; top: -5px; }
-.audio-selection-handle.sw { left: -5px; bottom: -5px; }
-.audio-selection-handle.se { right: -5px; bottom: -5px; }
+.audio-selection-handle.nw { left: -3.5px; top: -3.5px; }
+.audio-selection-handle.ne { right: -3.5px; top: -3.5px; }
+.audio-selection-handle.sw { left: -3.5px; bottom: -3.5px; }
+.audio-selection-handle.se { right: -3.5px; bottom: -3.5px; }
 
 /* Edge hit zones */
 .resize-edge {
@@ -1327,35 +1338,33 @@ body,
   touch-action: none;
 }
 
-
-
 .resize-edge.n {
-  left: 12px;
-  right: 12px;
+  left: 7px;
+  right: 7px;
   top: -6px;
   height: 12px;
   cursor: ns-resize;
 }
 
 .resize-edge.s {
-  left: 12px;
-  right: 12px;
+  left: 7px;
+  right: 7px;
   bottom: -6px;
   height: 12px;
   cursor: ns-resize;
 }
 
 .resize-edge.e {
-  top: 12px;
-  bottom: 12px;
+  top: 7px;
+  bottom: 7px;
   right: -6px;
   width: 12px;
   cursor: ew-resize;
 }
 
 .resize-edge.w {
-  top: 12px;
-  bottom: 12px;
+  top: 7px;
+  bottom: 7px;
   left: -6px;
   width: 12px;
   cursor: ew-resize;
@@ -1381,19 +1390,20 @@ body,
   overflow: hidden;
   background: #ffffff;
   border: none;
-  /* Soft shadow only — no hairline “black” edge ring */
+  outline: none;
+  /* Soft shadow only — no hairline edge (borders flash dark during stack exit transforms) */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-  /* Smooth transition into stacked card look */
+  /* Smooth transition into stacked card look (no border-color — avoids black fringe) */
   transition:
     border-radius 0.55s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.55s cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 0.55s ease;
+    box-shadow 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* After Quick Stack — rounded + light edge so layers stay readable */
+/* After Quick Stack — rounded + depth only (no 1px border; GPU scale/morph turns it black) */
 .media-item.is-stacked {
   border-radius: 10px;
-  border: 1px solid rgba(245, 245, 245, 0.45);
+  border: none;
+  outline: none;
   box-shadow:
     0 10px 28px rgba(0, 0, 0, 0.2),
     0 3px 8px rgba(0, 0, 0, 0.16);
@@ -1506,6 +1516,16 @@ body,
 
 .video-player.is-lazy .video-play-btn {
   opacity: 0.92;
+  pointer-events: none;
+}
+
+/* Stack nav ghost: static still only — no hit targets */
+.video-player.is-static-preview {
+  pointer-events: none;
+}
+.video-player.is-static-preview .video-play-btn {
+  pointer-events: none;
+  opacity: 0.75;
 }
 
 .video-play-btn {
@@ -1879,6 +1899,9 @@ body,
   gap: 0;
   background: #fff;
   border-color: rgba(15, 15, 15, 0.1);
+  /* Clip thumb + body to the same 10px radius as .notion-card (right side was square). */
+  overflow: hidden;
+  border-radius: 10px;
 }
 
 .bookmark-card .bookmark-body {
@@ -1887,6 +1910,7 @@ body,
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  border-radius: inherit;
 }
 
 .bookmark-text {
@@ -1922,10 +1946,46 @@ body,
   word-break: break-word;
 }
 
-.bookmark-desc-loading {
-  color: var(--text-faint);
-  font-style: italic;
-  -webkit-line-clamp: 1;
+/* Content skeleton: three unequal bars with shimmer (replaces "Fetching preview…") */
+.bookmark-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 4px;
+  width: 100%;
+}
+
+.bookmark-skeleton-line {
+  display: block;
+  height: 11px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    #e8e8e8 0%,
+    #e8e8e8 35%,
+    #f3f3f3 50%,
+    #e8e8e8 65%,
+    #e8e8e8 100%
+  );
+  background-size: 200% 100%;
+  animation: bookmark-skeleton-scroll 1.15s ease-in-out infinite;
+}
+
+.bookmark-skeleton-line:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.bookmark-skeleton-line:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+@keyframes bookmark-skeleton-scroll {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 .bookmark-footer {
@@ -1972,23 +2032,6 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-.bookmark-spinner {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(15, 15, 15, 0.12);
-  border-top-color: var(--accent);
-  animation: bookmark-spin 0.7s linear infinite;
-  flex-shrink: 0;
-  margin-left: 2px;
-}
-
-@keyframes bookmark-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Thumb spans full card height (no action bar) */
 .bookmark-thumb {
   width: 36%;
@@ -2000,6 +2043,8 @@ body,
   background: #f0f0f0;
   border-left: 1px solid rgba(15, 15, 15, 0.08);
   overflow: hidden;
+  /* Match card radius on the right edge (left is text, already soft via overflow). */
+  border-radius: 0 10px 10px 0;
 }
 
 .bookmark-thumb img {
@@ -2016,11 +2061,41 @@ body,
 }
 
 .bookmark-thumb-empty {
+  position: relative;
   display: grid;
   place-items: center;
   color: rgba(15, 15, 15, 0.22);
   font-size: 28px;
   background: linear-gradient(160deg, #f7f7f7, #efefef);
+}
+
+.bookmark-thumb-retry {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 15, 15, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(15, 15, 15, 0.55);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(15, 15, 15, 0.08);
+  transition:
+    color 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.bookmark-thumb-retry:hover {
+  color: var(--accent, #0d99ff);
+  border-color: rgba(13, 153, 255, 0.35);
+  background: #fff;
+  transform: scale(1.04);
+}
+
+.bookmark-thumb-retry:active {
+  transform: scale(0.96);
 }
 
 @keyframes bookmark-shimmer {
@@ -2334,21 +2409,41 @@ body,
   margin-top: -0.375px;
 }
 
+/* Eraser radius indicator (screen space) */
+.eraser-cursor {
+  position: fixed;
+  z-index: 1000000;
+  box-sizing: border-box;
+  border: 1px dashed rgba(40, 40, 40, 0.55);
+  border-radius: 50%;
+  pointer-events: none;
+  background: transparent;
+}
+
 /* Scribble */
 
 .scribble-item {
   width: 100%;
   height: 100%;
+  pointer-events: none;
 }
 
+/* No bbox chrome — selection is stroke-only hits */
 .scribble-item.is-selected {
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 2px;
+  background: transparent;
 }
 
 .scribble-svg {
   display: block;
   overflow: visible;
+  pointer-events: none;
+}
+
+/* Only the stroke (plus hit slop path) is pickable — empty bbox passes through */
+.scribble-svg .scribble-hit {
+  pointer-events: stroke;
+}
+.scribble-svg .scribble-stroke {
   pointer-events: none;
 }
 
@@ -2488,7 +2583,7 @@ body,
 }
 
 .empty-card {
-  max-width: 420px;
+  max-width: 480px;
   padding: 32px 36px;
   text-align: left;
   background: rgba(255, 255, 255, 0.96);
@@ -2499,39 +2594,85 @@ body,
 }
 
 .empty-card h1 {
-  margin: 0 0 12px;
-  font-family: var(--font-display);
+  margin: 0 0 10px;
+  font-family: var(--font-ui);
   font-size: 26px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.2;
-  color: var(--text);
-  letter-spacing: -0.01em;
+  color: #6b6b6b;
+  letter-spacing: -0.02em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .empty-card p {
   margin: 0 0 18px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-family: var(--font-ui);
+  font-size: 13.5px;
   line-height: 1.55;
-  font-weight: 300;
+  font-weight: 400;
+  letter-spacing: 0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.empty-card ul {
+.empty-card ul,
+.empty-hotkeys {
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 11px;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.empty-card li {
-  font-size: 13px;
+.empty-card li,
+.empty-hotkeys li {
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--text-faint);
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  letter-spacing: 0.01em;
+}
+
+.empty-hotkeys .empty-key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2em;
+  min-height: 1.55em;
+  padding: 0.18em 0.48em;
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1;
+  color: #6b6b6b;
+  letter-spacing: 0.01em;
+  background: #f4f4f4;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.empty-hotkeys .empty-label {
+  min-width: 0;
+  color: var(--text-faint);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Status bar */

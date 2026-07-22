@@ -206,7 +206,7 @@ export function useCanvasSurfaceModel(input: {
     for (const st of visibleStacks) {
       for (const c of collapsedStackFanCards(st, items, stacks)) {
         const m = items.find((i) => i.id === c.id)
-        if (!m || m.type === 'embed') continue
+        if (!m || m.type === 'embed' || m.type === 'scribble') continue
         out.push({
           ...m,
           x: c.x,

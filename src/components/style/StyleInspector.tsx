@@ -319,17 +319,22 @@ export function StyleInspector() {
     onlyType === 'textcard'
       ? (freeSelected as TextCardItem[])
       : ([] as TextCardItem[])
+  // While pen is active, toolbar always edits upcoming stroke style (store),
+  // never the last scribble layer — even if a layer is selected mid-session.
   const scribbles =
-    onlyType === 'scribble'
+    onlyType === 'scribble' && tool !== 'scribble'
       ? (freeSelected as ScribbleItem[])
       : ([] as ScribbleItem[])
 
-  // Tool panels only when nothing mixed-selected needs styles, or no selection
-  const showPenTool = tool === 'scribble' && scribbles.length === 0 && freeSelected.length === 0
-  const showEraseTool = tool === 'erase' && freeSelected.length === 0
+  const showPenTool = tool === 'scribble'
+  const showEraseTool = tool === 'erase'
 
   // When selection is mixed types — hide all selection style bars
-  const showSelectionStyle = homogeneous && (texts.length > 0 || notes.length > 0 || scribbles.length > 0)
+  const showSelectionStyle =
+    tool !== 'scribble' &&
+    tool !== 'erase' &&
+    homogeneous &&
+    (texts.length > 0 || notes.length > 0 || scribbles.length > 0)
 
   const hasAny = showSelectionStyle || showPenTool || showEraseTool
 
@@ -337,8 +342,12 @@ export function StyleInspector() {
 
   return (
     <div className="dock dock-top-style">
-      {texts.length > 0 && <TextStylePanel items={texts} />}
-      {notes.length > 0 && <NoteStylePanel items={notes} />}
+      {texts.length > 0 && tool !== 'scribble' && tool !== 'erase' && (
+        <TextStylePanel items={texts} />
+      )}
+      {notes.length > 0 && tool !== 'scribble' && tool !== 'erase' && (
+        <NoteStylePanel items={notes} />
+      )}
       {scribbles.length > 0 && <ScribbleStylePanel items={scribbles} />}
       {showPenTool && <PenToolPanel />}
       {showEraseTool && <EraseToolPanel />}

@@ -440,12 +440,151 @@ export function proxiedImageUrl(url: string): string {
   }
 }
 
+function xImageIsRealMedia(image: string | undefined): boolean {
+  if (!image) return false
+  const raw = (() => {
+    try {
+      const u = new URL(image)
+      const nested = u.searchParams.get('url')
+      return nested || image
+    } catch {
+      return image
+    }
+  })()
+  return !/profile_images|profile_banners/.test(raw)
+}
+
+function mergeXCandidates(
+  best: LinkPreviewMeta | null,
+  candidate: LinkPreviewMeta,
+): LinkPreviewMeta {
+  if (!best) return candidate
+  const prevImage = best.image || ''
+  const candImage = candidate.image || ''
+  const upgradeMedia =
+    Boolean(candImage) &&
+    Boolean(prevImage) &&
+    /profile_images|profile_banners/.test(prevImage) &&
+    !/profile_images|profile_banners/.test(candImage)
+
+  if ((!best.image && candidate.image) || upgradeMedia) {
+    return {
+      title: candidate.title || best.title,
+      description: candidate.description || best.description,
+      image: candidate.image || best.image,
+      favicon: candidate.favicon || best.favicon,
+      siteName: candidate.siteName || best.siteName,
+    }
+  }
+  return {
+    title: best.title || candidate.title,
+    description: best.description || candidate.description,
+    image: best.image || candidate.image,
+    favicon: best.favicon || candidate.favicon,
+    siteName: best.siteName || candidate.siteName,
+  }
+}
+
+function parseXProviderJson(
+  json: Record<string, unknown>,
+  screenFromUrl: string,
+): LinkPreviewMeta | null {
+  // fxtwitter: { code, tweet }; vxtwitter: flat fields
+  const tweet =
+    asRecord(json.tweet) ||
+    (asString(json.tweetID) || asString(json.tweetURL) || asString(json.text)
+      ? json
+      : null)
+  if (!tweet) return null
+
+  const articleMeta = extractXArticleMeta(tweet)
+  const text =
+    asString(tweet.text) ||
+    asString(tweet.full_text) ||
+    asString(asRecord(tweet.raw_text)?.text) ||
+    ''
+
+  const author = asRecord(tweet.author) || asRecord(tweet.user) || {}
+
+  const screenName =
+    asString(author.screen_name) ||
+    asString(author.screenName) ||
+    asString(tweet.user_screen_name) ||
+    screenFromUrl ||
+    ''
+
+  const displayName =
+    asString(author.name) || asString(tweet.user_name) || screenName
+
+  const avatar = betterAvatarUrl(
+    asString(author.avatar_url) ||
+      asString(author.profile_image_url_https) ||
+      asString(tweet.user_profile_image_url),
+  )
+
+  let banner =
+    asString(author.banner_url) || asString(tweet.user_banner_url) || undefined
+  if (banner) banner = normalizeTwimgUrl(banner)
+
+  let image = extractXImageFromTweet(tweet)
+  if (image) image = normalizeTwimgUrl(image)
+
+  // Fallback: banner / avatar so text-only posts still get a thumb
+  if (!image) image = banner || (avatar ? normalizeTwimgUrl(avatar) : undefined)
+
+  // In browser, route twimg through image proxy for reliability
+  if (image && !isDesktop()) {
+    image = proxiedImageUrl(image)
+  }
+
+  const handle = screenName ? `@${screenName.replace(/^@/, '')}` : ''
+  const authorLabel =
+    (displayName && handle ? `${displayName} (${handle})` : displayName || handle) ||
+    'Post on X'
+
+  // Prefer article title when this is an X Article share
+  const title = articleMeta.title || authorLabel
+  const description =
+    (articleMeta.description || text).trim().slice(0, 280) ||
+    (articleMeta.title ? authorLabel : 'X')
+
+  return {
+    title,
+    description,
+    image,
+    favicon: faviconFor('https://x.com'),
+    siteName: 'X',
+  }
+}
+
+async function fetchXEndpoint(
+  endpoint: string,
+  screenFromUrl: string,
+  timeoutMs: number,
+): Promise<LinkPreviewMeta | null> {
+  try {
+    const res = await withTimeout(
+      fetch(endpoint).then(async (r) => {
+        if (!r.ok) return null
+        return (await r.json()) as Record<string, unknown>
+      }),
+      timeoutMs,
+      null,
+    )
+    if (!res) return null
+    return parseXProviderJson(res, screenFromUrl)
+  } catch (e) {
+    console.warn('X preview provider failed', endpoint, e)
+    return null
+  }
+}
+
 async function fetchXPreview(url: string): Promise<LinkPreviewMeta | null> {
   const statusId = extractXStatusId(url)
   if (!statusId) return null
 
   // FixTweet / FxTwitter / VxTwitter — public unauthenticated APIs, CORS *
-  // Also try username-scoped vxtwitter path when known from the URL.
+  // Race providers in parallel: one slow endpoint used to block the whole card.
   let screenFromUrl = ''
   try {
     const parts = new URL(url).pathname.split('/').filter(Boolean)
@@ -464,133 +603,20 @@ async function fetchXPreview(url: string): Promise<LinkPreviewMeta | null> {
     `https://api.vxtwitter.com/Twitter/status/${statusId}`,
   ].filter(Boolean)
 
-  // Collect across providers — fxtwitter may omit article.image while vxtwitter has it
+  // Per-provider budget; parallel so total wait ≈ slowest success, not sum.
+  const perEndpointMs = 8000
+  const results = await Promise.all(
+    endpoints.map((endpoint) => fetchXEndpoint(endpoint, screenFromUrl, perEndpointMs)),
+  )
+
   let best: LinkPreviewMeta | null = null
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint)
-      if (!res.ok) continue
-      const json = (await res.json()) as Record<string, unknown>
-
-      // fxtwitter: { code, tweet }; vxtwitter: flat fields
-      const tweet =
-        asRecord(json.tweet) ||
-        (asString(json.tweetID) || asString(json.tweetURL) || asString(json.text)
-          ? json
-          : null)
-      if (!tweet) continue
-
-      const articleMeta = extractXArticleMeta(tweet)
-      const text =
-        asString(tweet.text) ||
-        asString(tweet.full_text) ||
-        asString(asRecord(tweet.raw_text)?.text) ||
-        ''
-
-      const author = asRecord(tweet.author) || asRecord(tweet.user) || {}
-
-      const screenName =
-        asString(author.screen_name) ||
-        asString(author.screenName) ||
-        asString(tweet.user_screen_name) ||
-        screenFromUrl ||
-        ''
-
-      const displayName =
-        asString(author.name) ||
-        asString(tweet.user_name) ||
-        screenName
-
-      const avatar = betterAvatarUrl(
-        asString(author.avatar_url) ||
-          asString(author.profile_image_url_https) ||
-          asString(tweet.user_profile_image_url),
-      )
-
-      let banner =
-        asString(author.banner_url) || asString(tweet.user_banner_url) || undefined
-      if (banner) banner = normalizeTwimgUrl(banner)
-
-      let image = extractXImageFromTweet(tweet)
-      if (image) image = normalizeTwimgUrl(image)
-
-      // Fallback: banner / avatar so text-only posts still get a thumb
-      if (!image) image = banner || (avatar ? normalizeTwimgUrl(avatar) : undefined)
-
-      // In browser, route twimg through image proxy for reliability
-      if (image && !isDesktop()) {
-        image = proxiedImageUrl(image)
-      }
-
-      const handle = screenName ? `@${screenName.replace(/^@/, '')}` : ''
-      const authorLabel =
-        (displayName && handle ? `${displayName} (${handle})` : displayName || handle) ||
-        'Post on X'
-
-      // Prefer article title when this is an X Article share
-      const title = articleMeta.title || authorLabel
-      const description =
-        (articleMeta.description || text).trim().slice(0, 280) ||
-        (articleMeta.title ? authorLabel : 'X')
-
-      const candidate: LinkPreviewMeta = {
-        title,
-        description,
-        image,
-        favicon: faviconFor('https://x.com'),
-        siteName: 'X',
-      }
-
-      // Prefer result that has a real media/article image over avatar-only
-      if (!best) {
-        best = candidate
-      } else {
-        const prev: LinkPreviewMeta = best
-        const prevImage = prev.image || ''
-        const candImage = candidate.image || ''
-        const upgradeMedia =
-          Boolean(candImage) &&
-          Boolean(prevImage) &&
-          /profile_images|profile_banners/.test(prevImage) &&
-          !/profile_images|profile_banners/.test(candImage)
-
-        if ((!prev.image && candidate.image) || upgradeMedia) {
-          best = {
-            title: candidate.title || prev.title,
-            description: candidate.description || prev.description,
-            image: candidate.image || prev.image,
-            favicon: candidate.favicon || prev.favicon,
-            siteName: candidate.siteName || prev.siteName,
-          }
-        } else {
-          best = {
-            title: prev.title || candidate.title,
-            description: prev.description || candidate.description,
-            image: prev.image || candidate.image,
-            favicon: prev.favicon || candidate.favicon,
-            siteName: prev.siteName || candidate.siteName,
-          }
-        }
-      }
-
-      // Early exit when we already have real article/post media (not avatar/banner)
-      if (best.image) {
-        const raw = (() => {
-          try {
-            const u = new URL(best.image!)
-            const nested = u.searchParams.get('url')
-            return nested || best.image!
-          } catch {
-            return best.image!
-          }
-        })()
-        if (!/profile_images|profile_banners/.test(raw)) {
-          return best
-        }
-      }
-    } catch (e) {
-      console.warn('X preview provider failed', endpoint, e)
+  for (const candidate of results) {
+    if (!candidate) continue
+    best = mergeXCandidates(best, candidate)
+    // Prefer real media as soon as any provider has it
+    if (xImageIsRealMedia(best.image)) {
+      // Still merge remaining results that already finished (they're in `results`)
+      // — nothing left to wait for since Promise.all settled.
     }
   }
 
@@ -692,7 +718,14 @@ function mergeMeta(
   }
 }
 
-const LINK_PREVIEW_BUDGET_MS = 9000
+/** Overall hard budget — X providers can be slow; still avoid infinite spinners. */
+const LINK_PREVIEW_BUDGET_MS = 16000
+/** Site-native X/YT path (parallel providers inside). */
+const SITE_SPECIFIC_BUDGET_MS = 9000
+/** Desktop native HTML/OG scrape (often fails on X; not on the hot path when site wins). */
+const NATIVE_SCRAPE_BUDGET_MS = 7000
+const IMAGE_PROXY_BUDGET_MS = 5000
+const MICROLINK_BUDGET_MS = 5000
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
@@ -729,12 +762,64 @@ export function linkPreviewHasGaveUp(url: string): boolean {
   return previewGaveUp.has(normalizeUrl(url) || url)
 }
 
+/** Allow a manual retry after a failed/timeout preview for this URL. */
+export function clearLinkPreviewGaveUp(url: string): void {
+  const normalized = normalizeUrl(url) || url
+  previewGaveUp.delete(normalized)
+  if (url !== normalized) previewGaveUp.delete(url)
+}
+
+function isSpecialPreviewHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return (
+      X_HOSTS.has(host) ||
+      YT_HOSTS.has(host) ||
+      host.endsWith('.youtube.com')
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * When site-native APIs already returned a usable card, skip slow HTML scrapes
+ * (x.com closes sockets / starves generic clients). Still proxy the image on desktop.
+ */
+async function finalizeSitePreview(
+  site: LinkPreviewMeta,
+  pageUrl: string,
+): Promise<LinkPreviewMeta> {
+  const image = await withTimeout(
+    ensureDisplayableImage(site.image, pageUrl),
+    IMAGE_PROXY_BUDGET_MS,
+    site.image || null,
+  )
+  let favicon = site.favicon
+  if (
+    isDesktop() &&
+    favicon &&
+    !favicon.startsWith('data:') &&
+    /^https?:\/\//i.test(favicon)
+  ) {
+    favicon =
+      (await withTimeout(proxyImageToDataUrl(favicon, pageUrl), 2500, null)) ||
+      faviconFor(pageUrl)
+  }
+  return {
+    ...site,
+    image: image || undefined,
+    favicon: favicon || faviconFor(pageUrl),
+  }
+}
+
 /**
  * Fetch Open Graph metadata for a Notion-style bookmark card.
  * YouTube / X use dedicated APIs (generic HTML scrape is blocked).
  * Desktop also proxies images to data URLs for WebView2.
  *
- * Hard budget (~9s): never hang the UI spinner forever.
+ * Hard budget (~16s): never hang the UI spinner forever.
+ * X/YT take a fast path and skip native HTML scrape when media is already present.
  */
 export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | null> {
   const normalized = normalizeUrl(url)
@@ -745,12 +830,23 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
     // 1) Site-specific first — X/YouTube rarely expose real OG media to scrapers
     const site = await withTimeout(
       fetchSiteSpecificPreview(normalized),
-      4000,
+      SITE_SPECIFIC_BUDGET_MS,
       null,
     )
 
+    // Fast path: special hosts with usable metadata — skip Tauri HTML scrape.
+    // x.com often hangs or starves generic scrapers; waiting on them made cards
+    // time out even after fxtwitter/vxtwitter already returned.
+    if (site && isSpecialPreviewHost(normalized) && (site.image || site.title)) {
+      return finalizeSitePreview(site, normalized)
+    }
+
     if (isDesktop()) {
-      const native = await withTimeout(fetchViaTauri(normalized), 5000, null)
+      const native = await withTimeout(
+        fetchViaTauri(normalized),
+        NATIVE_SCRAPE_BUDGET_MS,
+        null,
+      )
       let combined = mergeMeta(site, native)
 
       if (site?.image && !combined?.image) {
@@ -760,7 +856,7 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
       if (combined) {
         const image = await withTimeout(
           ensureDisplayableImage(combined.image, normalized),
-          3500,
+          IMAGE_PROXY_BUDGET_MS,
           combined.image || null,
         )
         let favicon = combined.favicon
@@ -784,13 +880,13 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
         if (!image) {
           const remote = await withTimeout(
             fetchViaMicrolink(normalized),
-            4000,
+            MICROLINK_BUDGET_MS,
             null,
           )
           if (remote?.image) {
             const remoteImg = await withTimeout(
               ensureDisplayableImage(remote.image, normalized),
-              3000,
+              IMAGE_PROXY_BUDGET_MS,
               remote.image || null,
             )
             return {
@@ -812,11 +908,15 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
         }
       }
 
-      const remote = await withTimeout(fetchViaMicrolink(normalized), 4000, null)
+      const remote = await withTimeout(
+        fetchViaMicrolink(normalized),
+        MICROLINK_BUDGET_MS,
+        null,
+      )
       if (remote) {
         const image = await withTimeout(
           ensureDisplayableImage(remote.image, normalized),
-          3000,
+          IMAGE_PROXY_BUDGET_MS,
           remote.image || null,
         )
         return {
@@ -827,16 +927,7 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
       }
 
       if (site) {
-        return {
-          ...site,
-          image:
-            (await withTimeout(
-              ensureDisplayableImage(site.image, normalized),
-              2500,
-              site.image || null,
-            )) || undefined,
-          favicon: site.favicon || faviconFor(normalized),
-        }
+        return finalizeSitePreview(site, normalized)
       }
 
       return null
@@ -847,7 +938,7 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
       if (!site.title || !site.description) {
         const remote = await withTimeout(
           fetchViaMicrolink(normalized),
-          4000,
+          MICROLINK_BUDGET_MS,
           null,
         )
         const merged = mergeMeta(site, remote)
@@ -864,7 +955,11 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewMeta | n
       }
     }
 
-    const remote = await withTimeout(fetchViaMicrolink(normalized), 4000, null)
+    const remote = await withTimeout(
+      fetchViaMicrolink(normalized),
+      MICROLINK_BUDGET_MS,
+      null,
+    )
     if (remote) {
       return {
         ...remote,

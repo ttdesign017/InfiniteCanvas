@@ -27,14 +27,24 @@ PureRef-inspired infinite canvas for Windows — **Tauri 2 + React + TypeScript*
 - **Notes & free text** — Notion-style cards; free-floating text with color / font / size / background
 - **Links** — bookmark cards with OG/Twitter previews (desktop: Rust fetch + X/YouTube providers; SSRF mitigations); **double-click** opens externally
 - **Embeds** — iframe apps stay mounted across stack navigation (keep-alive cache)
-- **Scribble** — pen + eraser; strokes move with content
+- **Scribble** — pen + eraser as **session layers** (see below)
+- **Video** — play/pause (**Space**); **Shift+C** full-res frame snapshot; **[ / ]** step previous / next frame
+
+### Scribble (pen / eraser)
+
+- **Session layer** — while the pen tool is active (**P**), all strokes share one scribble item; leaving pen (**V** / other tool / **Esc**) finalizes the layer as a single free body
+- **Pen style** — top toolbar color / weight always apply to the **next** stroke while pen is active (not the previous layer)
+- **Re-edit** — **double-click** a scribble layer to reopen the pen session and add strokes
+- **Stroke hit-test** — pick only near the ink (stroke width + small slop); empty bbox does not block clicks on items underneath
+- **Eraser** — dashed radius circle under the cursor; size from the eraser toolbar
+- **Stacks** — scribbles live only on their free canvas: they **fade out quickly on stack exit**, never appear in the collapsed fan, and do **not** affect folder bounds / leaf counts
 
 ### Selection, move & transform
 
 - **Multi-select** — marquee (rotation-aware hit), Shift/Ctrl additive; joint **move** for free items + stack folders
 - **Group bbox** — proportional scale from corners/edges; edge snap while scaling; box does not steal crop/pan gestures
 - **Snap / align / pack** — edge snap toggle; toolbar align (rotation-aware AABB); **Ctrl+Arrow** packs selection (closes gaps)
-- **Resize handles** — notes, links, free text, media (when selected and free)
+- **Resize handles** — notes, links, free text, media (when selected and free); corner handles stay **constant 7px** on screen under zoom; multi-select border stays **1 screen-px** thick
 - **Modal transforms (Blender-style)** — **G** grab / **R** rotate / **S** scale  
   - LMB confirm · RMB / Esc cancel  
   - **R + Shift** → **15°** angle snap (no guide lines)  
@@ -101,8 +111,15 @@ Core helpers: `src/utils/stacks.ts`, `src/utils/zOrder.ts`, enter/exit in `src/s
 - **Ctrl+O** — open media files
 - **Open with** — file association for `.icanvas`; launch path via `get_launch_file_path`
 - **Clipboard** — OS paste (links, images, video, audio, paths, text → note); in-app **Ctrl+X/C/V** for free items + nested stack trees
+- **OS copy** — **Ctrl+C / Ctrl+X** also mirrors **image/GIF → PNG** and **note/text → plain text** to the system clipboard for paste into other apps
 - In-app copy buffer is cleared when the window **blurs** (so an external OS copy can take priority on paste)
 - Drag-and-drop import of media, URLs, and text
+
+### Video frame snapshot
+
+- **Shift+C** on selected video(s) — capture the current decoded frame as a **full-resolution PNG** (not the downscaled poster cache)
+- Snapshot **photo animation**: quick shrink to ~80%, then ease scale back while sliding to rest **fully below** the video (gap, no overlap)
+- Source video **stays selected** so snapshots can be taken repeatedly
 
 ## Board file (`.icanvas`)
 
@@ -207,7 +224,10 @@ InfiniteCanvas2/
 | **Ctrl+S** | Save board |
 | **Ctrl+Shift+S** | Save as |
 | **Ctrl+V** | Paste OS clipboard or in-app clipboard |
-| **Ctrl+C / Ctrl+X** | Copy / cut selection (items + nested stack trees) |
+| **Ctrl+C / Ctrl+X** | Copy / cut selection (items + nested stack trees); also mirrors image/text to the OS clipboard |
+| **Shift+C** | Snapshot current frame of selected video(s) as a full-res image (video stays selected) |
+| **[ / ]** | Selected video: previous / next frame |
+| **Ctrl+[ / ]** | Send to back / bring to front |
 | **Ctrl+G** | Stack free selection (nest into enterable stack) |
 | **Alt+G** | Unstack / smooth layout |
 | **Ctrl+F** | Toggle immersive mode |
@@ -220,13 +240,15 @@ InfiniteCanvas2/
 | **G / R / S** | Modal move / rotate / scale (LMB confirm · RMB cancel) |
 | **R + Shift** | While rotating: snap angle to 15° |
 | **Space** | Enter selected stack · play/pause selected video or audio · else hold to pan |
-| **Escape** | Exit text/rename edit → leave nested stack → clear selection |
+| **Escape** | Exit text/rename edit → leave pen (finalize layer) → leave nested stack → clear selection |
 | **Delete / Backspace** | Remove selection |
 | **Alt + drag** | Duplicate items or stack trees |
 | **Ctrl+Z / Ctrl+Y** | Undo / redo |
-| **[ / ]** | Send to back / bring to front |
 | **V H P/B E T N L** | Tools: select, pan, pen, erase, text, note, link |
+| **P (pen)** | Session scribble layer; leave pen or **Esc** to finalize; **double-click** layer to re-edit |
+| **E (erase)** | Eraser with on-canvas dashed radius cursor |
 | **Double-click link** | Open URL externally |
+| **Double-click scribble** | Reopen pen session on that layer |
 | **Ctrl+Q** | Quit (Save / Discard / Cancel when dirty) |
 | **Ctrl+R / F5** | Blocked (prevents wiping the canvas) |
 

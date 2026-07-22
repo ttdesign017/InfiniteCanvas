@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import type { StackEnterAnim } from '../store/types'
 import { CanvasItemView } from './items/CanvasItemView'
@@ -29,12 +29,17 @@ import {
 /** Owns pan/zoom transform only — children do not re-render when viewport moves. */
 function CanvasWorldTransform({ children }: { children: ReactNode }) {
   const viewport = useCanvasStore((s) => s.viewport)
+  const zoom = Math.max(0.05, viewport.zoom)
   return (
     <div
       className="canvas-world"
-      style={{
-        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-      }}
+      style={
+        {
+          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${zoom})`,
+          // Counter-scale selection chrome so corner handles stay constant on screen
+          '--canvas-zoom': String(zoom),
+        } as CSSProperties
+      }
     >
       {children}
     </div>
@@ -375,6 +380,7 @@ export function InfiniteCanvas() {
                 <CanvasItemView
                   item={item}
                   selected={false}
+                  staticPreview
                   onPointerDown={() => {}}
                   onResizePointerDown={() => {}}
                 />
@@ -405,6 +411,7 @@ export function InfiniteCanvas() {
             <CanvasItemView
               item={item}
               selected={false}
+              staticPreview
               onPointerDown={() => {}}
               onResizePointerDown={() => {}}
             />
@@ -541,6 +548,14 @@ export function InfiniteCanvas() {
         })}
         {sortedNonEmbeds.map((item) => {
           const peerOp = exitAfterHandoff ? exitPeerOpacity : 1
+          // Exit stack: scribbles vanish quickly (not part of gather fan)
+          const scribbleExitFade =
+            item.type === 'scribble' &&
+            stackEnterAnim?.mode === 'exit' &&
+            (containerOf(item) === stackEnterAnim.stackId ||
+              item.stackGroupId === stackEnterAnim.stackId)
+              ? Math.max(0, 1 - Math.min(1, animProgress.t / 0.18))
+              : 1
           const scattering =
             exitAfterHandoff && peerScatterOriginWorld != null
           const scatter = scattering
@@ -554,20 +569,24 @@ export function InfiniteCanvas() {
                 item.id,
               )
             : { opacity: peerOp }
+          const combinedOp =
+            (typeof scatter.opacity === 'number' ? scatter.opacity : 1) *
+            scribbleExitFade
           // Live free items must stay clickable; never use is-peer-ghost here.
           const scatterClass = scattering
             ? peerScatterWrapClassName({ isGhost: false })
             : ''
-          const allowPointer = freeItemWrapAllowsPointer(
-            exitAfterHandoff,
-            peerOp,
-          )
+          const allowPointer =
+            scribbleExitFade < 0.05
+              ? false
+              : freeItemWrapAllowsPointer(exitAfterHandoff, peerOp)
           return (
           <div
             key={item.id}
             className={`peer-fade-wrap${scatterClass ? ` ${scatterClass}` : ''}`}
             style={{
               ...scatter,
+              opacity: combinedOp,
               // Explicit override so a stuck handoff style cannot brick selection
               pointerEvents: allowPointer ? 'auto' : 'none',
             }}

@@ -5,6 +5,11 @@ import {
   getTextScalePreview,
   subscribeTextScalePreview,
 } from '../../utils/textScalePreview'
+import {
+  getItemSpawnVersion,
+  getItemSpawnVisual,
+  subscribeItemSpawn,
+} from '../../utils/itemSpawnAnim'
 import { expandStackSelection } from '../../utils/layout'
 import { MediaItemView } from './MediaItemView'
 import { TextCardView } from './TextCardView'
@@ -25,6 +30,11 @@ interface Props {
     item: CanvasItem,
     handle: string,
   ) => void
+  /**
+   * Peer ghost during stack enter/exit: media paints static stills
+   * (no live video decoder / remount flash).
+   */
+  staticPreview?: boolean
 }
 
 function CanvasItemViewInner({
@@ -32,6 +42,7 @@ function CanvasItemViewInner({
   selected,
   onPointerDown,
   onResizePointerDown,
+  staticPreview = false,
 }: Props) {
   const select = useCanvasStore((s) => s.select)
   const editingId = useCanvasStore((s) => s.editingId)
@@ -39,6 +50,14 @@ function CanvasItemViewInner({
     subscribeTextScalePreview,
     getTextScalePreview,
     getTextScalePreview,
+  )
+  const spawn = useSyncExternalStore(
+    subscribeItemSpawn,
+    () => {
+      void getItemSpawnVersion()
+      return getItemSpawnVisual(item.id)
+    },
+    () => null,
   )
 
   const stacked = !!(item.stacked && item.stackGroupId)
@@ -71,6 +90,10 @@ function CanvasItemViewInner({
   const h = isTextPreview ? preview.baseH : item.height
   const scale = isTextPreview ? preview.scale : 1
   const rot = item.rotation || 0
+  const spawnDy = spawn?.dy ?? 0
+  const spawnScale = spawn?.scale ?? 1
+  const spawnOpacity = spawn?.opacity
+  const combinedScale = scale * spawnScale
 
   const displayItem =
     isTextPreview && item.type === 'text'
@@ -95,11 +118,21 @@ function CanvasItemViewInner({
       className={`canvas-item type-${item.type} ${selected ? 'selected' : ''} ${editingId === item.id ? 'is-editing' : ''} ${stacked ? 'is-stacked' : ''} ${isTextPreview ? 'is-text-scaling' : ''}`}
       data-id={item.id}
       style={{
-        transform: `translate(${x}px, ${y}px) rotate(${rot}deg) scale(${scale})`,
+        transform: `translate(${x}px, ${y + spawnDy}px) rotate(${rot}deg) scale(${combinedScale})`,
         transformOrigin: origin,
         width: w,
         height: h,
         zIndex: item.zIndex,
+        opacity: spawnOpacity,
+        // Scribbles: only stroke geometry receives hits (see .scribble-hit)
+        pointerEvents:
+          spawn &&
+          ((spawnOpacity !== undefined && spawnOpacity < 0.05) ||
+            (spawn.scale !== undefined && spawn.scale < 0.95 && Math.abs(spawn.dy) > 1))
+            ? 'none'
+            : item.type === 'scribble'
+              ? 'none'
+              : undefined,
       }}
       onPointerDown={(e) => onPointerDown(e, item)}
       onDoubleClick={(e) => {
@@ -127,6 +160,11 @@ function CanvasItemViewInner({
           void openExternal(item.url.trim())
           return
         }
+        // Scribble layer: double-click reopens the pen session for more strokes
+        if (!stacked && item.type === 'scribble') {
+          useCanvasStore.getState().enterScribbleEdit(item.id)
+          return
+        }
         if (!editable) return
         if (!selected) select([item.id])
         // select() clears editingId — must set after
@@ -137,7 +175,11 @@ function CanvasItemViewInner({
       }}
     >
       {item.type === 'image' || item.type === 'gif' || item.type === 'video' ? (
-        <MediaItemView item={item} selected={selected} />
+        <MediaItemView
+          item={item}
+          selected={selected}
+          staticPreview={staticPreview}
+        />
       ) : item.type === 'audio' ? (
         <AudioItemView item={item} selected={selected} />
       ) : item.type === 'text' ? (
@@ -218,6 +260,7 @@ export const CanvasItemView = memo(
   (prev, next) =>
     prev.item === next.item &&
     prev.selected === next.selected &&
+    prev.staticPreview === next.staticPreview &&
     prev.onPointerDown === next.onPointerDown &&
     prev.onResizePointerDown === next.onResizePointerDown,
 )

@@ -1,6 +1,6 @@
 # feature requests / backlog
 
-Last aligned with codebase: **2026-07-15** (see also `CODE_REVIEW.md`, `README.md`).
+Last aligned with codebase: **2026-07-23** (see also `CODE_REVIEW.md`, `README.md`).
 
 ## Solved
 
@@ -16,11 +16,19 @@ Last aligned with codebase: **2026-07-15** (see also `CODE_REVIEW.md`, `README.m
 - [x] 链接书签卡片 + X / YouTube 等预览增强；保存 `.icanvas` 可内嵌媒体
 - [x] 关闭 / Ctrl+Q 未保存提示（应用内对话框，避免 native ask 死锁）
 - [x] 画布内 Ctrl+X/C/V 剪贴板（含 stack 子树重映射）
+- [x] **系统剪贴板镜像**：Ctrl+C/X 将选中图片/GIF → PNG、Note/文字 → 纯文本写入 OS 剪贴板
+- [x] **视频帧快照**（Shift+C）：全分辨率 PNG；拍照动效（快缩→放大下移到视频下方）；视频保持选中可连拍
+- [x] **视频逐帧**（[ / ]）；原层级快捷键改为 Ctrl+[ / ]
+- [x] **选中角点恒定屏幕尺寸**（7px）；多选边框恒定 1 屏像素粗细
+- [x] **涂鸦会话图层**：笔工具期间多笔同一 item；退笔/Esc 定稿；双击再编辑；笔画命中（非 bbox）
+- [x] **笔触样式**：笔工具顶栏始终编辑「下一笔」颜色/粗细
+- [x] **橡皮擦半径虚线圆**指示
+- [x] **涂鸦不参与 stack fan / folder 几何**；退出 stack 时快速淡出
 
 ## Product todo
 
 - [x] 多图缩放（多选统一缩放）
-- [ ] 音频支持（独立音频 item / 播放器）
+- [x] 音频支持（独立音频 item / 播放器）
 - [x] 元素旋转支持（UI + 持久化；类型字段已有 `rotation`，交互未完整）
 - [ ] Ctrl+G 将已选 **stack 文件夹** 作为原子 unit 一并嵌套进新 stack
 - [ ] 图片视频反转操作

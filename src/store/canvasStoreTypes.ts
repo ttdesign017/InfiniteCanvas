@@ -171,9 +171,22 @@ export interface CanvasState {
   ) => void
   /** Convert free text → note for selected (or given) free items */
   convertTextKind: (to: 'text' | 'textcard', ids?: string[]) => void
+  /**
+   * Begin a stroke in the current scribble layer session.
+   * Creates a new layer on first stroke; further strokes append paths
+   * until the scribble tool is left or the layer is finalized.
+   */
   startScribble: (world: Point) => string
   appendScribblePoint: (id: string, world: Point) => void
+  /**
+   * End the current stroke (pointer up). Does NOT close the layer session —
+   * more strokes still go into the same scribble item.
+   */
   endScribble: () => void
+  /** Close the active scribble layer session (e.g. leaving the pen tool). */
+  finalizeScribbleLayer: () => void
+  /** Double-click a scribble to reopen it for more strokes. */
+  enterScribbleEdit: (id: string) => void
   eraseAt: (world: Point, radius?: number) => void
   /**
    * Axis-aligned crop for one or more free media (image/gif/video).

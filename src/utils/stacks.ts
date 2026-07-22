@@ -35,6 +35,17 @@ export function containerOf(item: Pick<CanvasItem, 'containerId'>): string {
 }
 
 /**
+ * Whether an item participates in collapsed stack fan / folder geometry.
+ * Scribbles live only on their free canvas — they never appear in the pile
+ * or contribute to folder bounds on the parent.
+ */
+export function participatesInStackFan(
+  item: Pick<CanvasItem, 'type'>,
+): boolean {
+  return item.type !== 'scribble' && item.type !== 'embed'
+}
+
+/**
  * Items whose containerId is neither root nor an existing stack id (I1).
  * Missing/undefined containerId is treated as root (valid).
  */
@@ -229,7 +240,9 @@ export function countLeafItemsInStack(
   stacks: StackRecord[],
   stackId: string,
 ): number {
-  return collectItemsInStackTree(items, stacks, stackId).length
+  return collectItemsInStackTree(items, stacks, stackId).filter(
+    participatesInStackFan,
+  ).length
 }
 
 /**
@@ -311,7 +324,7 @@ function buildDeepFreeFanRel(
     rel.push(r)
   }
 
-  const direct = directItemsInStack(items, stack.id)
+  const direct = directItemsInStack(items, stack.id).filter(participatesInStackFan)
   if (
     preferPreview &&
     direct.length > 0 &&
@@ -345,6 +358,8 @@ function buildDeepFreeFanRel(
     if (child.freeFanRel && child.freeFanRel.length > 0) {
       // Child freeFanRel is relative to child origin (child-local)
       for (const r of child.freeFanRel) {
+        const m = items.find((i) => i.id === r.id)
+        if (m && !participatesInStackFan(m)) continue
         push({
           id: r.id,
           dx: child.x + r.dx,
@@ -354,7 +369,9 @@ function buildDeepFreeFanRel(
       }
       continue
     }
-    const tree = collectItemsInStackTree(items, stacks, child.id)
+    const tree = collectItemsInStackTree(items, stacks, child.id).filter(
+      participatesInStackFan,
+    )
     for (const m of tree) {
       if (!m.stackPreview) continue
       const cid = containerOf(m)
@@ -406,7 +423,9 @@ export function resolveNestedFreeFan(
     stacks.length > 0
       ? collectItemsInStackTree(items, stacks, stack.id)
       : directItemsInStack(items, stack.id)
-  ).sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id))
+  )
+    .filter(participatesInStackFan)
+    .sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id))
 
   const bounds = {
     x: stack.x,
@@ -453,7 +472,9 @@ export function resolveNestedFreeFan(
           options?.preferPreview === true,
         )
       : (() => {
-          const direct = directItemsInStack(items, stack.id)
+          const direct = directItemsInStack(items, stack.id).filter(
+            participatesInStackFan,
+          )
           if (
             options?.preferPreview &&
             direct.length > 0 &&
@@ -615,9 +636,9 @@ export function nestedStackFanOnParent(
       zIndex: c.zIndex,
     }))
   }
-  const members = directItemsInStack(items, nested.id).sort(
-    (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
-  )
+  const members = directItemsInStack(items, nested.id)
+    .filter(participatesInStackFan)
+    .sort((a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id))
   if (members.length === 0) {
     return []
   }
@@ -700,8 +721,9 @@ export function collapsedStackFanCards(
   }> = []
   const itemById = new Map(items.map((i) => [i.id, i]))
 
-  // Direct free members: stackPreview is parent-absolute
+  // Direct free members: stackPreview is parent-absolute (scribbles never fan)
   for (const m of directItemsInStack(items, stack.id)) {
+    if (!participatesInStackFan(m)) continue
     if (!m.stackPreview) continue
     cards.push({
       id: m.id,
@@ -716,16 +738,21 @@ export function collapsedStackFanCards(
 
   for (const child of stacksInContainer(stacks, stack.id)) {
     // Collapsed-fan offsets for entire child tree (must include deep leaves)
-    const treeLeaves = collectItemsInStackTree(items, stacks, child.id)
+    const treeLeaves = collectItemsInStackTree(items, stacks, child.id).filter(
+      participatesInStackFan,
+    )
     const cacheOk =
       !!child.freeFanRel &&
       child.freeFanRel.length > 0 &&
       treeLeaves.every((m) =>
         child.freeFanRel!.some((r) => r.id === m.id),
       )
-    const childRel = cacheOk
-      ? child.freeFanRel!
-      : buildDeepFreeFanRel(child, items, stacks, true)
+    const childRel = (
+      cacheOk ? child.freeFanRel! : buildDeepFreeFanRel(child, items, stacks, true)
+    ).filter((r) => {
+      const m = itemById.get(r.id)
+      return !m || participatesInStackFan(m)
+    })
 
     // Visual origin of child unit in stack-local space (parent canvas of child).
     // Recover from free members' stackPreview + freeFanRel so when previews
@@ -734,6 +761,7 @@ export function collapsedStackFanCards(
     let originY = child.y
     const relById = new Map(childRel.map((r) => [r.id, r]))
     for (const m of directItemsInStack(items, child.id)) {
+      if (!participatesInStackFan(m)) continue
       const r = relById.get(m.id)
       if (r && m.stackPreview) {
         originX = m.stackPreview.x - r.dx
@@ -744,7 +772,7 @@ export function collapsedStackFanCards(
 
     for (const r of childRel) {
       const m = itemById.get(r.id)
-      if (!m) continue
+      if (!m || !participatesInStackFan(m)) continue
       // parent-abs of `stack` = stack.x + (visualOrigin + rel) when origin/rel
       // are stack-local (nested free members use stack-local stackPreview).
       cards.push({

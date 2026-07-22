@@ -111,6 +111,32 @@ export function itemLocalToWorld(item: RectLike, local: Point): Point {
   }
 }
 
+/**
+ * Convert a free-item pose (`transform-origin: center`) to an equivalent
+ * stacked/fan pose (`transform-origin: bottom left`) that paints at the same
+ * place. Used when flying a free card into a stack so the final handoff does
+ * not jump when origin switches.
+ */
+export function centerOriginPoseToBottomLeftOrigin(item: RectLike): {
+  x: number
+  y: number
+  rotation: number
+} {
+  const rotation = item.rotation || 0
+  if (!rotation) {
+    // Origins only diverge under rotation
+    return { x: item.x, y: item.y, rotation: 0 }
+  }
+  // World position of the bottom-left corner under center-origin rotation
+  const bl = itemLocalToWorld(item, { x: 0, y: item.height })
+  // Bottom-left origin keeps that corner at (x, y+height)
+  return {
+    x: bl.x,
+    y: bl.y - item.height,
+    rotation,
+  }
+}
+
 /** Clip a convex polygon to an axis-aligned rect (Sutherland–Hodgman). */
 export function clipPolygonToAabb(
   poly: Point[],

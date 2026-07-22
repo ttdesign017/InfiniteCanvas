@@ -4,53 +4,22 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useCanvasStore } from '../store/useCanvasStore'
 import * as desktop from '../utils/desktop'
 import { saveCurrentBoard } from '../utils/boardIO'
+import {
+  askUnsavedPrompt,
+  UNSAVED_PROMPT_COPY,
+} from './unsavedPrompt'
 
-/** In-app close dialog state (native ask() deadlocks inside onCloseRequested) */
-type ClosePromptState = {
-  open: boolean
-  resolve: ((v: 'save' | 'discard' | 'cancel') => void) | null
-}
-
-const closePrompt: ClosePromptState = {
-  open: false,
-  resolve: null,
-}
-
-const listeners = new Set<() => void>()
-
-function emitClosePrompt() {
-  listeners.forEach((l) => l())
-}
-
-export function subscribeClosePrompt(cb: () => void) {
-  listeners.add(cb)
-  return () => {
-    listeners.delete(cb)
-  }
-}
-
-export function getClosePromptOpen() {
-  return closePrompt.open
-}
-
-export function answerClosePrompt(v: 'save' | 'discard' | 'cancel') {
-  closePrompt.open = false
-  const r = closePrompt.resolve
-  closePrompt.resolve = null
-  emitClosePrompt()
-  r?.(v)
-}
-
-function askClosePrompt(): Promise<'save' | 'discard' | 'cancel'> {
-  // Already clean
-  if (!useCanvasStore.getState().dirty) return Promise.resolve('discard')
-
-  return new Promise((resolve) => {
-    closePrompt.open = true
-    closePrompt.resolve = resolve
-    emitClosePrompt()
-  })
-}
+// Re-export dialog API so existing imports from useCloseGuard keep working
+export {
+  answerClosePrompt,
+  askUnsavedPrompt,
+  getClosePromptCopy,
+  getClosePromptOpen,
+  subscribeClosePrompt,
+  UNSAVED_PROMPT_COPY,
+  type UnsavedPromptChoice,
+  type UnsavedPromptCopy,
+} from './unsavedPrompt'
 
 async function forceExit() {
   try {
@@ -115,7 +84,7 @@ export function useCloseGuard() {
           try {
             const store = useCanvasStore.getState()
             if (store.dirty) {
-              const choice = await askClosePrompt()
+              const choice = await askUnsavedPrompt(UNSAVED_PROMPT_COPY.close)
               if (choice === 'cancel') {
                 handling = false
                 return
@@ -155,7 +124,7 @@ export async function requestAppClose(): Promise<void> {
   try {
     const store = useCanvasStore.getState()
     if (store.dirty) {
-      const choice = await askClosePrompt()
+      const choice = await askUnsavedPrompt(UNSAVED_PROMPT_COPY.close)
       if (choice === 'cancel') return
       if (choice === 'save') {
         const ok = await saveCurrentBoard()

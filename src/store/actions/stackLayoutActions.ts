@@ -5,6 +5,7 @@ import {
   computeRowLayout,
   computeSmoothLayout,
   computeTightLayout,
+  fanCardRotation,
   stackGroupBounds,
   STACK_FOLDER_PAD,
 } from '../../utils/layout'
@@ -15,6 +16,7 @@ import {
   createStackRecord,
   itemsInContainer,
 } from '../../utils/stacks'
+import { centerOriginPoseToBottomLeftOrigin } from '../../utils/geometry'
 import { easeOutCubic } from '../actionHelpers'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
 export type StackLayoutActionKey =
@@ -194,6 +196,29 @@ export function createStackLayoutActions(
       if (t < 1) {
         requestAnimationFrame(tick)
       } else {
+        // Snap exact end poses before handoff (avoids last-frame float drift)
+        if (!options?.unstack && !options?.nestInto) {
+          set((s) => ({
+            items: s.items.map((item) => {
+              const target = targetMap.get(item.id)
+              if (!target) return item
+              const endRot =
+                target.rotation !== undefined
+                  ? target.rotation
+                  : (item.rotation ?? 0)
+              return {
+                ...item,
+                x: target.x,
+                y: target.y,
+                rotation: endRot,
+                ...(target.width !== undefined ? { width: target.width } : {}),
+                ...(target.height !== undefined
+                  ? { height: target.height }
+                  : {}),
+              }
+            }),
+          }))
+        }
         // Final cleanup: remove stackGroupId when unstacking
         if (options?.unstack) {
           set((s) => ({
@@ -369,7 +394,8 @@ export function createStackLayoutActions(
       const ordered = get()
         .items.filter((i) => prep.has(i.id))
         .sort((a, b) => a.zIndex - b.zIndex)
-      get().animateToLayout(computeQuickStack(ordered), 420, {
+      // Keep ≤300ms — same budget as enterable-stack drop fly-in
+      get().animateToLayout(computeQuickStack(ordered), 300, {
         stackGroupId: groupId,
       })
       return
@@ -426,10 +452,8 @@ export function createStackLayoutActions(
         rowH = 0
       }
       const offset = (existing.length + fanI) * gap
-      const rot =
-        fanI === 0 && existing.length === 0
-          ? 0
-          : Math.max(-8, Math.min(8, (item.id.charCodeAt(0) % 17) - 8))
+      // Full-id hash (same as quick-stack fan) — not first char of id
+      const rot = fanCardRotation(item.id, existing.length + fanI)
       patches.set(item.id, {
         item,
         inner: { x: cursorX, y: cursorY, rotation: 0 },
@@ -467,15 +491,26 @@ export function createStackLayoutActions(
     const maxY2 =
       Math.max(...previewItems.map((i) => i.y + i.height)) + STACK_FOLDER_PAD
 
+    // Fly-in must use the same transform-origin as stack fan cards
+    // (`bottom left`). Free cards use `center`; switching only at handoff
+    // causes a visible snap when rotation is non-zero.
+    // Raise z + convert pose + mark stacked for origin, expand folder, then animate.
     set((s) => ({
       dirty: true,
       nextZ: z,
       items: s.items.map((item) => {
         const p = patches.get(item.id)
         if (!p) return item
+        const bl = centerOriginPoseToBottomLeftOrigin(item)
         return {
-          ...asFreeOnContainer(item, groupId, p.inner, p.preview),
+          ...item,
+          x: bl.x,
+          y: bl.y,
+          rotation: bl.rotation,
           zIndex: p.zIndex,
+          // Visual-only: still free on parent container, but paint like a fan card
+          stacked: true,
+          stackGroupId: groupId,
         }
       }),
       stacks: s.stacks.map((st) =>
@@ -494,29 +529,64 @@ export function createStackLayoutActions(
       editingId: null,
       editingStackGroupId: null,
     }))
-    const afterMerge = get()
-    const parentId = afterMerge.stacks.find((s) => s.id === groupId)?.parentId
-    if (parentId) {
-      const healed = reflowContainerSurfaceZ(
-        afterMerge.items,
-        afterMerge.stacks,
-        parentId,
-        { frontStackIds: [groupId] },
-      )
-      set({
-        nextZ: Math.max(afterMerge.nextZ, healed.nextZ),
-        items: afterMerge.items.map((item) =>
-          healed.itemZMap.has(item.id)
-            ? { ...item, zIndex: healed.itemZMap.get(item.id)! }
-            : item,
-        ),
-        stacks: afterMerge.stacks.map((st) =>
-          healed.stackZMap.has(st.id)
-            ? { ...st, zIndex: healed.stackZMap.get(st.id)! }
-            : st,
-        ),
-      })
+
+    // Fly from drop pose → fan preview (ease-out cubic, hard cap 300ms)
+    const MERGE_FLY_MS = 280
+    const flyTargets = [...patches.values()].map((p) => ({
+      id: p.item.id,
+      x: p.preview.x,
+      y: p.preview.y,
+      rotation: p.preview.rotation,
+    }))
+    const flyTargetById = new Map(flyTargets.map((t) => [t.id, t]))
+
+    const finalizeMerge = () => {
+      set((s) => ({
+        dirty: true,
+        items: s.items.map((item) => {
+          const p = patches.get(item.id)
+          if (!p) return item
+          // Prefer exact fly target so handoff cannot drift from the last RAF
+          const end = flyTargetById.get(item.id) ?? p.preview
+          return {
+            ...asFreeOnContainer(item, groupId, p.inner, {
+              x: end.x,
+              y: end.y,
+              rotation: end.rotation,
+            }),
+            zIndex: p.zIndex,
+          }
+        }),
+      }))
+      const afterMerge = get()
+      const parentId = afterMerge.stacks.find((s) => s.id === groupId)?.parentId
+      if (parentId) {
+        const healed = reflowContainerSurfaceZ(
+          afterMerge.items,
+          afterMerge.stacks,
+          parentId,
+          { frontStackIds: [groupId] },
+        )
+        set({
+          nextZ: Math.max(afterMerge.nextZ, healed.nextZ),
+          items: afterMerge.items.map((item) =>
+            healed.itemZMap.has(item.id)
+              ? { ...item, zIndex: healed.itemZMap.get(item.id)! }
+              : item,
+          ),
+          stacks: afterMerge.stacks.map((st) =>
+            healed.stackZMap.has(st.id)
+              ? { ...st, zIndex: healed.stackZMap.get(st.id)! }
+              : st,
+          ),
+        })
+      }
     }
+
+    get().animateToLayout(flyTargets, MERGE_FLY_MS, {
+      skipHistory: true,
+      onComplete: finalizeMerge,
+    })
   },
 
 

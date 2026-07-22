@@ -1,25 +1,28 @@
+const HOTKEYS = [
+  { key: 'Drop', label: 'media' },
+  { key: 'T', label: 'text' },
+  { key: 'N', label: 'note' },
+  { key: 'P', label: 'draw' },
+  { key: 'C', label: 'crop' },
+  { key: 'Space', label: 'play' },
+  { key: 'Ctrl+S', label: 'save' },
+  { key: 'Ctrl+V', label: 'paste' },
+  { key: 'Ctrl+G', label: 'stack' },
+] as const
+
 export function EmptyState() {
   return (
     <div className="empty-state">
       <div className="empty-card">
         <h1>Drop references.</h1>
-        <p>
-          Images, GIFs, video, scribbles, free text, notes, and links —
-          stack, layout, crop. Drag URLs, media, or text from the browser.
-        </p>
-        <ul>
-          <li>
-            <kbd>Drop</kbd> media · <kbd>C</kbd> crop · <kbd>Alt+R</kbd> unrotate · <kbd>Alt+C</kbd> uncrop
-          </li>
-          <li>
-            <kbd>P</kbd> draw · <kbd>E</kbd> erase · <kbd>T</kbd> text · <kbd>N</kbd> note
-          </li>
-          <li>
-            <kbd>Ctrl+S</kbd> save · <kbd>Ctrl+X</kbd>/<kbd>C</kbd>/<kbd>V</kbd> cut/copy/paste · <kbd>Space</kbd> play
-          </li>
-          <li>
-            <kbd>Ctrl+G</kbd> stack · <kbd>Alt+G</kbd> unstack / layout
-          </li>
+        <p>Drop anything in. Let ideas take shape as you arrange.</p>
+        <ul className="empty-hotkeys">
+          {HOTKEYS.map(({ key, label }) => (
+            <li key={key}>
+              <span className="empty-key">{key}</span>
+              <span className="empty-label">{label}</span>
+            </li>
+          ))}
         </ul>
       </div>
     </div>

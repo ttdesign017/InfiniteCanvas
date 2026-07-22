@@ -9,6 +9,7 @@ import {
 } from '../../utils/stacks'
 import { peerStackGhostOwnsLayer } from '../../utils/stackNavigationAnimation'
 import { stackCountPaintZ, stackFolderPaintZ } from '../../utils/zOrder'
+import { rectCenter } from '../../utils/peerScatter'
 
 /**
  * Enter/exit parent-peer ghost layers (items + sibling stacks) for stack nav morph.
@@ -170,23 +171,29 @@ export function useStackNavGhosts(input: {
       ? exitPeerOpacity
       : 1
 
-  /** Focus stack center in ghost-local space (stack top-left is 0,0). */
-  const peerScatterOriginLocal =
-    animStackRec != null
-      ? {
-          x: animStackRec.width / 2,
-          y: animStackRec.height / 2,
-        }
-      : null
+  /**
+   * Focus scatter origin = visual folder center (collapsed hull ∪ stored shell),
+   * frozen for the duration of the nav anim so peer rays stay stable.
+   * Ghost-local space: stack record top-left is (0,0).
+   */
+  const peerScatterOrigins = useMemo(() => {
+    if (!animStackRec || (!isEnterAnim && !isExitAnim)) {
+      return { local: null as { x: number; y: number } | null, world: null as { x: number; y: number } | null }
+    }
+    const bounds = collapsedStackFolderBounds(animStackRec, items, stacks)
+    const world = rectCenter(bounds)
+    // continuous / ghost local: parent world − stack record origin
+    const local = {
+      x: world.x - animStackRec.x,
+      y: world.y - animStackRec.y,
+    }
+    return { local, world }
+    // Snapshot once per enter/exit of a given stack — do not track live fan drift.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEnterAnim, isExitAnim, animStackId])
 
-  /** Focus stack center in parent world space (for real layer after exit handoff). */
-  const peerScatterOriginWorld =
-    animStackRec != null
-      ? {
-          x: animStackRec.x + animStackRec.width / 2,
-          y: animStackRec.y + animStackRec.height / 2,
-        }
-      : null
+  const peerScatterOriginLocal = peerScatterOrigins.local
+  const peerScatterOriginWorld = peerScatterOrigins.world
 
   return {
     isEnterAnim,

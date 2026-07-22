@@ -1,12 +1,13 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import {
   answerClosePrompt,
+  getClosePromptCopy,
   getClosePromptOpen,
   subscribeClosePrompt,
-} from '../hooks/useCloseGuard'
+} from '../hooks/unsavedPrompt'
 
 /**
- * In-app save/discard/cancel dialog used on exit.
+ * In-app save/discard/cancel dialog used on exit and before opening another file.
  * Must NOT use Tauri native dialogs inside onCloseRequested (deadlocks).
  */
 export function CloseSaveDialog() {
@@ -17,6 +18,11 @@ export function CloseSaveDialog() {
     subscribeClosePrompt,
     getClosePromptOpen,
     () => false,
+  )
+  const copy = useSyncExternalStore(
+    subscribeClosePrompt,
+    getClosePromptCopy,
+    getClosePromptCopy,
   )
 
   useEffect(() => {
@@ -67,10 +73,11 @@ export function CloseSaveDialog() {
       aria-describedby="close-save-description"
     >
       <div className="close-save-dialog">
-        <h2 id="close-save-title" className="close-save-title">Save canvas?</h2>
+        <h2 id="close-save-title" className="close-save-title">
+          {copy.title}
+        </h2>
         <p id="close-save-description" className="close-save-body">
-          This canvas has unsaved changes. Save it as an Infinite Canvas project
-          (.icanvas) before closing?
+          {copy.body}
         </p>
         <div className="close-save-actions">
           <button

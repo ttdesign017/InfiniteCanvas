@@ -199,7 +199,14 @@ export function computeAlignPatches(
 }
 
 /**
- * Pack bodies toward a side (close gaps).
+ * Gravity pack / 聚拢 — NOT edge-align, NOT single-file shelf packing.
+ *
+ * Ctrl+Left: every body falls left under gravity.
+ *  - Wall = leftmost edge among selection (alignment line).
+ *  - A body stops at the wall, or when its left side hits another body's
+ *    right side (PACK_MARGIN gap) — only if their Y ranges overlap.
+ *  - Bodies that don't share vertical space all fall to the same wall.
+ * Other directions mirror this.
  */
 export function computePackPatches(
   selectedIds: string[],
@@ -213,70 +220,13 @@ export function computePackPatches(
   const bodies = collectAlignBodies(selectedIds, allItems, ctx)
   if (bodies.length < 2) return { itemPatches: [], stackPatches: [] }
 
-  const horizontal = dir === 'left' || dir === 'right'
-  const sorted = [...bodies].sort((a, b) => {
-    if (horizontal) {
-      return dir === 'left' ? a.x - b.x : b.x + b.width - (a.x + a.width)
-    }
-    return dir === 'up' ? a.y - b.y : b.y + b.height - (a.y + a.height)
-  })
-
   const itemPatches: Array<{ id: string; dx: number; dy: number }> = []
   const stackPatches: Array<{ id: string; dx: number; dy: number }> = []
-  const placed: AlignBody[] = []
+  const settled: Array<{ x: number; y: number; width: number; height: number }> =
+    []
 
-  for (const body of sorted) {
-    let dx = 0
-    let dy = 0
-
-    if (horizontal) {
-      if (dir === 'left') {
-        let edge = -Infinity
-        for (const p of placed) {
-          if (
-            rangesOverlap(body.y, body.y + body.height, p.y, p.y + p.height)
-          ) {
-            edge = Math.max(edge, p.x + p.width + PACK_MARGIN)
-          }
-        }
-        if (edge > -Infinity) dx = edge - body.x
-      } else {
-        let edge = Infinity
-        for (const p of placed) {
-          if (
-            rangesOverlap(body.y, body.y + body.height, p.y, p.y + p.height)
-          ) {
-            edge = Math.min(edge, p.x - PACK_MARGIN)
-          }
-        }
-        if (edge < Infinity) dx = edge - (body.x + body.width)
-      }
-    } else if (dir === 'up') {
-      let edge = -Infinity
-      for (const p of placed) {
-        if (rangesOverlap(body.x, body.x + body.width, p.x, p.x + p.width)) {
-          edge = Math.max(edge, p.y + p.height + PACK_MARGIN)
-        }
-      }
-      if (edge > -Infinity) dy = edge - body.y
-    } else {
-      let edge = Infinity
-      for (const p of placed) {
-        if (rangesOverlap(body.x, body.x + body.width, p.x, p.x + p.width)) {
-          edge = Math.min(edge, p.y - PACK_MARGIN)
-        }
-      }
-      if (edge < Infinity) dy = edge - (body.y + body.height)
-    }
-
-    const next = {
-      ...body,
-      x: body.x + dx,
-      y: body.y + dy,
-    }
-    placed.push(next)
-
-    if (dx === 0 && dy === 0) continue
+  const emit = (body: AlignBody, dx: number, dy: number) => {
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return
     if (body.stackId) {
       stackPatches.push({ id: body.stackId, dx, dy })
     } else {
@@ -284,6 +234,104 @@ export function computePackPatches(
         itemPatches.push({ id, dx, dy })
       }
     }
+  }
+
+  if (dir === 'left') {
+    const wall = Math.min(...bodies.map((b) => b.x))
+    // Process left→right so blockers settle first
+    const sorted = [...bodies].sort((a, b) => a.x - b.x || a.y - b.y)
+
+    for (const b of sorted) {
+      // Fall all the way to the wall unless a settled body blocks on Y
+      let targetX = wall
+      for (const p of settled) {
+        if (rangesOverlap(b.y, b.y + b.height, p.y, p.y + p.height)) {
+          targetX = Math.max(targetX, p.x + p.width + PACK_MARGIN)
+        }
+      }
+      const dx = targetX - b.x
+      emit(b, dx, 0)
+      settled.push({
+        x: targetX,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+      })
+    }
+    return { itemPatches, stackPatches }
+  }
+
+  if (dir === 'right') {
+    const wall = Math.max(...bodies.map((b) => b.x + b.width))
+    const sorted = [...bodies].sort(
+      (a, b) => b.x + b.width - (a.x + a.width) || a.y - b.y,
+    )
+
+    for (const b of sorted) {
+      let targetRight = wall
+      for (const p of settled) {
+        if (rangesOverlap(b.y, b.y + b.height, p.y, p.y + p.height)) {
+          targetRight = Math.min(targetRight, p.x - PACK_MARGIN)
+        }
+      }
+      const targetX = targetRight - b.width
+      const dx = targetX - b.x
+      emit(b, dx, 0)
+      settled.push({
+        x: targetX,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+      })
+    }
+    return { itemPatches, stackPatches }
+  }
+
+  if (dir === 'up') {
+    const wall = Math.min(...bodies.map((b) => b.y))
+    const sorted = [...bodies].sort((a, b) => a.y - b.y || a.x - b.x)
+
+    for (const b of sorted) {
+      let targetY = wall
+      for (const p of settled) {
+        if (rangesOverlap(b.x, b.x + b.width, p.x, p.x + p.width)) {
+          targetY = Math.max(targetY, p.y + p.height + PACK_MARGIN)
+        }
+      }
+      const dy = targetY - b.y
+      emit(b, 0, dy)
+      settled.push({
+        x: b.x,
+        y: targetY,
+        width: b.width,
+        height: b.height,
+      })
+    }
+    return { itemPatches, stackPatches }
+  }
+
+  // down
+  const wall = Math.max(...bodies.map((b) => b.y + b.height))
+  const sorted = [...bodies].sort(
+    (a, b) => b.y + b.height - (a.y + a.height) || a.x - b.x,
+  )
+
+  for (const b of sorted) {
+    let targetBottom = wall
+    for (const p of settled) {
+      if (rangesOverlap(b.x, b.x + b.width, p.x, p.x + p.width)) {
+        targetBottom = Math.min(targetBottom, p.y - PACK_MARGIN)
+      }
+    }
+    const targetY = targetBottom - b.height
+    const dy = targetY - b.y
+    emit(b, 0, dy)
+    settled.push({
+      x: b.x,
+      y: targetY,
+      width: b.width,
+      height: b.height,
+    })
   }
 
   return { itemPatches, stackPatches }

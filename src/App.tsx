@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Toolbar } from './components/Toolbar'
 import { InfiniteCanvas } from './components/InfiniteCanvas'
+import { EraserCursor } from './components/EraserCursor'
 import { WindowChrome } from './components/WindowChrome'
 import { CloseSaveDialog } from './components/CloseSaveDialog'
 import { SaveToast } from './components/SaveToast'
@@ -50,6 +51,7 @@ export default function App() {
         </ErrorBoundary>
         <Toolbar />
         <CanvasPath />
+        <EraserCursor />
       </main>
       <CloseSaveDialog />
       <SaveToast />

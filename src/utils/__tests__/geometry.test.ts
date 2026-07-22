@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { MediaItem } from '../../types/canvas'
 import { applyWorldCrop, uncropFrame } from '../crop'
-import { itemWorldAABB, pointInRotatedItem } from '../geometry'
+import {
+  centerOriginPoseToBottomLeftOrigin,
+  itemLocalToWorld,
+  itemWorldAABB,
+  pointInRotatedItem,
+} from '../geometry'
 
 const image: MediaItem = {
   id: 'image-1',
@@ -18,6 +23,25 @@ const image: MediaItem = {
 }
 
 describe('rotated item geometry', () => {
+  it('converts center-origin pose to bottom-left origin without moving the BL corner', () => {
+    const free = { x: 40, y: 20, width: 100, height: 80, rotation: 12 }
+    const blCorner = itemLocalToWorld(free, { x: 0, y: free.height })
+    const stacked = centerOriginPoseToBottomLeftOrigin(free)
+    // Under bottom-left origin the BL corner sits at (x, y+height)
+    expect(stacked.x).toBeCloseTo(blCorner.x)
+    expect(stacked.y + free.height).toBeCloseTo(blCorner.y)
+    expect(stacked.rotation).toBe(12)
+  })
+
+  it('leaves unrotated poses unchanged when converting origins', () => {
+    const free = { x: 10, y: 20, width: 50, height: 40, rotation: 0 }
+    expect(centerOriginPoseToBottomLeftOrigin(free)).toEqual({
+      x: 10,
+      y: 20,
+      rotation: 0,
+    })
+  })
+
   it('computes the visual AABB around a rotated rectangle', () => {
     const bounds = itemWorldAABB({ ...image, rotation: 90 })
     expect(bounds.x).toBeCloseTo(50)

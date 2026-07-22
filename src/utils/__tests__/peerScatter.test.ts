@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  PEER_SCATTER_DIST_CAP_PX,
+  PEER_SCATTER_DIST_FACTOR,
   PEER_SCATTER_MAX_BLUR_PX,
   PEER_SCATTER_MAX_PX,
+  PEER_SCATTER_MAX_SCALE_ADD,
   freeItemWrapAllowsPointer,
   peerRadialOffset,
   peerScatterAmount,
@@ -16,14 +19,30 @@ describe('peerScatter', () => {
     expect(peerScatterAmount(0.5)).toBeCloseTo(0.5)
   })
 
-  it('pushes peers away from the focus origin', () => {
+  it('pushes peers away from the focus origin (not toward it)', () => {
     const { dx, dy } = peerRadialOffset(
       { x: 100, y: 50 },
       { x: 0, y: 50 },
       1,
       'a',
     )
-    expect(dx).toBeCloseTo(PEER_SCATTER_MAX_PX)
+    // Right of focus → positive X only
+    expect(dx).toBeGreaterThan(0)
+    expect(dy).toBeCloseTo(0)
+    const expected =
+      PEER_SCATTER_MAX_PX +
+      Math.min(PEER_SCATTER_DIST_CAP_PX, 100 * PEER_SCATTER_DIST_FACTOR)
+    expect(dx).toBeCloseTo(expected)
+  })
+
+  it('left-side peers move further left (radiate from focus)', () => {
+    const { dx, dy } = peerRadialOffset(
+      { x: -40, y: 10 },
+      { x: 80, y: 10 },
+      1,
+      'left',
+    )
+    expect(dx).toBeLessThan(0)
     expect(dy).toBeCloseTo(0)
   })
 
@@ -32,7 +51,10 @@ describe('peerScatter', () => {
     const b = peerRadialOffset({ x: 10, y: 10 }, { x: 10, y: 10 }, 1, 'seed-x')
     expect(a.dx).toBeCloseTo(b.dx)
     expect(a.dy).toBeCloseTo(b.dy)
-    expect(Math.hypot(a.dx, a.dy)).toBeCloseTo(PEER_SCATTER_MAX_PX)
+    expect(Math.hypot(a.dx, a.dy)).toBeCloseTo(
+      PEER_SCATTER_MAX_PX +
+        Math.min(PEER_SCATTER_DIST_CAP_PX, 1 * PEER_SCATTER_DIST_FACTOR),
+    )
   })
 
   it('at rest opacity produces no transform or blur (handoff-safe)', () => {
@@ -45,7 +67,7 @@ describe('peerScatter', () => {
     expect(style).toEqual({ opacity: 1 })
   })
 
-  it('at full scatter applies scale, radial translate, and blur ≤ 6', () => {
+  it('at full scatter applies outward translate, mild scale, and blur', () => {
     const style = peerScatterStyle(
       { x: 100, y: 0 },
       { x: 0, y: 0 },
@@ -53,8 +75,12 @@ describe('peerScatter', () => {
       'id',
     )
     expect(style.opacity).toBe(0)
-    expect(style.transform).toContain('scale(1.12)')
-    expect(style.transform).toContain(`translate(${PEER_SCATTER_MAX_PX}px`)
+    const scale = 1 + PEER_SCATTER_MAX_SCALE_ADD
+    expect(style.transform).toContain(`scale(${scale})`)
+    const dist =
+      PEER_SCATTER_MAX_PX +
+      Math.min(PEER_SCATTER_DIST_CAP_PX, 100 * PEER_SCATTER_DIST_FACTOR)
+    expect(style.transform).toContain(`translate3d(${dist}px`)
     expect(style.filter).toBe(`blur(${PEER_SCATTER_MAX_BLUR_PX.toFixed(2)}px)`)
   })
 
