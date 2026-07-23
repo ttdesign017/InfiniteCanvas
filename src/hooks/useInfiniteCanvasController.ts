@@ -18,7 +18,12 @@ import {
   blurChrome,
   dismissStackNameEdit,
   isInteractionLocked,
+  prewarmCanvasTransform,
 } from './canvas/canvasUiHelpers'
+import {
+  createViewportFrameScheduler,
+  type ViewportFrameScheduler,
+} from '../utils/viewportFrameScheduler'
 
 export { captureJointMoveSelection } from './canvas'
 
@@ -29,6 +34,15 @@ export { captureJointMoveSelection } from './canvas'
  */
 export function useInfiniteCanvasController() {
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const viewportFrameRef = useRef<ViewportFrameScheduler | null>(null)
+  if (!viewportFrameRef.current) {
+    viewportFrameRef.current = createViewportFrameScheduler({
+      getViewport: () => useCanvasStore.getState().viewport,
+      commitViewport: (viewport) =>
+        useCanvasStore.getState().setViewport(viewport),
+    })
+  }
+  const viewportFrame = viewportFrameRef.current
   const dragRef = useRef<DragMode>(null)
   const eraseHistoryPushed = useRef(false)
   const lastItemClickRef = useRef<{
@@ -198,28 +212,42 @@ export function useInfiniteCanvasController() {
   }, [])
 
   useEffect(() => {
+    return () => viewportFrame.cancel()
+  }, [viewportFrame])
+
+  useEffect(() => {
+    // A queued wheel delta belongs to the surface where it originated.
+    // Never apply it after a stack navigation swaps to another viewport.
+    viewportFrame.cancel()
+  }, [currentContainerId, viewportFrame])
+
+  useEffect(() => {
     const el = surfaceRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const store = useCanvasStore.getState()
+      prewarmCanvasTransform(el)
       const rect = el.getBoundingClientRect()
       const local = { x: e.clientX - rect.left, y: e.clientY - rect.top }
       const looksLikeTrackpad =
         Math.abs(e.deltaX) > 0.5 && Math.abs(e.deltaY) > 0.5
       if (e.ctrlKey || e.metaKey) {
-        store.zoomAt(local.x, local.y, Math.exp(-e.deltaY * 0.01))
+        viewportFrame.zoomAt(local.x, local.y, Math.exp(-e.deltaY * 0.01))
       } else if (e.shiftKey) {
-        store.panBy(-e.deltaY - e.deltaX, 0)
+        viewportFrame.panBy(-e.deltaY - e.deltaX, 0)
       } else if (looksLikeTrackpad || e.altKey) {
-        store.panBy(-e.deltaX, -e.deltaY)
+        viewportFrame.panBy(-e.deltaX, -e.deltaY)
       } else {
-        store.zoomAt(local.x, local.y, Math.exp(-e.deltaY * 0.0025))
+        viewportFrame.zoomAt(
+          local.x,
+          local.y,
+          Math.exp(-e.deltaY * 0.0025),
+        )
       }
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [viewportFrame])
 
   const {
     onGroupScalePointerDown,
@@ -245,6 +273,8 @@ export function useInfiniteCanvasController() {
     setSnapGuides,
     scheduleDragWrite,
     flushDragWrite,
+    scheduleViewportPan: viewportFrame.panBy,
+    flushViewport: viewportFrame.flush,
     getLocalPoint,
     effectiveTool,
     isGroupSelect,

@@ -87,6 +87,7 @@ export function peerScatterStyle(
   origin: { x: number; y: number },
   peerOpacity: number,
   seed = 'peer',
+  allowBlur = true,
 ): PeerScatterStyle {
   const opacity = clamp01(peerOpacity)
   const amount = peerScatterAmount(opacity)
@@ -108,8 +109,11 @@ export function peerScatterStyle(
   return {
     opacity,
     transform,
-    filter: blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : undefined,
-    willChange: 'transform, opacity, filter',
+    filter:
+      allowBlur && blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : undefined,
+    willChange: allowBlur
+      ? 'transform, opacity, filter'
+      : 'transform, opacity',
   }
 }
 

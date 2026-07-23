@@ -21,6 +21,7 @@ import { FULL_CROP, getCrop } from './crop'
 import { getVideoPoster, ensureVideoPoster } from './videoPosterCache'
 import { collapsedStackFanCards } from './stacks'
 import { trackBlobUrl, revokeBlobUrl } from './blobUrls'
+import { mapPool } from './mapPool'
 import {
   STACK_FAN_EDGE_ALPHA,
   STACK_FAN_RADIUS_PX,
@@ -46,6 +47,18 @@ const MAX_EDGE = 2048
 const CARD_RADIUS = STACK_FAN_RADIUS_PX
 const SHADOW_PAD = 40
 const LOAD_ATTEMPTS = 5
+/** Bounded parallel decode: faster for 50+ cards without a memory spike. */
+const MEDIA_DECODE_CONCURRENCY = 4
+
+/**
+ * Canvas composites are ideal for media-heavy fans, but text must stay as live
+ * DOM so CSS fonts, colors, Unicode shaping and line wrapping remain faithful.
+ */
+export function stackFanNeedsLiveText(items: readonly CanvasItem[]): boolean {
+  return items.some(
+    (item) => item.type === 'text' || item.type === 'textcard',
+  )
+}
 
 function mediaSrc(item: CanvasItem): string | null {
   if (
@@ -538,51 +551,57 @@ export async function ensureStackFanComposite(
           transparentFace: boolean
         }
 
-    const prepared: Prepared[] = []
+    let prepared: Prepared[] = []
     try {
-      for (const c of sorted) {
-        const m = itemById.get(c.id)
-        if (!m) continue
+      const resolved = await mapPool(
+        sorted,
+        MEDIA_DECODE_CONCURRENCY,
+        async (c): Promise<Prepared | null> => {
+          const m = itemById.get(c.id)
+          if (!m) return null
 
-        if (isPaintedMedia(m)) {
-          const src = await resolvePaintSrc(m)
-          const img = await loadImageStrict(src)
-          prepared.push({
-            kind: 'media',
-            c,
-            img,
-            flipX: !!(m as MediaItem).flipX,
-            flipY: !!(m as MediaItem).flipY,
-            crop:
-              m.type === 'image' || m.type === 'gif' || m.type === 'video'
-                ? getCrop(m as MediaItem)
-                : FULL_CROP,
-          })
-          continue
-        }
+          if (isPaintedMedia(m)) {
+            const src = await resolvePaintSrc(m)
+            const img = await loadImageStrict(src)
+            return {
+              kind: 'media',
+              c,
+              img,
+              flipX: !!(m as MediaItem).flipX,
+              flipY: !!(m as MediaItem).flipY,
+              crop:
+                m.type === 'image' || m.type === 'gif' || m.type === 'video'
+                  ? getCrop(m as MediaItem)
+                  : FULL_CROP,
+            }
+          }
 
-        if (m.type === 'text') {
-          const bg = m.backgroundColor || 'transparent'
-          prepared.push({
-            kind: 'label',
-            c,
-            fillStyle: bg,
-            label: m.content,
-            labelColor: m.color || '#1e1e1e',
-            transparentFace: isTransparentFill(bg),
-          })
-        } else if (m.type === 'textcard') {
-          prepared.push({
-            kind: 'label',
-            c,
-            fillStyle: m.backgroundColor || '#ffffff',
-            label: m.content,
-            labelColor: m.color || '#1e1e1e',
-            transparentFace: false,
-          })
-        }
-        // scribble / audio / embed: not in fan
-      }
+          if (m.type === 'text') {
+            const bg = m.backgroundColor || 'transparent'
+            return {
+              kind: 'label',
+              c,
+              fillStyle: bg,
+              label: m.content,
+              labelColor: m.color || '#1e1e1e',
+              transparentFace: isTransparentFill(bg),
+            }
+          }
+          if (m.type === 'textcard') {
+            return {
+              kind: 'label',
+              c,
+              fillStyle: m.backgroundColor || '#ffffff',
+              label: m.content,
+              labelColor: m.color || '#1e1e1e',
+              transparentFace: false,
+            }
+          }
+          // scribble / audio / embed: not in fan
+          return null
+        },
+      )
+      prepared = resolved.filter((entry): entry is Prepared => entry !== null)
     } catch {
       // Media decode failure is not allowed on the published bitmap.
       // Keep live fans; retry. Never write a partial white-slab composite.

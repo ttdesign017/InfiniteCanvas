@@ -12,6 +12,7 @@ import { normalizeImportedItems } from '../store/actionHelpers'
 import { migrateLegacyStacks } from './stacks'
 import { reflowContainerSurfaceZ } from './zOrder'
 import { revokeAllTrackedBlobUrls } from './blobUrls'
+import { prunePackAssetCache } from './packAssetCache'
 import {
   assertICanvasIntegrity,
   materializeRuntimeMediaSources,
@@ -133,7 +134,6 @@ export async function packBoardSnapshotToText(
 ): Promise<{ text: string; doc: ICanvasDocument }> {
   const { pruneBoardSnapshotForSave, collectLiveMediaSrcs } =
     await import('./pruneBoardSnapshot')
-  const { prunePackAssetCache } = await import('./packAssetCache')
   const cleaned = pruneBoardSnapshotForSave(snapshot)
   // Drop session pack-cache entries for deleted media (do not re-embed ghosts)
   prunePackAssetCache(collectLiveMediaSrcs(cleaned.items))

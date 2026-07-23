@@ -181,6 +181,7 @@ export interface CanvasState {
    */
   startScribble: (world: Point) => string
   appendScribblePoint: (id: string, world: Point) => void
+  appendScribblePoints: (id: string, worlds: Point[]) => void
   /**
    * End the current stroke (pointer up). Does NOT close the layer session —
    * more strokes still go into the same scribble item.

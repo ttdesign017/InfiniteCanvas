@@ -97,7 +97,12 @@ export type DragMode =
       bounds: { x: number; y: number; width: number; height: number }
       bodies: GroupBodyOrigin[]
     }
-  | { kind: 'scribble'; id: string }
+  | {
+      kind: 'scribble'
+      id: string
+      pendingWorld: Array<{ x: number; y: number }>
+      lastWorld: { x: number; y: number }
+    }
   | { kind: 'erase'; erased: boolean }
   | {
       kind: 'crop'

@@ -45,6 +45,30 @@ describe('scribble layer session', () => {
     }
   })
 
+  it('appends a pointer batch in one store update and normalizes on pointer up', () => {
+    const store = useCanvasStore.getState()
+    store.setTool('scribble')
+    const id = store.startScribble({ x: 100, y: 100 })
+    store.appendScribblePoints(id, [
+      { x: 80, y: 90 },
+      { x: 140, y: 130 },
+    ])
+
+    const live = useCanvasStore.getState().items.find((item) => item.id === id)
+    expect(live?.type === 'scribble' && live.paths[0].points).toHaveLength(3)
+    useCanvasStore.getState().endScribble()
+
+    const normalized = useCanvasStore
+      .getState()
+      .items.find((item) => item.id === id)
+    expect(
+      normalized?.type === 'scribble' &&
+        normalized.paths[0].points.every(
+          (point) => point.x >= 0 && point.y >= 0,
+        ),
+    ).toBe(true)
+  })
+
   it('finalizes the layer when leaving the pen tool', () => {
     const store = useCanvasStore.getState()
     store.setTool('scribble')

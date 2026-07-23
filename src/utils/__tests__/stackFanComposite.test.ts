@@ -5,6 +5,7 @@ import {
   sortFanItemsStable,
   stackFanContentKey,
   stackFanCompositeCacheSize,
+  stackFanNeedsLiveText,
 } from '../stackFanComposite'
 
 afterEach(() => {
@@ -231,5 +232,61 @@ describe('sortFanItemsStable', () => {
       { id: 'c', zIndex: 1 },
     ])
     expect(sorted.map((x) => x.id)).toEqual(['c', 'a', 'b'])
+  })
+})
+
+describe('stackFanNeedsLiveText', () => {
+  it('keeps note and plain-text fans on the live DOM path', () => {
+    const note: CanvasItem = {
+      id: 'note',
+      type: 'textcard',
+      x: 0,
+      y: 0,
+      width: 240,
+      height: 120,
+      rotation: 0,
+      zIndex: 1,
+      content: 'Visible note body',
+      fontSize: 14,
+      color: '#6b6b6b',
+      backgroundColor: '#fff',
+    }
+    const text: CanvasItem = {
+      id: 'text',
+      type: 'text',
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 80,
+      rotation: 0,
+      zIndex: 2,
+      content: 'Visible free text',
+      fontSize: 18,
+      fontFamily: 'system-ui',
+      fontWeight: 500,
+      color: '#222',
+      backgroundColor: 'transparent',
+    }
+
+    expect(stackFanNeedsLiveText([note])).toBe(true)
+    expect(stackFanNeedsLiveText([text])).toBe(true)
+  })
+
+  it('still allows media-only fans to use a composite bitmap', () => {
+    const media: CanvasItem = {
+      id: 'image',
+      type: 'image',
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 120,
+      rotation: 0,
+      zIndex: 1,
+      src: 'blob:image',
+      naturalWidth: 200,
+      naturalHeight: 120,
+    }
+
+    expect(stackFanNeedsLiveText([media])).toBe(false)
   })
 })

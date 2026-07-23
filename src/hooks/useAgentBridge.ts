@@ -11,6 +11,7 @@ import {
   readDir,
   readTextFile,
   remove,
+  rename,
   writeTextFile,
 } from '@tauri-apps/plugin-fs'
 import { isDesktop } from '../utils/desktop'
@@ -67,17 +68,37 @@ async function writeSession(dir: string): Promise<void> {
 
 async function processRequest(dir: string, name: string): Promise<void> {
   const reqPath = await join(dir, name)
+  const claimedPath = `${reqPath}.processing`
+
+  // Atomic claim: overlapping polls, multiple windows, or multiple app
+  // processes must never apply the same mutation twice.
+  try {
+    await rename(reqPath, claimedPath)
+  } catch {
+    return
+  }
+
   let raw: string
   try {
-    raw = await readTextFile(reqPath)
+    raw = await readTextFile(claimedPath)
   } catch {
+    // A transient read failure should make the request visible for a later poll.
+    await rename(claimedPath, reqPath).catch(() => {})
     return
   }
   let req: AgentRequest
   try {
     req = JSON.parse(raw) as AgentRequest
   } catch {
-    await remove(reqPath).catch(() => {})
+    await remove(claimedPath).catch(() => {})
+    return
+  }
+
+  const resPath = await join(dir, `${RES_PREFIX}${req.id}.json`)
+  // A requester may retry an ID after receiving a timeout. A durable response is
+  // the idempotency record: consume the duplicate request without reapplying it.
+  if (await exists(resPath)) {
+    await remove(claimedPath).catch(() => {})
     return
   }
 
@@ -159,9 +180,11 @@ async function processRequest(dir: string, name: string): Promise<void> {
     }
   }
 
-  const resPath = await join(dir, `${RES_PREFIX}${req.id}.json`)
+  // Only remove the claim after the complete response is durable. If this write
+  // fails, the .processing file deliberately remains as an exactly-once safety
+  // marker instead of exposing the mutation for duplicate execution.
   await writeTextFile(resPath, JSON.stringify(response))
-  await remove(reqPath).catch(() => {})
+  await remove(claimedPath).catch(() => {})
 }
 
 async function pollOnce(dir: string): Promise<void> {
@@ -171,7 +194,12 @@ async function pollOnce(dir: string): Promise<void> {
   } catch {
     return
   }
-  for (const ent of entries) {
+  // File-system enumeration order is not stable. Deterministic ordering also
+  // makes dependent agent operations observe the order in which they were named.
+  const ordered = [...entries].sort((a, b) =>
+    (a.name ?? '').localeCompare(b.name ?? ''),
+  )
+  for (const ent of ordered) {
     const name = ent.name
     if (!name || !name.startsWith(REQ_PREFIX) || !name.endsWith('.json')) {
       continue
@@ -186,7 +214,7 @@ export function useAgentBridge() {
     if (!isDesktop()) return
     let cancelled = false
     let heartbeat: ReturnType<typeof setInterval> | null = null
-    let poll: ReturnType<typeof setInterval> | null = null
+    let pollTimer: ReturnType<typeof setTimeout> | null = null
 
     void (async () => {
       try {
@@ -201,11 +229,20 @@ export function useAgentBridge() {
           })
         }, 2000)
 
-        poll = setInterval(() => {
-          void pollOnce(dir).catch((err) => {
-            diagError('agent-bridge', 'poll failed', err)
-          })
-        }, 350)
+        const schedulePoll = (delay: number) => {
+          pollTimer = setTimeout(() => {
+            void pollOnce(dir)
+              .catch((err) => {
+                diagError('agent-bridge', 'poll failed', err)
+              })
+              .finally(() => {
+                if (!cancelled) schedulePoll(350)
+              })
+          }, delay)
+        }
+        // Self-scheduling rather than setInterval: the next poll cannot begin
+        // until the current directory scan and every claimed request completes.
+        schedulePoll(0)
       } catch (err) {
         diagError('agent-bridge', 'init failed', err)
         console.error('[agent-bridge] init failed', err)
@@ -215,7 +252,7 @@ export function useAgentBridge() {
     return () => {
       cancelled = true
       if (heartbeat) clearInterval(heartbeat)
-      if (poll) clearInterval(poll)
+      if (pollTimer) clearTimeout(pollTimer)
     }
   }, [])
 }

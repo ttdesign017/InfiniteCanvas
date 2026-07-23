@@ -98,6 +98,8 @@ export function useCanvasPointerGestures(deps: {
   setSnapGuides: Dispatch<SetStateAction<SnapGuide[]>>
   scheduleDragWrite: (fn: () => void) => void
   flushDragWrite: () => void
+  scheduleViewportPan: (dx: number, dy: number) => void
+  flushViewport: () => void
   getLocalPoint: (e: { clientX: number; clientY: number }) => {
     x: number
     y: number
@@ -122,6 +124,8 @@ export function useCanvasPointerGestures(deps: {
     setSnapGuides,
     scheduleDragWrite,
     flushDragWrite,
+    scheduleViewportPan,
+    flushViewport,
     getLocalPoint,
     effectiveTool,
     isGroupSelect,
@@ -563,7 +567,12 @@ export function useCanvasPointerGestures(deps: {
 
       if (store.tool === 'scribble') {
         const id = store.startScribble(world)
-        dragRef.current = { kind: 'scribble', id }
+        dragRef.current = {
+          kind: 'scribble',
+          id,
+          pendingWorld: [],
+          lastWorld: { ...world },
+        }
         surfaceRef.current?.setPointerCapture(e.pointerId)
         return
       }
@@ -602,7 +611,10 @@ export function useCanvasPointerGestures(deps: {
       const store = useCanvasStore.getState()
 
       if (drag.kind === 'pan') {
-        store.panBy(e.clientX - drag.lastX, e.clientY - drag.lastY)
+        scheduleViewportPan(
+          e.clientX - drag.lastX,
+          e.clientY - drag.lastY,
+        )
         drag.lastX = e.clientX
         drag.lastY = e.clientY
         return
@@ -927,16 +939,44 @@ export function useCanvasPointerGestures(deps: {
           return
         }
 
-        // Apply immediately so geometry matches guides (rAF made snap feel missing)
-        store.resizeItem(id, w, h, nx, ny)
+        scheduleDragWrite(() => {
+          useCanvasStore.getState().resizeItem(id, w, h, nx, ny)
+        })
         setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
         return
       }
 
       if (drag.kind === 'scribble') {
-        const local = getLocalPoint(e)
-        const world = screenToWorld(local.x, local.y, store.viewport)
-        store.appendScribblePoint(drag.id, world)
+        const native = e.nativeEvent
+        const coalesced =
+          typeof native.getCoalescedEvents === 'function'
+            ? native.getCoalescedEvents()
+            : []
+        const samples = coalesced.length > 0 ? coalesced : [native]
+        const minDistance = 0.75 / Math.max(0.01, store.viewport.zoom)
+        for (const sample of samples) {
+          const local = getLocalPoint(sample)
+          const world = screenToWorld(local.x, local.y, store.viewport)
+          if (
+            Math.hypot(
+              world.x - drag.lastWorld.x,
+              world.y - drag.lastWorld.y,
+            ) < minDistance
+          ) {
+            continue
+          }
+          drag.pendingWorld.push(world)
+          drag.lastWorld = world
+        }
+        const id = drag.id
+        scheduleDragWrite(() => {
+          const liveDrag = dragRef.current
+          if (liveDrag?.kind !== 'scribble' || liveDrag.id !== id) return
+          const points = liveDrag.pendingWorld.splice(0)
+          if (points.length > 0) {
+            useCanvasStore.getState().appendScribblePoints(id, points)
+          }
+        })
         return
       }
 
@@ -1052,8 +1092,11 @@ export function useCanvasPointerGestures(deps: {
             })
           }
         }
-        if (itemPatches.length) store.updateItems(itemPatches)
-        if (stackPatches.length) store.updateStacks(stackPatches)
+        scheduleDragWrite(() => {
+          const live = useCanvasStore.getState()
+          if (itemPatches.length) live.updateItems(itemPatches)
+          if (stackPatches.length) live.updateStacks(stackPatches)
+        })
         setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
         return
       }
@@ -1084,7 +1127,12 @@ export function useCanvasPointerGestures(deps: {
         setMarquee({ x, y, w, h })
       }
     },
-    [getLocalPoint, scheduleDragWrite, setStackDropTarget],
+    [
+      getLocalPoint,
+      scheduleDragWrite,
+      scheduleViewportPan,
+      setStackDropTarget,
+    ],
   )
 
   const onPointerUp = useCallback(() => {
@@ -1195,6 +1243,7 @@ export function useCanvasPointerGestures(deps: {
     }
 
     if (drag?.kind === 'pan') {
+      flushViewport()
       store.setIsPanning(false)
       setPanChrome(surfaceRef.current, false)
     }
@@ -1343,7 +1392,7 @@ export function useCanvasPointerGestures(deps: {
     dragRef.current = null
     eraseHistoryPushed.current = false
     setStackDropTarget(null)
-  }, [flushDragWrite, setStackDropTarget])
+  }, [flushDragWrite, flushViewport, setStackDropTarget])
 
   const placeMediaAt = useCallback(
     async (

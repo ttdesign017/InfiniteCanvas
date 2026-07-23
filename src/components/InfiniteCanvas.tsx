@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { bindDragPoseHost } from '../utils/dragPosePreview'
 import type { StackEnterAnim } from '../store/types'
-import type { CanvasItem } from '../types/canvas'
+import type { CanvasItem, StackRecord } from '../types/canvas'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
@@ -19,7 +19,10 @@ import {
   exitPeerStackPreviewOpacity,
 } from '../utils/stackNavigationAnimation'
 import { useStackAnimProgress } from '../utils/stackAnimProgress'
-import { getStackFanComposite } from '../utils/stackFanComposite'
+import {
+  getStackFanComposite,
+  stackFanNeedsLiveText,
+} from '../utils/stackFanComposite'
 import { stackFanEdgeOpacityForNav } from '../utils/stackFanChrome'
 import {
   getSnapGuides,
@@ -57,7 +60,11 @@ function PeerGhostFanLayer({
   fanItems: CanvasItem[]
 }) {
   const cached = getStackFanComposite(stackId)
-  if (cached && fanItems.length > 0) {
+  if (
+    cached &&
+    fanItems.length > 0 &&
+    !stackFanNeedsLiveText(fanItems)
+  ) {
     let z = folderZ + 1
     for (const f of fanItems) {
       if (f.zIndex > z) z = f.zIndex
@@ -259,6 +266,107 @@ export function InfiniteCanvas() {
       (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
     )
   }, [sortedNonEmbeds, exitBridgeFans])
+  const stackFolderStatic = useMemo(() => {
+    const fansByStack = new Map<string, CanvasItem[]>()
+    for (const item of stackPreviewItems) {
+      const stackId = item.stackGroupId
+      if (!stackId || parentPeerGhostStackIds.has(stackId)) continue
+      const fans = fansByStack.get(stackId)
+      if (fans) fans.push(item)
+      else fansByStack.set(stackId, [item])
+    }
+
+    const result = new Map<
+      string,
+      {
+        countN: number
+        folderZ: number
+        countZ: number
+        unitFans: CanvasItem[]
+        stackRec: StackRecord
+      }
+    >()
+    for (const folder of stackFolders) {
+      const folderZ = folder.isRecord
+        ? stackFolderPaintZ(folder.record!, items, stacks)
+        : Math.min(...folder.members.map((member) => member.zIndex)) - 1
+      result.set(folder.gid, {
+        countN: countLeafItemsInStack(items, stacks, folder.gid),
+        folderZ,
+        countZ: folder.isRecord
+          ? stackCountPaintZ(folder.record!, items, stacks)
+          : Math.max(...folder.members.map((member) => member.zIndex), 1) + 2,
+        unitFans: fansByStack.get(folder.gid) ?? [],
+        stackRec: folder.record ?? {
+          id: folder.gid,
+          parentId: currentContainerId,
+          name: folder.name,
+          x: folder.bounds.x,
+          y: folder.bounds.y,
+          width: folder.bounds.width,
+          height: folder.bounds.height,
+          zIndex: folderZ,
+        },
+      })
+    }
+    return result
+  }, [
+    currentContainerId,
+    items,
+    parentPeerGhostStackIds,
+    stackFolders,
+    stackPreviewItems,
+    stacks,
+  ])
+  const embedPaintModels = useMemo(
+    () =>
+      allEmbedItems.map((item) => {
+        let pose = resolveEmbedWorldPose(item, currentContainerId, stacks)
+        if (
+          (exitGhostParent || enterGhostParent) &&
+          animStackRec &&
+          animParentId &&
+          !pose.visible
+        ) {
+          const parentPose = resolveEmbedWorldPose(item, animParentId, stacks)
+          if (parentPose.visible) {
+            pose = {
+              ...parentPose,
+              x: parentPose.x - animStackRec.x,
+              y: parentPose.y - animStackRec.y,
+            }
+          }
+        }
+        return {
+          item,
+          pose,
+          display: embedDisplayItem(item, pose),
+          isExitingFan:
+            pose.asPreview && pose.stackGroupId === exitingStackId,
+          isPeerGhostPreview:
+            pose.asPreview &&
+            pose.stackGroupId != null &&
+            parentPeerGhostStackIds.has(pose.stackGroupId),
+        }
+      }),
+    [
+      allEmbedItems,
+      animParentId,
+      animStackRec,
+      currentContainerId,
+      enterGhostParent,
+      exitGhostParent,
+      exitingStackId,
+      parentPeerGhostStackIds,
+      stacks,
+    ],
+  )
+  const peerBlurEnabled =
+    stackFolders.length +
+      parentPeerGhostStacks.length +
+      parentPeerGhostItems.length +
+      freePaintItems.length <=
+    12
   const exitBridgeOp = exitAfterHandoff
     ? exitLeavingFanBridgeOpacity(animProgress.settle)
     : 0
@@ -312,17 +420,8 @@ export function InfiniteCanvas() {
               : exitAfterHandoff
                 ? exitPeerOpacity
                 : 1
-          // Leaf items only (nested stack folders are not counted as items)
-          const countN = countLeafItemsInStack(items, stacks, f.gid)
-          // Folder uses reserved stack.zIndex when allocation is contiguous;
-          // never paint at min(leaf)-1 (that lets sibling fans sit between
-          // folder and this stack's own cards).
-          const folderZ = f.isRecord
-            ? stackFolderPaintZ(f.record!, items, stacks)
-            : Math.min(...f.members.map((m) => m.zIndex)) - 1
-          const countZ = f.isRecord
-            ? stackCountPaintZ(f.record!, items, stacks)
-            : Math.max(...f.members.map((m) => m.zIndex), 1) + 2
+          const folderStatic = stackFolderStatic.get(f.gid)!
+          const { countN, folderZ, countZ, unitFans, stackRec } = folderStatic
           // Nested child stack chrome (B inside A): fade with enter/exit anim
           const childOfAnim =
             stackEnterAnim &&
@@ -347,19 +446,12 @@ export function InfiniteCanvas() {
                 peerScatterOriginWorld,
                 folderOp,
                 f.gid,
+                peerBlurEnabled,
               )
             : null
           const folderChromeOp = folderScatter ? 1 : folderOp
           // Fan cards belonging to this stack — nested under StackUnit so drag moves as one.
           // Leaving stack: still build composite under the free-item bridge (same cards).
-          const unitFans = stackPreviewItems.filter(
-            (it) =>
-              it.stackGroupId === f.gid &&
-              !(
-                it.stackGroupId != null &&
-                parentPeerGhostStackIds.has(it.stackGroupId)
-              ),
-          )
           // Scatter wrapper already owns peer opacity — don't multiply again on fans.
           // Leaving stack: composite stays at 0 while live bridge owns the fan
           // (semi-overlap double-paints dual box-shadows → dark shadow flash).
@@ -386,17 +478,6 @@ export function InfiniteCanvas() {
                   s.id === f.gid && s.parentId === stackEnterAnim.stackId,
               ))
           )
-          const stackRec: import('../types/canvas').StackRecord =
-            f.record ?? {
-              id: f.gid,
-              parentId: currentContainerId,
-              name: f.name,
-              x: f.bounds.x,
-              y: f.bounds.y,
-              width: f.bounds.width,
-              height: f.bounds.height,
-              zIndex: folderZ,
-            }
           return (
           <StackUnit
             key={`folder-wrap-${f.gid}`}
@@ -538,6 +619,7 @@ export function InfiniteCanvas() {
                   peerScatterOriginLocal,
                   navPeerOpacity,
                   peer.stack.id,
+                  peerBlurEnabled,
                 )
               : { opacity: navPeerOpacity }
           return (
@@ -599,6 +681,7 @@ export function InfiniteCanvas() {
                   peerScatterOriginLocal,
                   navPeerOpacity,
                   item.id,
+                  peerBlurEnabled,
                 )
               : { opacity: navPeerOpacity }
           return (
@@ -647,6 +730,7 @@ export function InfiniteCanvas() {
                 peerScatterOriginWorld,
                 peerOp,
                 item.id,
+                peerBlurEnabled,
               )
             : { opacity: peerOp }
           const bridgeMul = isExitBridge ? exitBridgeOp : 1
@@ -702,39 +786,8 @@ export function InfiniteCanvas() {
           Embed keepalive: every embed stays mounted for the board lifetime.
           Only pose/visibility change on stack enter/exit — iframe never remounts.
         */}
-        {allEmbedItems.map((item) => {
-          let pose = resolveEmbedWorldPose(
-            item,
-            currentContainerId,
-            stacks,
-          )
-          // Enter/exit: also show free embeds living on the parent (ghost)
-          if (
-            (exitGhostParent || enterGhostParent) &&
-            animStackRec &&
-            animParentId &&
-            !pose.visible
-          ) {
-            const parentPose = resolveEmbedWorldPose(
-              item,
-              animParentId,
-              stacks,
-            )
-            if (parentPose.visible) {
-              pose = {
-                ...parentPose,
-                x: parentPose.x - animStackRec.x,
-                y: parentPose.y - animStackRec.y,
-              }
-            }
-          }
-          const display = embedDisplayItem(item, pose)
-          const isExitingFan =
-            pose.asPreview && pose.stackGroupId === exitingStackId
-          const isPeerGhostPreview =
-            pose.asPreview &&
-            pose.stackGroupId != null &&
-            parentPeerGhostStackIds.has(pose.stackGroupId)
+        {embedPaintModels.map(
+          ({ item, pose, display, isExitingFan, isPeerGhostPreview }) => {
           const embedOp = !pose.visible
             ? 0
             : isExitingFan
@@ -767,7 +820,8 @@ export function InfiniteCanvas() {
               />
             </div>
           )
-        })}
+          },
+        )}
       </CanvasWorldTransform>
 
       {visibleItems.length === 0 &&

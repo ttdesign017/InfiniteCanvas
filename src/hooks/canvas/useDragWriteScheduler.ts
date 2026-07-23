@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 /**
  * Coalesce high-frequency drag/resize store writes to one per animation frame.
@@ -28,5 +28,15 @@ export function useDragWriteScheduler() {
     run?.()
   }, [])
 
-  return { scheduleDragWrite, flushDragWrite }
+  const cancelDragWrite = useCallback(() => {
+    if (dragRafRef.current) {
+      cancelAnimationFrame(dragRafRef.current)
+      dragRafRef.current = 0
+    }
+    pendingDragWriteRef.current = null
+  }, [])
+
+  useEffect(() => cancelDragWrite, [cancelDragWrite])
+
+  return { scheduleDragWrite, flushDragWrite, cancelDragWrite }
 }

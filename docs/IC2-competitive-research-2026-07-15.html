@@ -1,0 +1,1410 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="IC2 创意灵感白板竞品研究与产品建议。">
+  <title>IC2 竞品研究 | 创意灵感白板</title>
+  <style>
+    :root {
+      --paper: #f8f8f6;
+      --surface: #ffffff;
+      --surface-soft: #f0f1ef;
+      --ink: #161817;
+      --muted: #666b68;
+      --faint: #969b98;
+      --line: rgba(22, 24, 23, 0.11);
+      --line-strong: rgba(22, 24, 23, 0.22);
+      --accent: #315fce;
+      --accent-soft: #e8eefc;
+      --accent-ink: #244aa2;
+      --danger-soft: #f8eaea;
+      --danger-ink: #873c3c;
+      --success-soft: #eaf2e9;
+      --success-ink: #3e6843;
+      --radius: 10px;
+      --max: 1240px;
+      --font-sans: "Segoe UI Variable Display", "SF Pro Display", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    :root[data-theme="dark"] {
+      --paper: #161817;
+      --surface: #1d201e;
+      --surface-soft: #242825;
+      --ink: #f0f2ef;
+      --muted: #afb5b0;
+      --faint: #7f8781;
+      --line: rgba(240, 242, 239, 0.10);
+      --line-strong: rgba(240, 242, 239, 0.22);
+      --accent: #8aa8f4;
+      --accent-soft: #263452;
+      --accent-ink: #b8c9f9;
+      --danger-soft: #3b2929;
+      --danger-ink: #efb3b3;
+      --success-soft: #27372a;
+      --success-ink: #b2d5b4;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 88px;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      line-height: 1.65;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 4px;
+    }
+
+    a:hover {
+      color: var(--accent);
+    }
+
+    button,
+    a {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:focus-visible,
+    a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 20;
+      transform: translateY(-160%);
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: var(--ink);
+      color: var(--paper);
+      transition: transform 160ms ease;
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      height: 68px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 88%, transparent);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+    }
+
+    .nav {
+      width: min(var(--max), calc(100% - 48px));
+      height: 100%;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 28px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .brand img {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+    }
+
+    .nav-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      min-width: 0;
+    }
+
+    .nav-links a {
+      position: relative;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 620;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .nav-links a::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 100%;
+      bottom: -8px;
+      height: 1px;
+      background: var(--accent);
+      transition: right 180ms ease;
+    }
+
+    .nav-links a[aria-current="true"] {
+      color: var(--ink);
+    }
+
+    .nav-links a[aria-current="true"]::after {
+      right: 0;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .quiet-button,
+    .primary-button {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      padding: 0 13px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+    }
+
+    .quiet-button {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .quiet-button:hover {
+      background: var(--surface-soft);
+      color: var(--ink);
+    }
+
+    .primary-button {
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      text-decoration: none;
+    }
+
+    .primary-button:hover {
+      background: var(--muted);
+      border-color: var(--muted);
+      color: var(--paper);
+    }
+
+    .quiet-button:active,
+    .primary-button:active {
+      transform: scale(0.98);
+    }
+
+    .page {
+      width: min(var(--max), calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      min-height: calc(100dvh - 68px);
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+      align-items: center;
+      gap: clamp(48px, 8vw, 110px);
+      padding: 72px 0 64px;
+    }
+
+    .eyebrow {
+      margin: 0 0 22px;
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin-bottom: 26px;
+      font-size: clamp(48px, 6.3vw, 88px);
+      line-height: 0.98;
+      letter-spacing: -0.065em;
+      font-weight: 680;
+    }
+
+    .hero-copy {
+      max-width: 620px;
+      margin-bottom: 32px;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 22px);
+      line-height: 1.55;
+      letter-spacing: -0.015em;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .text-link {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 620;
+    }
+
+    .position-figure {
+      position: relative;
+      min-height: 520px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .position-figure::before,
+    .position-figure::after {
+      content: "";
+      position: absolute;
+      background: var(--line);
+    }
+
+    .position-figure::before {
+      top: 50%;
+      left: 36px;
+      right: 36px;
+      height: 1px;
+    }
+
+    .position-figure::after {
+      top: 36px;
+      bottom: 36px;
+      left: 50%;
+      width: 1px;
+    }
+
+    .axis {
+      position: absolute;
+      z-index: 1;
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+    }
+
+    .axis-top { top: 18px; left: 50%; transform: translateX(-50%); }
+    .axis-bottom { bottom: 16px; left: 50%; transform: translateX(-50%); }
+    .axis-left { top: 50%; left: 16px; transform: translateY(-50%) rotate(-90deg); }
+    .axis-right { top: 50%; right: 8px; transform: translateY(-50%) rotate(90deg); }
+
+    .plot-item {
+      position: absolute;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .plot-item img {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+
+    .letter-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: var(--ink);
+      color: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .plot-item.ic2 {
+      padding: 9px 11px;
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+      font-weight: 720;
+    }
+
+    .plot-item.ic2 img {
+      width: 22px;
+      height: 22px;
+    }
+
+    .plot-allume { left: 58%; top: 16%; }
+    .plot-pureref { left: 54%; top: 62%; }
+    .plot-milanote { left: 69%; top: 34%; }
+    .plot-eagle { left: 18%; top: 70%; }
+    .plot-freeform { left: 65%; top: 49%; }
+    .plot-whiteboard { left: 24%; top: 29%; }
+    .plot-miro { left: 22%; top: 15%; }
+    .plot-ic2 { left: 57%; top: 72%; }
+
+    .figure-note {
+      position: absolute;
+      left: 24px;
+      bottom: 22px;
+      z-index: 3;
+      max-width: 210px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    section {
+      padding: clamp(96px, 12vw, 160px) 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-head {
+      max-width: 830px;
+      margin-bottom: 64px;
+    }
+
+    h2 {
+      margin-bottom: 20px;
+      font-size: clamp(36px, 4.8vw, 66px);
+      line-height: 1.02;
+      letter-spacing: -0.055em;
+      font-weight: 660;
+    }
+
+    .section-head p,
+    .lead {
+      max-width: 680px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .thesis {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.34fr) minmax(0, 1fr);
+      gap: 52px;
+      align-items: start;
+    }
+
+    .thesis-label {
+      position: sticky;
+      top: 106px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .thesis-text {
+      margin: 0;
+      max-width: 930px;
+      font-size: clamp(32px, 5vw, 64px);
+      line-height: 1.1;
+      letter-spacing: -0.045em;
+      font-weight: 560;
+    }
+
+    .thesis-text strong {
+      color: var(--accent);
+      font-weight: inherit;
+    }
+
+    .competitor-list {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .competitor-row {
+      display: grid;
+      grid-template-columns: 42px 48px minmax(150px, 1.2fr) minmax(150px, 1fr) minmax(170px, 1.5fr) auto;
+      align-items: center;
+      gap: 18px;
+      min-height: 92px;
+      border-bottom: 1px solid var(--line);
+      color: inherit;
+      text-decoration: none;
+      transition: background 160ms ease, padding 160ms ease;
+    }
+
+    .competitor-row:hover {
+      padding: 0 12px;
+      background: var(--surface);
+      color: inherit;
+    }
+
+    .row-index {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .product-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .product-mark img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+    }
+
+    .product-name {
+      font-size: 20px;
+      font-weight: 680;
+      letter-spacing: -0.025em;
+    }
+
+    .product-type,
+    .product-edge {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .product-price {
+      justify-self: end;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .status.direct {
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+    }
+
+    .status.sunset {
+      background: var(--danger-soft);
+      color: var(--danger-ink);
+    }
+
+    .focus-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+    }
+
+    .focus-card {
+      min-height: 510px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(30px, 4.5vw, 58px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .focus-card.secondary {
+      background: var(--surface-soft);
+    }
+
+    .focus-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 34px;
+    }
+
+    .focus-title img {
+      width: 42px;
+      height: 42px;
+      border-radius: 9px;
+      object-fit: contain;
+    }
+
+    .focus-title h3 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .focus-quote {
+      max-width: 650px;
+      margin: 0 0 42px;
+      font-size: clamp(26px, 3vw, 42px);
+      line-height: 1.18;
+      letter-spacing: -0.035em;
+    }
+
+    .focus-detail {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 26px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .focus-detail strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .gap-layout {
+      display: grid;
+      grid-template-columns: 0.72fr 1.28fr;
+      gap: clamp(48px, 9vw, 120px);
+      align-items: start;
+    }
+
+    .priority-stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .priority {
+      display: grid;
+      grid-template-columns: 68px 1fr;
+      gap: 20px;
+      padding: 26px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .priority:last-child {
+      border-bottom: 1px solid var(--line);
+    }
+
+    .priority-code {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .priority h3 {
+      margin-bottom: 6px;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+    }
+
+    .priority p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+    }
+
+    .roadmap-item {
+      min-height: 320px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .roadmap-item:nth-child(1) { grid-column: span 7; }
+    .roadmap-item:nth-child(2) { grid-column: span 5; background: var(--accent-soft); }
+    .roadmap-item:nth-child(3) { grid-column: span 5; background: var(--surface-soft); }
+    .roadmap-item:nth-child(4) { grid-column: span 7; }
+
+    .roadmap-item h3 {
+      max-width: 380px;
+      margin-bottom: 18px;
+      font-size: 30px;
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    .roadmap-item p {
+      max-width: 450px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .roadmap-meta {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .risk-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.78fr) minmax(0, 1.22fr);
+      gap: clamp(44px, 8vw, 110px);
+      align-items: start;
+    }
+
+    .risk-callout {
+      position: sticky;
+      top: 106px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .risk-callout strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .risk-callout p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .risk-list {
+      display: grid;
+      gap: 28px;
+    }
+
+    .risk-item {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .risk-level {
+      min-width: 44px;
+      display: inline-flex;
+      justify-content: center;
+      padding: 4px 7px;
+      border-radius: 999px;
+      background: var(--danger-soft);
+      color: var(--danger-ink);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 760;
+      letter-spacing: 0.06em;
+    }
+
+    .risk-item h3 {
+      margin-bottom: 5px;
+      font-size: 20px;
+      letter-spacing: -0.025em;
+    }
+
+    .risk-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .pricing-layout {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: clamp(50px, 9vw, 120px);
+      align-items: end;
+    }
+
+    .price {
+      margin: 0;
+      font-size: clamp(74px, 12vw, 160px);
+      line-height: 0.84;
+      letter-spacing: -0.075em;
+      font-weight: 650;
+    }
+
+    .price-note {
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .pricing-copy h3 {
+      margin-bottom: 16px;
+      font-size: 32px;
+      line-height: 1.12;
+      letter-spacing: -0.04em;
+    }
+
+    .pricing-copy p {
+      color: var(--muted);
+    }
+
+    .sources-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 32px;
+    }
+
+    .source-link {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 52px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+      color: inherit;
+      font-weight: 640;
+      text-decoration: none;
+    }
+
+    .source-link span:last-child {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .site-footer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      padding: 54px 0 70px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .site-footer p {
+      margin: 0;
+    }
+
+    .site-footer a {
+      font-weight: 650;
+    }
+
+    @media (max-width: 1020px) {
+      .nav-links {
+        display: none;
+      }
+
+      .nav {
+        grid-template-columns: 1fr auto;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 56px;
+      }
+
+      .position-figure {
+        min-height: 480px;
+      }
+
+      .competitor-row {
+        grid-template-columns: 36px 42px minmax(130px, 1fr) minmax(150px, 1fr) auto;
+      }
+
+      .product-type {
+        display: none;
+      }
+
+      .focus-grid,
+      .gap-layout,
+      .pricing-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .focus-card {
+        min-height: 420px;
+      }
+
+      .roadmap-item:nth-child(n) {
+        grid-column: span 6;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .site-header {
+        height: 62px;
+      }
+
+      .nav,
+      .page {
+        width: min(100% - 32px, var(--max));
+      }
+
+      .nav-actions .primary-button {
+        display: none;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 68px 0 88px;
+      }
+
+      h1 {
+        font-size: clamp(44px, 14vw, 64px);
+      }
+
+      .position-figure {
+        min-height: 430px;
+      }
+
+      .plot-milanote { left: 55%; }
+      .plot-allume { left: 51%; }
+      .plot-pureref { left: 48%; }
+      .plot-freeform { left: 54%; }
+      .plot-eagle { left: 11%; }
+      .plot-whiteboard { left: 15%; }
+      .plot-miro { left: 10%; }
+      .plot-ic2 { left: 49%; }
+
+      section {
+        padding: 92px 0;
+      }
+
+      .section-head {
+        margin-bottom: 44px;
+      }
+
+      .thesis,
+      .risk-layout {
+        grid-template-columns: 1fr;
+        gap: 32px;
+      }
+
+      .thesis-label,
+      .risk-callout {
+        position: static;
+      }
+
+      .competitor-row {
+        grid-template-columns: 32px 38px 1fr auto;
+        gap: 12px;
+        min-height: 78px;
+      }
+
+      .product-edge,
+      .product-type {
+        display: none;
+      }
+
+      .product-price {
+        font-size: 9px;
+      }
+
+      .focus-detail,
+      .sources-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .roadmap-item:nth-child(n) {
+        grid-column: 1 / -1;
+        min-height: 280px;
+      }
+
+      .pricing-layout {
+        gap: 56px;
+      }
+
+      .site-footer {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 460px) {
+      .position-figure {
+        min-height: 470px;
+      }
+
+      .plot-item {
+        font-size: 10px;
+      }
+
+      .product-price {
+        display: none;
+      }
+
+      .competitor-row {
+        grid-template-columns: 28px 38px 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    @media print {
+      :root,
+      :root[data-theme="dark"] {
+        --paper: #ffffff;
+        --surface: #ffffff;
+        --surface-soft: #f5f5f3;
+        --ink: #151716;
+        --muted: #5e625f;
+        --faint: #858a86;
+        --line: rgba(0, 0, 0, 0.12);
+        --line-strong: rgba(0, 0, 0, 0.25);
+        --accent: #244aa2;
+        --accent-soft: #edf1fa;
+        --accent-ink: #244aa2;
+      }
+
+      .site-header,
+      .skip-link,
+      .hero-actions,
+      .site-footer a {
+        display: none !important;
+      }
+
+      .page {
+        width: 100%;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 56px 0;
+      }
+
+      section {
+        break-inside: avoid;
+        padding: 48px 0;
+      }
+
+      .focus-card,
+      .roadmap-item,
+      .risk-callout,
+      .position-figure {
+        break-inside: avoid;
+      }
+
+      a {
+        text-decoration: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="site-header">
+    <nav class="nav" aria-label="主要导航">
+      <a class="brand" href="#top">
+        <img src="../src-tauri/icons/128x128.png" width="28" height="28" alt="IC2 图标">
+        <span>IC2 Research</span>
+      </a>
+      <div class="nav-links">
+        <a href="#position">定位</a>
+        <a href="#landscape">格局</a>
+        <a href="#focus">对手</a>
+        <a href="#roadmap">路线</a>
+        <a href="#risks">风险</a>
+        <a href="#sources">来源</a>
+      </div>
+      <div class="nav-actions">
+        <button class="quiet-button" id="theme-toggle" type="button" aria-label="切换深浅主题">明 / 暗</button>
+        <a class="primary-button" href="IC2-competitive-research-2026-07-15.md">完整报告</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="page" id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">Creative intelligence board</p>
+        <h1 id="hero-title">Windows 上的个人灵感画布</h1>
+        <p class="hero-copy">PureRef 的速度，Allume 的层次，本地文件的确定性。</p>
+        <div class="hero-actions">
+          <a class="primary-button" href="#position">查看结论</a>
+          <a class="text-link" href="IC2-competitive-research-2026-07-15.md">阅读 Markdown</a>
+        </div>
+      </div>
+
+      <figure class="position-figure" aria-labelledby="position-caption">
+        <span class="axis axis-top">深层组织</span>
+        <span class="axis axis-bottom">即时铺排</span>
+        <span class="axis axis-left">云端协作</span>
+        <span class="axis axis-right">本地优先</span>
+
+        <span class="plot-item plot-allume"><img src="https://allume.com/favicon.ico" alt="">Allume</span>
+        <span class="plot-item plot-pureref"><img src="https://www.pureref.com/favicon.ico" alt="">PureRef</span>
+        <span class="plot-item plot-milanote"><img src="https://milanote.com/favicon.ico" alt="">Milanote</span>
+        <span class="plot-item plot-eagle"><span class="letter-mark" aria-hidden="true">E</span>Eagle</span>
+        <span class="plot-item plot-freeform"><img src="https://www.apple.com/favicon.ico" alt="">Freeform</span>
+        <span class="plot-item plot-whiteboard"><img src="https://www.microsoft.com/favicon.ico" alt="">Whiteboard</span>
+        <span class="plot-item plot-miro"><img src="https://miro.com/favicon.ico" alt="">Miro</span>
+        <span class="plot-item ic2 plot-ic2"><img src="../src-tauri/icons/128x128.png" alt="">IC2</span>
+
+        <figcaption class="figure-note" id="position-caption">示意定位图。IC2 的机会位于本地素材操作与深层空间组织的交汇处。</figcaption>
+      </figure>
+    </section>
+
+    <section id="position" aria-labelledby="position-title">
+      <div class="thesis">
+        <div class="thesis-label" id="position-title">核心判断</div>
+        <p class="thesis-text">不要做另一个通用在线白板。做一张<strong>属于创作者自己的本地画布</strong>，能快速收集，也能层层深入。</p>
+      </div>
+    </section>
+
+    <section id="landscape" aria-labelledby="landscape-title">
+      <div class="section-head">
+        <h2 id="landscape-title">八个参照，不是八个答案</h2>
+        <p>每个产品都证明了一段需求。IC2 的价值在于把最相关的几段连接起来。</p>
+      </div>
+
+      <div class="competitor-list" role="list">
+        <a class="competitor-row" role="listitem" href="https://allume.com/" target="_blank" rel="noreferrer">
+          <span class="row-index">01</span>
+          <span class="product-mark"><img src="https://allume.com/favicon.ico" alt="Allume 标志" loading="lazy"></span>
+          <span class="product-name">Allume</span>
+          <span class="product-type">深度视觉思考</span>
+          <span class="product-edge">嵌套 board、Inbox、PDF、同步与协作</span>
+          <span class="product-price">$9.99 / 月</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://www.pureref.com/" target="_blank" rel="noreferrer">
+          <span class="row-index">02</span>
+          <span class="product-mark"><img src="https://www.pureref.com/favicon.ico" alt="PureRef 标志" loading="lazy"></span>
+          <span class="product-name">PureRef</span>
+          <span class="product-type">参考图工作台</span>
+          <span class="product-edge">大图性能、批量排版、裁切、置顶与窗口控制</span>
+          <span class="product-price">个人弹性付费</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://milanote.com/" target="_blank" rel="noreferrer">
+          <span class="row-index">03</span>
+          <span class="product-mark"><img src="https://milanote.com/favicon.ico" alt="Milanote 标志" loading="lazy"></span>
+          <span class="product-name">Milanote</span>
+          <span class="product-type">创意项目组织</span>
+          <span class="product-edge">采集扩展、模板、任务、评论与跨端协作</span>
+          <span class="product-price">$9.99 / 月</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://www.eagle.cool/" target="_blank" rel="noreferrer">
+          <span class="row-index">04</span>
+          <span class="product-mark"><span class="letter-mark" aria-hidden="true">E</span></span>
+          <span class="product-name">Eagle</span>
+          <span class="product-type">本地素材库</span>
+          <span class="product-edge">标签、检索、去重、浏览器采集和长期归档</span>
+          <span class="product-price">$34.95 买断</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://www.apple.com/newsroom/2022/12/apple-launches-freeform-a-powerful-new-app-designed-for-creative-collaboration/" target="_blank" rel="noreferrer">
+          <span class="row-index">05</span>
+          <span class="product-mark"><img src="https://www.apple.com/favicon.ico" alt="Apple 标志" loading="lazy"></span>
+          <span class="product-name">Freeform</span>
+          <span class="product-type">系统创意白板</span>
+          <span class="product-edge">多文件类型、绘图、形状、协作和系统集成</span>
+          <span class="product-price">免费自带</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://support.microsoft.com/en-US/whiteboard/getting-started-with-microsoft-whiteboard" target="_blank" rel="noreferrer">
+          <span class="row-index">06</span>
+          <span class="product-mark"><img src="https://www.microsoft.com/favicon.ico" alt="Microsoft 标志" loading="lazy"></span>
+          <span class="product-name">Whiteboard</span>
+          <span class="product-type">会议协作白板</span>
+          <span class="product-edge">Teams、实时协作、教育与企业身份体系</span>
+          <span class="product-price">免费账户</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://miro.com/pricing/" target="_blank" rel="noreferrer">
+          <span class="row-index">07</span>
+          <span class="product-mark"><img src="https://miro.com/favicon.ico" alt="Miro 标志" loading="lazy"></span>
+          <span class="product-name">Miro</span>
+          <span class="product-type">视觉协作平台</span>
+          <span class="product-edge">模板、结构化工作流、集成、AI 与企业治理</span>
+          <span class="product-price">$8 / 人 / 月起</span>
+        </a>
+        <a class="competitor-row" role="listitem" href="https://www.kosmik.app/" target="_blank" rel="noreferrer">
+          <span class="row-index">08</span>
+          <span class="product-mark"><img src="https://www.kosmik.app/favicon.ico" alt="Kosmik 标志" loading="lazy"></span>
+          <span class="product-name">Kosmik</span>
+          <span class="product-type">AI 视觉研究</span>
+          <span class="product-edge">内置浏览器、自动标签和 AI 搜索，2026-05-31 停止服务</span>
+          <span class="product-price">已停止服务</span>
+        </a>
+      </div>
+    </section>
+
+    <section id="focus" aria-labelledby="focus-title">
+      <div class="section-head">
+        <h2 id="focus-title">两个真正需要盯住的对手</h2>
+        <p>Allume 定义结构，PureRef 定义手感。IC2 需要同时理解两者，但不复制任何一个。</p>
+      </div>
+
+      <div class="focus-grid">
+        <article class="focus-card">
+          <div>
+            <div class="focus-title">
+              <img src="https://allume.com/favicon.ico" alt="Allume 标志" loading="lazy">
+              <h3>Allume</h3>
+              <span class="status direct">Direct</span>
+            </div>
+            <p class="focus-quote">它证明了，画布可以像思考一样自然地向内生长。</p>
+          </div>
+          <div class="focus-detail">
+            <p><strong>领先</strong>Inbox、PDF、搜索、同步、评论和成熟的嵌套叙事。</p>
+            <p><strong>IC2 机会</strong>Windows 空位，更自由的素材铺排，以及动态网页内容。</p>
+          </div>
+        </article>
+
+        <article class="focus-card secondary">
+          <div>
+            <div class="focus-title">
+              <img src="https://www.pureref.com/favicon.ico" alt="PureRef 标志" loading="lazy">
+              <h3>PureRef</h3>
+            </div>
+            <p class="focus-quote">它证明了，创意工具最重要的功能往往是没有摩擦。</p>
+          </div>
+          <div class="focus-detail">
+            <p><strong>领先</strong>批量图片操作、性能、窗口控制与文件体积治理。</p>
+            <p><strong>IC2 机会</strong>笔记、链接、视频、嵌入和多层项目空间。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="gaps" aria-labelledby="gaps-title">
+      <div class="gap-layout">
+        <div class="section-head">
+          <h2 id="gaps-title">先补基础，不追热点</h2>
+          <p>这些能力决定用户是否愿意把真实项目交给 IC2。</p>
+        </div>
+
+        <div class="priority-stack">
+          <article class="priority">
+            <span class="priority-code">P0</span>
+            <div><h3>项目文件可信</h3><p>原子保存、备份恢复、素材完整性检查、自动保存。</p></div>
+          </article>
+          <article class="priority">
+            <span class="priority-code">P0</span>
+            <div><h3>大图工作流完整</h3><p>多图缩放、旋转、缩略图、降采样与项目体积报告。</p></div>
+          </article>
+          <article class="priority">
+            <span class="priority-code">P1</span>
+            <div><h3>内容可找回</h3><p>全局搜索、快速跳转、侧边大纲、来源与轻量标签。</p></div>
+          </article>
+          <article class="priority">
+            <span class="priority-code">P1</span>
+            <div><h3>桌面体验到位</h3><p>PDF、音频、导出、Always-on-top、透明度和鼠标穿透。</p></div>
+          </article>
+          <article class="priority">
+            <span class="priority-code">P2</span>
+            <div><h3>采集入口变短</h3><p>Windows Share Target、浏览器扩展、Inbox 与重复图片提示。</p></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap" aria-labelledby="roadmap-title">
+      <div class="section-head">
+        <h2 id="roadmap-title">一条克制的产品路线</h2>
+        <p>每一步都让个人创作更可靠。云与 AI 只在核心体验成立后出现。</p>
+      </div>
+
+      <div class="roadmap">
+        <article class="roadmap-item">
+          <span class="roadmap-meta">Ship first</span>
+          <div><h3>可信的本地底座</h3><p>修复保存链路与临时素材引用，加入恢复、优化和核心自动化测试。</p></div>
+        </article>
+        <article class="roadmap-item">
+          <span class="roadmap-meta">Core loop</span>
+          <div><h3>PureRef 的速度，加上深层组织</h3><p>补齐图片操作、桌面窗口能力、搜索、大纲、PDF 与导出。</p></div>
+        </article>
+        <article class="roadmap-item">
+          <span class="roadmap-meta">Capture</span>
+          <div><h3>收集更快，整理可以稍后</h3><p>以 Inbox 承接浏览器、系统分享和批量文件导入。</p></div>
+        </article>
+        <article class="roadmap-item">
+          <span class="roadmap-meta">Optional service</span>
+          <div><h3>先同步，再分享，最后协作</h3><p>AI 优先服务 OCR、检索、聚类和溯源，不替代空间思考。</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="risks" aria-labelledby="risks-title">
+      <div class="risk-layout">
+        <aside class="risk-callout">
+          <strong>4</strong>
+          <p id="risks-title">发布前必须处理的代码风险。完整审查结论见 Markdown 报告和仓库 review。</p>
+        </aside>
+
+        <div class="risk-list">
+          <article class="risk-item">
+            <span class="risk-level">P1</span>
+            <div><h3>层级变化可能静默丢失</h3><p>选择元素会修改持久化 z-order，但未进入 dirty 状态。</p></div>
+          </article>
+          <article class="risk-item">
+            <span class="risk-level">P1</span>
+            <div><h3>临时素材可能被当作已保存</h3><p>blob 打包失败后仍可通过当前 item 数量校验。</p></div>
+          </article>
+          <article class="risk-item">
+            <span class="risk-level">P1</span>
+            <div><h3>覆盖写入缺少原子性</h3><p>写入中断可能同时破坏用户此前可用的项目文件。</p></div>
+          </article>
+          <article class="risk-item">
+            <span class="risk-level">P1</span>
+            <div><h3>桌面权限范围过宽</h3><p>CSP、asset scope 和文件系统权限需要收敛到最小范围。</p></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="pricing" aria-labelledby="pricing-title">
+      <div class="pricing-layout">
+        <div>
+          <h2 id="pricing-title" class="price">$29-49</h2>
+          <p class="price-note">建议测试的核心桌面版买断区间</p>
+        </div>
+        <div class="pricing-copy">
+          <h3>本地能力买断，在线服务可选</h3>
+          <p>Eagle 的 $34.95 与 PureRef 的商业授权提供了清晰锚点。同步、版本历史、分享和协作可以单独订阅，项目文件始终归用户所有。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources" aria-labelledby="sources-title">
+      <div class="section-head">
+        <h2 id="sources-title">官方来源</h2>
+        <p>调研日期为 2026-07-15。价格可能因地区、税费和账期变化。</p>
+      </div>
+
+      <div class="sources-grid">
+        <a class="source-link" href="https://allume.com/" target="_blank" rel="noreferrer"><span>Allume</span><span>官网与价格</span></a>
+        <a class="source-link" href="https://www.pureref.com/handbook/" target="_blank" rel="noreferrer"><span>PureRef</span><span>2.1 Handbook</span></a>
+        <a class="source-link" href="https://milanote.com/plans/" target="_blank" rel="noreferrer"><span>Milanote</span><span>计划与价格</span></a>
+        <a class="source-link" href="https://eagle.cool/store" target="_blank" rel="noreferrer"><span>Eagle</span><span>商店与授权</span></a>
+        <a class="source-link" href="https://www.apple.com/newsroom/2022/12/apple-launches-freeform-a-powerful-new-app-designed-for-creative-collaboration/" target="_blank" rel="noreferrer"><span>Apple Freeform</span><span>官方说明</span></a>
+        <a class="source-link" href="https://support.microsoft.com/en-US/whiteboard/getting-started-with-microsoft-whiteboard" target="_blank" rel="noreferrer"><span>Microsoft Whiteboard</span><span>官方入门</span></a>
+        <a class="source-link" href="https://miro.com/pricing/" target="_blank" rel="noreferrer"><span>Miro</span><span>功能与价格</span></a>
+        <a class="source-link" href="https://www.kosmik.app/" target="_blank" rel="noreferrer"><span>Kosmik</span><span>停止服务公告</span></a>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <p>IC2 创意灵感白板竞品研究。基于当前仓库实现与官方公开信息。</p>
+      <a href="IC2-competitive-research-2026-07-15.md">查看完整 Markdown</a>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const toggle = document.getElementById("theme-toggle");
+      const stored = localStorage.getItem("ic2-report-theme");
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      root.dataset.theme = stored || (prefersDark ? "dark" : "light");
+
+      const syncLabel = () => {
+        const dark = root.dataset.theme === "dark";
+        toggle.setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题");
+      };
+
+      syncLabel();
+
+      toggle.addEventListener("click", () => {
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+        localStorage.setItem("ic2-report-theme", root.dataset.theme);
+        syncLabel();
+      });
+
+      const links = Array.from(document.querySelectorAll(".nav-links a"));
+      const sections = links
+        .map((link) => document.querySelector(link.getAttribute("href")))
+        .filter(Boolean);
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach((link) => {
+          const active = link.getAttribute("href") === `#${visible.target.id}`;
+          if (active) link.setAttribute("aria-current", "true");
+          else link.removeAttribute("aria-current");
+        });
+      }, { rootMargin: "-20% 0px -65%", threshold: [0, 0.2, 0.5] });
+
+      sections.forEach((section) => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>

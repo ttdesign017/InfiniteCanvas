@@ -126,6 +126,10 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
   const [nearScreen, setNearScreen] = useState(false)
   const nearScreenRef = useRef(false)
   const hasGoodPosterRef = useRef(Boolean(getVideoPoster(item.id, item.src)))
+  const pauseCaptureRef = useRef<Promise<string | null> | null>(null)
+  const [primingPoster, setPrimingPoster] = useState(
+    () => selected && !getVideoPoster(item.id, item.src),
+  )
   /** Survives live <video> unmount so Space resumes instead of restarting at 0 */
   const lastTimeRef = useRef(getRememberedPlaybackTime(item.id))
   const durationRef = useRef(0)
@@ -142,8 +146,27 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
   }, [item.src, item.id])
 
   useEffect(() => {
-    if (poster) hasGoodPosterRef.current = true
+    if (poster) {
+      hasGoodPosterRef.current = true
+      setPrimingPoster(false)
+    }
   }, [poster])
+
+  useEffect(() => {
+    // Import selection can land one render after the item itself mounts.
+    // Start a real decoder then too; the useState initializer only covers
+    // items that were already selected on their very first render.
+    if (selected && !poster) {
+      setPrimingPoster(true)
+      return
+    }
+    // Only detach an idle decoder when a real still is ready to replace it.
+    // If paused-frame capture failed, this decoder is the sole visible frame;
+    // deselection must not fall back to the grey placeholder.
+    if (!selected && !playing && !scrubbing && poster) {
+      setPrimingPoster(false)
+    }
+  }, [selected, poster, playing, scrubbing])
 
   const freezeFrame = useCallback(
     (v: HTMLVideoElement, allowOverwrite = false) => {
@@ -193,6 +216,9 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
 
   // Offline poster when near screen / selected and still missing
   useEffect(() => {
+    // The selected/newly-imported card already has a live decoder available;
+    // do not start a second hidden decoder for the same source.
+    if (playing || scrubbing || primingPoster) return
     if ((!nearScreen && !selected) || poster || !item.src) return
     let cancelled = false
     void ensureVideoPoster(item.id, item.src).then(() => {
@@ -201,11 +227,20 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     return () => {
       cancelled = true
     }
-  }, [nearScreen, selected, poster, item.id, item.src])
+  }, [
+    nearScreen,
+    selected,
+    poster,
+    item.id,
+    item.src,
+    playing,
+    scrubbing,
+    primingPoster,
+  ])
 
-  // Live decoder only while the user is actually watching / scrubbing.
-  // Never because selected — that made zoom-out blank every selected video.
-  const showLive = playing || scrubbing
+  // Keep the live decoder for playback/scrubbing and the initial selected
+  // import only while its first poster is being captured.
+  const showLive = playing || scrubbing || primingPoster
 
   const noteTime = useCallback(
     (t: number) => {
@@ -231,6 +266,33 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       /* seek may fail until metadata */
     }
   }, [])
+
+  const settlePausedFrame = useCallback(
+    (v: HTMLVideoElement) => {
+      noteTime(v.currentTime)
+      if (pauseCaptureRef.current) return pauseCaptureRef.current
+      const capture = freezeFrame(v, true)
+        .then((url) => {
+          // Do not detach the decoder before the paused frame has been sampled.
+          // WebView2 can reject canvas capture for an otherwise visible local
+          // video. In that case keep the paused decoder as the visual fallback
+          // instead of replacing it with the grey lazy-poster shell.
+          if (v.paused) {
+            if (!url) setPrimingPoster(true)
+            setPlaying(false)
+          }
+          return url
+        })
+        .finally(() => {
+          if (pauseCaptureRef.current === capture) {
+            pauseCaptureRef.current = null
+          }
+        })
+      pauseCaptureRef.current = capture
+      return capture
+    },
+    [freezeFrame, noteTime],
+  )
 
   const togglePlay = useCallback(() => {
     if (!showLive) {
@@ -271,11 +333,9 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       } catch {
         /* ignore */
       }
-      noteTime(v.currentTime)
-      setPlaying(false)
-      void freezeFrame(v, true)
+      void settlePausedFrame(v)
     }
-  }, [showLive, item.src, freezeFrame, applyResumeSeek, noteTime])
+  }, [showLive, item.src, applyResumeSeek, settlePausedFrame])
 
   useEffect(() => {
     return registerVideoToggle(item.id, togglePlay)
@@ -304,9 +364,7 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     }
     const onPlay = () => setPlaying(true)
     const onPause = () => {
-      noteTime(v.currentTime)
-      setPlaying(false)
-      void freezeFrame(v, true)
+      void settlePausedFrame(v)
     }
     const onUsefulFrame = () => {
       void freezeFrame(v, !hasGoodPosterRef.current)
@@ -360,7 +418,15 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
     }
-  }, [showLive, playing, item.src, freezeFrame, noteTime, applyResumeSeek])
+  }, [
+    showLive,
+    playing,
+    item.src,
+    freezeFrame,
+    noteTime,
+    applyResumeSeek,
+    settlePausedFrame,
+  ])
 
   // Leaving live mode: remember time + freeze frame before <video> unmounts
   useLayoutEffect(() => {

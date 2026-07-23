@@ -29,6 +29,7 @@ export function ScribbleView({ item, selected }: Props) {
         height={item.height}
         viewBox={`0 0 ${item.width} ${item.height}`}
         className="scribble-svg"
+        style={{ overflow: 'visible' }}
       >
         {item.paths.map((path) => {
           const d = pathToD(path.points)

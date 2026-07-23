@@ -1,17 +1,23 @@
-import type { Point, ScribblePath } from '../types/canvas'
+import type { Point, ScribbleItem, ScribblePath } from '../types/canvas'
 import { uid } from './id'
 
 export function recomputeScribbleBounds(
   paths: ScribblePath[],
   pad: number,
 ): { x: number; y: number; width: number; height: number; paths: ScribblePath[] } | null {
-  const all = paths.flatMap((p) => p.points)
-  if (all.length === 0) return null
-
-  const minX = Math.min(...all.map((p) => p.x))
-  const minY = Math.min(...all.map((p) => p.y))
-  const maxX = Math.max(...all.map((p) => p.x))
-  const maxY = Math.max(...all.map((p) => p.y))
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const path of paths) {
+    for (const point of path.points) {
+      minX = Math.min(minX, point.x)
+      minY = Math.min(minY, point.y)
+      maxX = Math.max(maxX, point.x)
+      maxY = Math.max(maxY, point.y)
+    }
+  }
+  if (!Number.isFinite(minX)) return null
 
   // Normalize paths so top-left of content is at (pad, pad) in local space
   const ox = minX - pad
@@ -27,6 +33,90 @@ export function recomputeScribbleBounds(
     width: Math.max(4, maxX - minX + pad * 2),
     height: Math.max(4, maxY - minY + pad * 2),
     paths: normalized,
+  }
+}
+
+/**
+ * Hot-path append used while the pointer is down.
+ *
+ * Keep the item's origin fixed and allow temporary negative local points. This
+ * avoids shifting every previous point whenever a stroke expands left/up. The
+ * SVG paints overflow during the gesture; normalizeScribbleItem runs once on
+ * pointer-up to restore the persisted 0..width/height coordinate contract.
+ */
+export function appendScribbleWorldPoints(
+  item: ScribbleItem,
+  worldPoints: readonly Point[],
+): ScribbleItem {
+  if (worldPoints.length === 0 || item.paths.length === 0) return item
+  const finite = worldPoints.filter(
+    (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
+  )
+  if (finite.length === 0) return item
+
+  const local = finite.map((point) => ({
+    x: point.x - item.x,
+    y: point.y - item.y,
+  }))
+  const lastIndex = item.paths.length - 1
+  const last = item.paths[lastIndex]
+  const paths = item.paths.slice()
+  paths[lastIndex] = {
+    ...last,
+    points: [...last.points, ...local],
+  }
+
+  const pad = Math.max(item.strokeWidth, last.width, 8)
+  let width = item.width
+  let height = item.height
+  for (const point of local) {
+    width = Math.max(width, point.x + pad)
+    height = Math.max(height, point.y + pad)
+  }
+  return {
+    ...item,
+    paths,
+    width: Math.max(4, width),
+    height: Math.max(4, height),
+  }
+}
+
+/** Normalize one live scribble in a single pass when its stroke finishes. */
+export function normalizeScribbleItem(item: ScribbleItem): ScribbleItem {
+  let minLocalX = Infinity
+  let minLocalY = Infinity
+  let maxLocalX = -Infinity
+  let maxLocalY = -Infinity
+  let pad = Math.max(item.strokeWidth, 8)
+
+  for (const path of item.paths) {
+    pad = Math.max(pad, path.width)
+    for (const point of path.points) {
+      minLocalX = Math.min(minLocalX, point.x)
+      minLocalY = Math.min(minLocalY, point.y)
+      maxLocalX = Math.max(maxLocalX, point.x)
+      maxLocalY = Math.max(maxLocalY, point.y)
+    }
+  }
+  if (!Number.isFinite(minLocalX)) return item
+
+  const nextX = item.x + minLocalX - pad
+  const nextY = item.y + minLocalY - pad
+  const shiftX = item.x - nextX
+  const shiftY = item.y - nextY
+  return {
+    ...item,
+    x: nextX,
+    y: nextY,
+    width: Math.max(4, maxLocalX - minLocalX + pad * 2),
+    height: Math.max(4, maxLocalY - minLocalY + pad * 2),
+    paths: item.paths.map((path) => ({
+      ...path,
+      points: path.points.map((point) => ({
+        x: point.x + shiftX,
+        y: point.y + shiftY,
+      })),
+    })),
   }
 }
 

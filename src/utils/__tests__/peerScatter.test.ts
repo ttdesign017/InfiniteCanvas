@@ -84,6 +84,20 @@ describe('peerScatter', () => {
     expect(style.filter).toBe(`blur(${PEER_SCATTER_MAX_BLUR_PX.toFixed(2)}px)`)
   })
 
+  it('can skip the costly blur while preserving motion and opacity', () => {
+    const style = peerScatterStyle(
+      { x: 100, y: 0 },
+      { x: 0, y: 0 },
+      0.4,
+      'dense-board',
+      false,
+    )
+    expect(style.opacity).toBe(0.4)
+    expect(style.transform).toBeDefined()
+    expect(style.filter).toBeUndefined()
+    expect(style.willChange).toBe('transform, opacity')
+  })
+
   it('live free items are never marked as non-interactive ghosts', () => {
     expect(peerScatterWrapClassName({ isGhost: false })).toBe('peer-scatter-wrap')
     expect(peerScatterWrapClassName({ isGhost: false })).not.toContain(

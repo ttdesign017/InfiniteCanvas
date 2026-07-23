@@ -2,7 +2,12 @@ import type { CanvasItem, CropRect, LinkCardItem, ScribbleItem, ScribblePath, Te
 import { uid } from '../../utils/id'
 import { containerOf } from '../../utils/stacks'
 import { faviconFor, guessTitleFromUrl, normalizeUrl } from '../../utils/linkMeta'
-import { eraseFromPaths, recomputeScribbleBounds } from '../../utils/scribble'
+import {
+  appendScribbleWorldPoints,
+  eraseFromPaths,
+  normalizeScribbleItem,
+  recomputeScribbleBounds,
+} from '../../utils/scribble'
 import { applyWorldCrop, isAxisAlignedForCrop, uncropFrame } from '../../utils/crop'
 import { computeAlignPatches, computePackPatches } from '../../utils/align'
 import { applyItemPatch, applyItemPatches } from '../itemPatch'
@@ -42,6 +47,7 @@ export type DocumentActionKey =
   | 'addLinkCard'
   | 'startScribble'
   | 'appendScribblePoint'
+  | 'appendScribblePoints'
   | 'endScribble'
   | 'finalizeScribbleLayer'
   | 'enterScribbleEdit'
@@ -492,27 +498,10 @@ export function createDocumentActions(
       get().pushHistory()
       const newPath: ScribblePath = {
         id: uid('path'),
-        // Temporary local; bounds recompute maps everything to world then back
         points: [{ x: world.x - existing.x, y: world.y - existing.y }],
         color,
         width,
       }
-      const paths = [...existing.paths, newPath]
-      const worldPaths = paths.map((p) => ({
-        ...p,
-        points: p.points.map((pt) => ({
-          x: pt.x + existing.x,
-          y: pt.y + existing.y,
-        })),
-      }))
-      const boundsPad = Math.max(
-        width,
-        existing.strokeWidth,
-        ...paths.map((p) => p.width),
-        8,
-      )
-      const bounds = recomputeScribbleBounds(worldPaths, boundsPad)
-      if (!bounds) return existing.id
 
       set((s) => ({
         dirty: true,
@@ -520,11 +509,9 @@ export function createDocumentActions(
           item.id === existing.id
             ? {
                 ...item,
-                paths: bounds.paths,
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.width,
-                height: bounds.height,
+                paths: [...existing.paths, newPath],
+                width: Math.max(existing.width, world.x - existing.x + pad),
+                height: Math.max(existing.height, world.y - existing.y + pad),
                 strokeColor: color,
                 strokeWidth: width,
               }
@@ -577,42 +564,18 @@ export function createDocumentActions(
 
 
   appendScribblePoint: (id, world) => {
+    get().appendScribblePoints(id, [world])
+  },
+
+
+  appendScribblePoints: (id, worlds) => {
+    if (worlds.length === 0) return
     set((s) => ({
       dirty: true,
       items: s.items.map((item) => {
         if (item.id !== id || item.type !== 'scribble') return item
 
-        // Convert world → current local, then re-normalize bounds
-        const local = { x: world.x - item.x, y: world.y - item.y }
-        const paths = item.paths.map((p, i) => {
-          if (i !== item.paths.length - 1) return p
-          return { ...p, points: [...p.points, local] }
-        })
-
-        // Convert all points to world, recompute bounds into local
-        const worldPaths = paths.map((p) => ({
-          ...p,
-          points: p.points.map((pt) => ({
-            x: pt.x + item.x,
-            y: pt.y + item.y,
-          })),
-        }))
-        const pad = Math.max(
-          item.strokeWidth,
-          ...paths.map((p) => p.width),
-          8,
-        )
-        const bounds = recomputeScribbleBounds(worldPaths, pad)
-        if (!bounds) return item
-
-        return {
-          ...item,
-          paths: bounds.paths,
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        }
+        return appendScribbleWorldPoints(item, worlds)
       }),
     }))
   },
@@ -623,7 +586,15 @@ export function createDocumentActions(
    * still appends to the same scribble item.
    */
   endScribble: () => {
-    /* intentionally keep activeScribbleId */
+    const activeId = get().activeScribbleId
+    if (!activeId) return
+    set((s) => ({
+      items: s.items.map((item) =>
+        item.id === activeId && item.type === 'scribble'
+          ? normalizeScribbleItem(item)
+          : item,
+      ),
+    }))
   },
 
 

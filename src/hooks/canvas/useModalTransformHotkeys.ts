@@ -6,6 +6,7 @@ import {
   type ModalTransformSession,
 } from '../../utils/modalTransform'
 import type { SnapGuide } from '../../utils/snap'
+import { useDragWriteScheduler } from './useDragWriteScheduler'
 
 /**
  * Blender-style G / R / S modal transform: global hotkeys + pointer while active.
@@ -18,6 +19,8 @@ export function useModalTransformHotkeys(options: {
   const modalXformRef = useRef<ModalTransformSession | null>(null)
   const [modalXformKind, setModalXformKind] = useState<string | null>(null)
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const { scheduleDragWrite, flushDragWrite, cancelDragWrite } =
+    useDragWriteScheduler()
 
   useEffect(() => {
     const isTyping = (t: EventTarget | null) => {
@@ -42,6 +45,7 @@ export function useModalTransformHotkeys(options: {
     const cancelModal = () => {
       const session = modalXformRef.current
       if (!session) return
+      cancelDragWrite()
       useCanvasStore.setState({
         items: session.cancelItems,
         stacks: session.cancelStacks,
@@ -53,6 +57,7 @@ export function useModalTransformHotkeys(options: {
 
     const confirmModal = () => {
       if (!modalXformRef.current) return
+      flushDragWrite()
       modalXformRef.current = null
       setModalXformKind(null)
       setSnapGuides([])
@@ -115,23 +120,29 @@ export function useModalTransformHotkeys(options: {
       lastPointerRef.current = { x: e.clientX, y: e.clientY }
       const session = modalXformRef.current
       if (!session) return
-      const store = useCanvasStore.getState()
-      const { itemPatches, stackPatches, guides } = applyModalTransform(
-        session,
-        e.clientX,
-        e.clientY,
-        store.viewport,
-        {
-          snapEnabled: session.kind === 'grab' && store.snapEnabled,
-          angleSnap: session.kind === 'rotate' && e.shiftKey,
-          allItems: store.items,
-          allStacks: store.stacks,
-          containerId: store.currentContainerId,
-        },
-      )
-      if (itemPatches.length) store.updateItems(itemPatches)
-      if (stackPatches.length) store.updateStacks(stackPatches)
-      setSnapGuides(session.kind === 'rotate' ? [] : guides)
+      const clientX = e.clientX
+      const clientY = e.clientY
+      const shiftKey = e.shiftKey
+      scheduleDragWrite(() => {
+        if (modalXformRef.current !== session) return
+        const store = useCanvasStore.getState()
+        const { itemPatches, stackPatches, guides } = applyModalTransform(
+          session,
+          clientX,
+          clientY,
+          store.viewport,
+          {
+            snapEnabled: session.kind === 'grab' && store.snapEnabled,
+            angleSnap: session.kind === 'rotate' && shiftKey,
+            allItems: store.items,
+            allStacks: store.stacks,
+            containerId: store.currentContainerId,
+          },
+        )
+        if (itemPatches.length) store.updateItems(itemPatches)
+        if (stackPatches.length) store.updateStacks(stackPatches)
+        setSnapGuides(session.kind === 'rotate' ? [] : guides)
+      })
     }
 
     const onPointerDown = (e: PointerEvent) => {
@@ -164,7 +175,12 @@ export function useModalTransformHotkeys(options: {
       window.removeEventListener('pointerdown', onPointerDown, true)
       window.removeEventListener('contextmenu', onContextMenu, true)
     }
-  }, [setSnapGuides])
+  }, [
+    cancelDragWrite,
+    flushDragWrite,
+    scheduleDragWrite,
+    setSnapGuides,
+  ])
 
   return { modalXformRef, modalXformKind, lastPointerRef }
 }

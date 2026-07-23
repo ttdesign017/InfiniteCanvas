@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test",
+    "check:all": "npm run check && npm run mcp:typecheck",
     "preview": "vite preview",
     "tauri": "tauri",
     "mcp:install": "npm install --prefix packages/ic2-mcp",

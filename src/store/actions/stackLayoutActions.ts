@@ -12,11 +12,16 @@ import {
 import { allocateStackZBlock, reflowContainerSurfaceZ } from '../../utils/zOrder'
 import {
   asFreeOnContainer,
+  collectItemsInStackTree,
   containerOf,
   createStackRecord,
   itemsInContainer,
 } from '../../utils/stacks'
 import { centerOriginPoseToBottomLeftOrigin } from '../../utils/geometry'
+import {
+  ensureStackFanComposite,
+  stackFanNeedsLiveText,
+} from '../../utils/stackFanComposite'
 import { easeOutCubic } from '../actionHelpers'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
 export type StackLayoutActionKey =
@@ -332,6 +337,32 @@ export function createStackLayoutActions(
                 : st,
             ),
           })
+          // Start the media-only collapsed fan bitmap before React paints the
+          // newly-created folder. Inflight de-duplication makes the component
+          // effect a cheap cache hit; large stacks avoid a long live-DOM window.
+          if (typeof document !== 'undefined') {
+            const composed = get()
+            const composedStack = composed.stacks.find(
+              (candidate) => candidate.id === groupId,
+            )
+            const fanItems = composedStack
+              ? collectItemsInStackTree(
+                  composed.items,
+                  composed.stacks,
+                  composedStack.id,
+                )
+              : []
+            if (
+              composedStack &&
+              !stackFanNeedsLiveText(fanItems)
+            ) {
+              void ensureStackFanComposite(
+                composedStack,
+                composed.items,
+                composed.stacks,
+              ).catch(() => null)
+            }
+          }
           options.onComplete?.()
         } else {
           set({ animating: false })

@@ -1,5 +1,52 @@
 import { useCanvasStore } from '../../store/useCanvasStore'
 
+const transformReleaseTimers = new WeakMap<HTMLElement, number>()
+const activePanWorlds = new WeakSet<HTMLElement>()
+const TRANSFORM_WARM_HOLD_MS = 260
+
+function canvasWorld(
+  surface: HTMLElement | null | undefined,
+): HTMLElement | null {
+  return (surface?.querySelector('.canvas-world') as HTMLElement | null) ?? null
+}
+
+function clearTransformRelease(world: HTMLElement) {
+  const timer = transformReleaseTimers.get(world)
+  if (timer != null) {
+    window.clearTimeout(timer)
+    transformReleaseTimers.delete(world)
+  }
+}
+
+function releaseTransformLater(
+  world: HTMLElement,
+  delayMs = TRANSFORM_WARM_HOLD_MS,
+) {
+  clearTransformRelease(world)
+  const timer = window.setTimeout(() => {
+    transformReleaseTimers.delete(world)
+    if (!activePanWorlds.has(world)) {
+      world.style.willChange = 'auto'
+    }
+  }, delayMs)
+  transformReleaseTimers.set(world, timer)
+}
+
+/**
+ * Warm the single world transform layer for a wheel gesture, then retain it
+ * briefly so trackpad/wheel bursts do not repeatedly promote and demote a
+ * media-heavy canvas.
+ */
+export function prewarmCanvasTransform(
+  surface: HTMLElement | null | undefined,
+) {
+  const world = canvasWorld(surface)
+  if (!world) return
+  clearTransformRelease(world)
+  world.style.willChange = 'transform'
+  if (!activePanWorlds.has(world)) releaseTransformLater(world)
+}
+
 /** Pan grab chrome without React re-render of the item tree. */
 export function setPanChrome(surface: HTMLElement | null | undefined, on: boolean) {
   if (!surface) {
@@ -7,14 +54,20 @@ export function setPanChrome(surface: HTMLElement | null | undefined, on: boolea
   }
   if (!surface) return
   surface.classList.toggle('is-panning', on)
+  const world = canvasWorld(surface)
   if (on) {
     surface.style.cursor = 'grabbing'
-    const world = surface.querySelector('.canvas-world') as HTMLElement | null
-    if (world) world.style.willChange = 'transform'
+    if (world) {
+      clearTransformRelease(world)
+      activePanWorlds.add(world)
+      world.style.willChange = 'transform'
+    }
   } else {
     surface.style.removeProperty('cursor')
-    const world = surface.querySelector('.canvas-world') as HTMLElement | null
-    if (world) world.style.willChange = 'auto'
+    if (world) {
+      activePanWorlds.delete(world)
+      releaseTransformLater(world)
+    }
   }
 }
 

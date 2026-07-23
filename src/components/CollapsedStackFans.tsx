@@ -22,6 +22,7 @@ import {
   getStackFanComposite,
   sortFanItemsStable,
   stackFanContentKey,
+  stackFanNeedsLiveText,
   type StackFanComposite,
 } from '../utils/stackFanComposite'
 
@@ -97,6 +98,7 @@ function CollapsedStackFansInner({
     () => sortFanItemsStable(fanItems),
     [fanItems],
   )
+  const needsLiveText = stackFanNeedsLiveText(orderedFans)
 
   const contentSig = fanItemsSignature(orderedFans, stack.x, stack.y)
 
@@ -142,7 +144,7 @@ function CollapsedStackFansInner({
 
   // Build when content key changes (not on sibling move / z reflow)
   useEffect(() => {
-    if (orderedFans.length === 0) return
+    if (orderedFans.length === 0 || needsLiveText) return
     const cached = getStackFanComposite(stack.id)
     if (cached && cached.key === key) {
       setPending(cached)
@@ -157,15 +159,20 @@ function CollapsedStackFansInner({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, stack.id, orderedFans.length])
+  }, [key, needsLiveText, stack.id, orderedFans.length])
 
   const displayOk =
-    !forceLive && !!display && displayReady && orderedFans.length > 0
+    !forceLive &&
+    !needsLiveText &&
+    !!display &&
+    displayReady &&
+    orderedFans.length > 0
 
   // Live only when morph forces it, or we have *no* holdover bitmap at all.
   // Never tear down a previous composite for a key rebuild (handoff flash).
   const showLive =
-    forceLive || (orderedFans.length > 0 && !display && !displayReady)
+    orderedFans.length > 0 &&
+    (forceLive || needsLiveText || (!display && !displayReady))
 
   const compositeZ = useMemo(() => {
     let z = zIndexBase
@@ -177,7 +184,9 @@ function CollapsedStackFansInner({
 
   // Decode pending when it differs from what's on screen (or nothing displayed yet)
   const loadTarget =
-    pending && (!display || pending.url !== display.url || !displayReady)
+    !needsLiveText &&
+    pending &&
+    (!display || pending.url !== display.url || !displayReady)
       ? pending
       : null
 
@@ -232,7 +241,7 @@ function CollapsedStackFansInner({
       )}
 
       {/* Visible composite — last decoded, held across key rebuilds */}
-      {display && orderedFans.length > 0 && (
+      {!needsLiveText && display && orderedFans.length > 0 && (
         <img
           key={`show-${display.url}`}
           className="stack-fan-composite"

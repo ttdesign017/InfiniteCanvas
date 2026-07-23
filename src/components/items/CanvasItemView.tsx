@@ -1,4 +1,4 @@
-import { memo, useSyncExternalStore } from 'react'
+import { memo, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import type { CanvasItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import {
@@ -24,6 +24,7 @@ import { TextItemView } from './TextItemView'
 import { EmbedItemView } from './EmbedItemView'
 import { AudioItemView } from './AudioItemView'
 import { openExternal } from '../../utils/desktop'
+import { observeViewportPaint } from '../../utils/viewportPaintCulling'
 
 interface Props {
   item: CanvasItem
@@ -49,6 +50,7 @@ function CanvasItemViewInner({
   onResizePointerDown,
   staticPreview = false,
 }: Props) {
+  const itemRef = useRef<HTMLDivElement>(null)
   const select = useCanvasStore((s) => s.select)
   const editingId = useCanvasStore((s) => s.editingId)
   const preview = useSyncExternalStore(
@@ -87,6 +89,14 @@ function CanvasItemViewInner({
   const showAudioSelectionMarkers =
     selected && item.type === 'audio' && !stacked
   const editable = !stacked && (item.type === 'text' || item.type === 'textcard')
+  const paintCullable =
+    item.type === 'image' || item.type === 'gif' || item.type === 'video'
+
+  useLayoutEffect(() => {
+    const element = itemRef.current
+    if (!element || !paintCullable) return
+    return observeViewportPaint(element)
+  }, [paintCullable, item.id])
 
   const isTextPreview =
     item.type === 'text' && preview && preview.id === item.id
@@ -135,6 +145,7 @@ function CanvasItemViewInner({
 
   return (
     <div
+      ref={itemRef}
       className={`canvas-item type-${item.type} ${selected ? 'selected' : ''} ${editingId === item.id ? 'is-editing' : ''} ${stacked ? 'is-stacked' : ''} ${isTextPreview ? 'is-text-scaling' : ''}${isDragMember ? ' is-drag-member' : ''}`}
       data-id={item.id}
       style={{

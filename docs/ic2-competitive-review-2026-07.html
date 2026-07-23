@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="IC2 代码审查与创意灵感白板竞品研究，涵盖 Allume、PureRef、Milanote、Kosmik、Miro、Eagle、Freeform 与 Microsoft Whiteboard。">
+  <title>IC2｜代码审查与竞品研究</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f3f1eb;
+      --surface: #faf9f5;
+      --ink: #18211e;
+      --muted: #68716d;
+      --line: #d8d9d2;
+      --soft-line: #e7e7e1;
+      --accent: #0a6759;
+      --accent-soft: #dbeae5;
+      --accent-ink: #084f45;
+      --warm: #9b5b35;
+      --danger: #8b3f39;
+      --radius: 14px;
+      --content: 1180px;
+      --serif: "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif CJK SC", serif;
+      --sans: "Aptos", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.68;
+      text-rendering: optimizeLegibility;
+    }
+    a { color: inherit; }
+    a:focus-visible,
+    button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      outline-offset: 3px;
+    }
+    .shell { width: min(calc(100% - 40px), var(--content)); margin-inline: auto; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+      background: color-mix(in srgb, var(--paper) 92%, transparent);
+      backdrop-filter: blur(18px);
+    }
+    .topbar-inner {
+      min-height: 66px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; }
+    .brand strong { font-family: var(--serif); font-size: 23px; letter-spacing: -.02em; }
+    .brand span { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
+    nav { display: flex; align-items: center; gap: 18px; white-space: nowrap; }
+    nav a { color: var(--muted); font-size: 13px; text-decoration: none; }
+    nav a:hover { color: var(--accent); }
+
+    .hero {
+      min-height: min(720px, calc(100dvh - 66px));
+      display: grid;
+      align-content: center;
+      padding: 74px 0 62px;
+    }
+    .kicker {
+      margin: 0 0 22px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 980px;
+      margin-bottom: 25px;
+      font-family: var(--serif);
+      font-size: clamp(48px, 7vw, 92px);
+      font-weight: 500;
+      letter-spacing: -.055em;
+      line-height: .98;
+    }
+    .hero-lead {
+      max-width: 760px;
+      margin-bottom: 42px;
+      color: #3f4a46;
+      font-size: clamp(18px, 2vw, 24px);
+      line-height: 1.5;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr 1fr;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .hero-stat { padding: 22px 24px 22px 0; }
+    .hero-stat + .hero-stat { padding-left: 24px; border-left: 1px solid var(--line); }
+    .hero-stat b { display: block; margin-bottom: 4px; font-family: var(--serif); font-size: 27px; font-weight: 500; }
+    .hero-stat span { color: var(--muted); font-size: 13px; }
+
+    main section { padding: 90px 0; border-top: 1px solid var(--line); }
+    .section-head { max-width: 800px; margin-bottom: 46px; }
+    .section-head h2 {
+      margin-bottom: 18px;
+      font-family: var(--serif);
+      font-size: clamp(38px, 5vw, 62px);
+      font-weight: 500;
+      letter-spacing: -.045em;
+      line-height: 1.04;
+    }
+    .section-head p { max-width: 680px; color: var(--muted); font-size: 17px; }
+    .section-label { margin-bottom: 13px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+
+    .verdict {
+      display: grid;
+      grid-template-columns: 1.5fr .8fr;
+      gap: 28px;
+      align-items: stretch;
+    }
+    .verdict-main,
+    .verdict-side {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .verdict-main { padding: clamp(28px, 5vw, 58px); }
+    .verdict-main blockquote {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: clamp(29px, 4vw, 47px);
+      letter-spacing: -.035em;
+      line-height: 1.2;
+    }
+    .verdict-side { padding: 30px; display: flex; flex-direction: column; justify-content: space-between; }
+    .verdict-side p { color: var(--muted); }
+    .rank { margin: 0; padding: 0; list-style: none; }
+    .rank li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--soft-line); }
+    .rank li:first-child { border-top: 0; }
+    .rank b { color: var(--accent); font-family: var(--mono); font-size: 12px; }
+    .rank span { font-size: 14px; }
+
+    .baseline {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+    }
+    .baseline article {
+      grid-column: span 4;
+      min-height: 210px;
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .baseline article:nth-child(1),
+    .baseline article:nth-child(6) { grid-column: span 8; }
+    .baseline h3 { margin-bottom: 10px; font-size: 16px; }
+    .baseline p { color: var(--muted); font-size: 14px; }
+    .tagline { color: var(--accent); font-family: var(--mono); font-size: 11px; letter-spacing: .04em; }
+
+    .review-list { display: grid; gap: 14px; }
+    .finding {
+      display: grid;
+      grid-template-columns: 94px minmax(0, 1.2fr) minmax(240px, .8fr);
+      gap: 24px;
+      align-items: start;
+      padding: 26px 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .priority {
+      width: fit-content;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .priority.high { background: #f2dfdc; color: var(--danger); }
+    .priority.mid { background: #ede5d9; color: var(--warm); }
+    .finding h3 { margin-bottom: 8px; font-size: 18px; }
+    .finding p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+    .finding .action { padding-left: 22px; border-left: 1px solid var(--soft-line); }
+    code { color: #36413d; font-family: var(--mono); font-size: .88em; }
+    .file-link { color: var(--accent); text-underline-offset: 3px; }
+
+    .market-map {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .market-col { min-width: 0; }
+    .market-title { padding: 12px 12px 16px; color: var(--muted); font-size: 12px; }
+    .market-item { min-height: 126px; margin-bottom: 10px; padding: 18px; border-radius: 10px; background: #eeeee8; }
+    .market-item strong { display: block; margin-bottom: 6px; font-family: var(--serif); font-size: 21px; font-weight: 500; }
+    .market-item span { color: var(--muted); font-size: 12px; }
+    .market-item.ic2 { background: var(--accent); color: white; }
+    .market-item.ic2 span { color: #d7ebe6; }
+
+    .product-list { display: grid; gap: 20px; }
+    .product {
+      display: grid;
+      grid-template-columns: minmax(190px, .62fr) minmax(0, 1.38fr);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .product-id { padding: 28px; border-right: 1px solid var(--line); background: #eeeee8; }
+    .product-id h3 { margin-bottom: 4px; font-family: var(--serif); font-size: 29px; font-weight: 500; letter-spacing: -.025em; }
+    .product-id p { color: var(--muted); font-size: 13px; }
+    .product-id a { color: var(--accent); font-size: 13px; text-underline-offset: 3px; }
+    .product-body { padding: 28px; }
+    .product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .product-body h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .product-body p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+    .comparison { color: var(--ink) !important; }
+    .comparison b { color: var(--accent); }
+    .price { margin-top: 20px !important; padding-top: 16px; border-top: 1px solid var(--soft-line); font-family: var(--mono); font-size: 12px !important; }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 15px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--soft-line); }
+    thead th { position: sticky; top: 0; background: #e9eae4; color: #4f5955; font-size: 11px; letter-spacing: .05em; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:first-child { background: var(--accent-soft); }
+    td:first-child { font-weight: 700; white-space: nowrap; }
+    .cell-strong { color: var(--accent); font-weight: 700; }
+    .cell-mid { color: #5e6b66; }
+    .cell-low { color: #a19f97; }
+    .legend { margin-top: 12px; color: var(--muted); font-size: 12px; }
+
+    .roadmap { counter-reset: step; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .roadmap article { min-height: 290px; padding: 28px; border-top: 3px solid var(--accent); background: var(--surface); }
+    .roadmap article::before { counter-increment: step; content: "0" counter(step); color: var(--accent); font-family: var(--mono); font-size: 12px; }
+    .roadmap h3 { margin: 45px 0 12px; font-family: var(--serif); font-size: 28px; font-weight: 500; }
+    .roadmap p { color: var(--muted); font-size: 14px; }
+    .roadmap ul { margin: 18px 0 0; padding-left: 18px; color: #43504b; font-size: 13px; }
+    .roadmap li + li { margin-top: 8px; }
+
+    .sources { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 22px; }
+    .source {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 12px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line);
+      text-decoration: none;
+    }
+    .source b { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+    .source span { display: block; font-size: 14px; }
+    .source small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; word-break: break-all; }
+
+    footer { padding: 42px 0 70px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    footer .shell { display: flex; justify-content: space-between; gap: 24px; }
+
+    @media (max-width: 860px) {
+      .shell { width: min(calc(100% - 28px), var(--content)); }
+      nav { display: none; }
+      .hero { min-height: auto; padding-top: 68px; }
+      .hero-grid, .verdict, .product, .product-grid { grid-template-columns: 1fr; }
+      .hero-stat + .hero-stat { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
+      .baseline article,
+      .baseline article:nth-child(1),
+      .baseline article:nth-child(6) { grid-column: span 6; }
+      .finding { grid-template-columns: 72px 1fr; }
+      .finding .action { grid-column: 2; padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--soft-line); }
+      .market-map { grid-template-columns: repeat(2, 1fr); }
+      .product-id { border-right: 0; border-bottom: 1px solid var(--line); }
+      .roadmap { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      h1 { font-size: 48px; }
+      main section { padding: 66px 0; }
+      .baseline article,
+      .baseline article:nth-child(1),
+      .baseline article:nth-child(6) { grid-column: 1 / -1; }
+      .finding { grid-template-columns: 1fr; }
+      .finding .action { grid-column: 1; }
+      .market-map, .sources { grid-template-columns: 1fr; }
+      footer .shell { flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+    @media print {
+      .topbar { position: static; }
+      nav { display: none; }
+      body { background: white; }
+      .hero { min-height: auto; }
+      main section { padding: 48px 0; break-inside: avoid; }
+      .product, .finding, .roadmap article { break-inside: avoid; }
+      a { text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top"><strong>IC2</strong><span>PRODUCT REVIEW</span></a>
+      <nav aria-label="报告目录">
+        <a href="#verdict">结论</a>
+        <a href="#code-review">代码审查</a>
+        <a href="#landscape">市场版图</a>
+        <a href="#competitors">逐项对比</a>
+        <a href="#roadmap">建议</a>
+        <a href="#sources">来源</a>
+      </nav>
+    </div>
+  </header>
+
+  <div id="top" class="shell hero">
+    <p class="kicker">Creative inspiration board · Research snapshot</p>
+    <h1>不是另一块团队白板，<br>而是创作者的空间工作台。</h1>
+    <p class="hero-lead">IC2 已形成 Allume 的嵌套思考结构与 PureRef 的桌面参考板手感。下一阶段应把优势集中到可信保存、快速采集、可检索素材与混合媒体，而不是复制 Miro。</p>
+    <div class="hero-grid" aria-label="报告摘要">
+      <div class="hero-stat"><b>8 个竞品</b><span>全部基于官网、官方帮助或官方定价页</span></div>
+      <div class="hero-stat"><b>6 项审查结论</b><span>前端构建通过，Rust 2 项测试通过</span></div>
+      <div class="hero-stat"><b>2026.07.15</b><span>价格与功能以调研日页面为准</span></div>
+    </div>
+  </div>
+
+  <main>
+    <section id="verdict">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Executive verdict</p>
+          <h2>IC2 的位置已经清楚，产品边界还需要更锋利。</h2>
+        </div>
+        <div class="verdict">
+          <div class="verdict-main">
+            <blockquote>Windows 优先、本地优先、可嵌套、擅长混合媒体与精细摆放的创意灵感白板。</blockquote>
+          </div>
+          <div class="verdict-side">
+            <p>最接近的不是单一产品，而是两个参照系的交集。</p>
+            <ol class="rank">
+              <li><b>01</b><span><strong>Allume</strong><br>产品哲学与嵌套画板最接近</span></li>
+              <li><b>02</b><span><strong>PureRef</strong><br>桌面参考图工作流最接近</span></li>
+              <li><b>03</b><span><strong>Milanote / Kosmik</strong><br>采集、研究与内容组织的下一步参照</span></li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="baseline">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">IC2 baseline</p>
+          <h2>从代码确认的产品能力</h2>
+          <p>以下不是路线图描述，而是当前仓库中已经存在的能力。它们构成本次竞品对比的基线。</p>
+        </div>
+        <div class="baseline">
+          <article>
+            <span class="tagline">CANVAS CORE</span>
+            <h3>无限画布与高精度空间操作</h3>
+            <p>平移、缩放、框选、多选、旋转感知命中、组合缩放、边缘吸附、对齐、压紧布局，以及 G / R / S 模态变换。整体明显强于常规便签白板。</p>
+          </article>
+          <article>
+            <span class="tagline">MEDIA</span>
+            <h3>混合媒体</h3>
+            <p>图片、GIF、视频、自由文字、卡片笔记、链接预览、涂鸦与网页嵌入。</p>
+          </article>
+          <article>
+            <span class="tagline">NESTING</span>
+            <h3>嵌套画布</h3>
+            <p>Stack 不是视觉分组，而是可进入的子画布，支持多层路径、折叠预览与跨层复制。</p>
+          </article>
+          <article>
+            <span class="tagline">REFERENCE FLOW</span>
+            <h3>参考图工作流</h3>
+            <p>拖放与剪贴板导入、媒体裁剪和还原、自然尺寸恢复、置顶层级与批量布局。</p>
+          </article>
+          <article>
+            <span class="tagline">LOCAL FIRST</span>
+            <h3>便携项目文件</h3>
+            <p><code>.icanvas</code> 将素材内嵌为 base64，可离线打开，并兼容旧版 JSON。</p>
+          </article>
+          <article>
+            <span class="tagline">DESKTOP</span>
+            <h3>Windows 原生桌面体验</h3>
+            <p>Tauri 2 + WebView2，支持文件关联、系统对话框、无边框窗口、关闭保存保护与本地文件读写。当前没有账号、云同步与多人协作依赖。</p>
+          </article>
+          <article>
+            <span class="tagline">CURRENT GAPS</span>
+            <h3>尚未覆盖</h3>
+            <p>全局搜索、标签、浏览器采集器、PDF 与音频原生阅读、模板、评论、实时协作、跨设备同步、移动端，以及面向素材的 AI 检索。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="code-review">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Code review</p>
+          <h2>先提升作品可信度，再扩展功能面。</h2>
+          <p>生产构建已通过。以下按用户数据风险、故障影响与后续开发成本排序，只列值得行动的结论。</p>
+        </div>
+        <div class="review-list">
+          <article class="finding">
+            <span class="priority high">P0 · 数据</span>
+            <div>
+              <h3>保存过程不是原子写入</h3>
+              <p>当前直接覆盖目标文件，随后再回读校验。校验可以发现截断，却无法在进程崩溃、磁盘写满或写入中断时恢复原文件。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：写入同目录临时文件，校验成功后执行原子替换，并保留一个滚动备份。核心位置为 <a class="file-link" href="../src/utils/boardIO.ts">boardIO.ts:57</a>。</p>
+            </div>
+          </article>
+
+          <article class="finding">
+            <span class="priority high">P1 · 稳定</span>
+            <div>
+              <h3>大项目文件会产生极高内存峰值</h3>
+              <p>文件先整体读成字符串，再做 JSON 解析，然后把内嵌 base64 展开为 data URL。512 MiB 的上限并不等于安全，实际峰值可能是文件大小的数倍。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：读取前检查文件元数据并先降到保守上限；中期将项目格式改为 zip 容器或二进制资产包，素材按需解码。位置为 <a class="file-link" href="../src/utils/boardIO.ts">boardIO.ts:115</a> 与 <a class="file-link" href="../src/utils/boardFile.ts">boardFile.ts:329</a>。</p>
+            </div>
+          </article>
+
+          <article class="finding">
+            <span class="priority high">P1 · 回归</span>
+            <div>
+              <h3>复杂几何与嵌套状态缺少前端自动化测试</h3>
+              <p><code>useCanvasStore.ts</code> 超过 4,100 行，<code>InfiniteCanvas.tsx</code> 接近 2,900 行，但 package 中没有前端测试脚本。旋转、裁剪、历史记录、嵌套迁移和保存格式都容易出现组合回归。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：先为纯函数补 Vitest，再覆盖 5 条端到端主链路：导入、裁剪、嵌套、撤销、保存重开。Rust 当前仅有 2 项链接安全测试。</p>
+            </div>
+          </article>
+
+          <article class="finding">
+            <span class="priority mid">P1 · 安全</span>
+            <div>
+              <h3>任意网页嵌入仍拥有较宽权限</h3>
+              <p>iframe 同时允许脚本、同源、表单与弹窗，CSP 又允许任意 http(s) frame 和连接。对个人本地工具尚可接受，但分发给更广泛用户前需要更明确的信任模型。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：默认采用域名白名单和低权限 sandbox，特殊播放器按 provider 提权；对未知来源显示一次性风险确认。位置为 <a class="file-link" href="../src/utils/embedIframeCache.ts">embedIframeCache.ts:13</a> 与 <a class="file-link" href="../src-tauri/tauri.conf.json">tauri.conf.json:31</a>。</p>
+            </div>
+          </article>
+
+          <article class="finding">
+            <span class="priority mid">P2 · 无障碍</span>
+            <div>
+              <h3>图标按钮主要依赖 title，状态语义不足</h3>
+              <p>左侧工具和多数右侧操作没有显式 <code>aria-label</code>，活动工具也未提供 <code>aria-pressed</code>。画布虽可聚焦，但缺少角色和可读名称；关闭对话框未见焦点圈定。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：补充可访问名称与状态，进入对话框时聚焦主按钮，Tab 限制在对话框内，Escape 取消。位置为 <a class="file-link" href="../src/components/Toolbar.tsx">Toolbar.tsx:149</a> 与 <a class="file-link" href="../src/components/CloseSaveDialog.tsx">CloseSaveDialog.tsx:22</a>。</p>
+            </div>
+          </article>
+
+          <article class="finding">
+            <span class="priority">P2 · 架构</span>
+            <div>
+              <h3>核心状态与交互组件已到拆分临界点</h3>
+              <p>构建后的主 JS 为 414.85 kB，gzip 128.32 kB。构建还提示两个动态导入因已有静态导入而无法形成分包。更重要的是，巨型 store 与巨型 canvas 组件降低修改可验证性。</p>
+            </div>
+            <div class="action">
+              <p><strong>建议</strong>：按 document、selection、viewport、stack、history 切分 store actions；把手势状态机移到独立模块。移除无效动态导入，并同步修正 README 中已过时的 “CSP 为 null” 描述。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="landscape">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Market landscape</p>
+          <h2>竞品不是同一条赛道，而是四种用户任务。</h2>
+          <p>IC2 最合理的位置在“私人深度创作”与“视觉参考工作台”的交界处。团队协作白板应视为替代品，而非功能清单模板。</p>
+        </div>
+        <div class="market-map" aria-label="竞品类型地图">
+          <div class="market-col">
+            <div class="market-title">深度思考</div>
+            <div class="market-item"><strong>Allume</strong><span>嵌套画板 · 本地优先 · Apple</span></div>
+            <div class="market-item ic2"><strong>IC2</strong><span>嵌套画布 · 混合媒体 · Windows</span></div>
+          </div>
+          <div class="market-col">
+            <div class="market-title">视觉参考</div>
+            <div class="market-item"><strong>PureRef</strong><span>轻量参考图板 · 跨平台</span></div>
+            <div class="market-item"><strong>Eagle</strong><span>素材库 · 搜索与标签</span></div>
+          </div>
+          <div class="market-col">
+            <div class="market-title">创意项目</div>
+            <div class="market-item"><strong>Milanote</strong><span>采集 · 项目板 · 反馈</span></div>
+            <div class="market-item"><strong>Kosmik</strong><span>浏览研究 · PDF · AI</span></div>
+          </div>
+          <div class="market-col">
+            <div class="market-title">协作白板</div>
+            <div class="market-item"><strong>Miro</strong><span>团队流程 · 模板 · 集成</span></div>
+            <div class="market-item"><strong>Freeform / Whiteboard</strong><span>系统入口 · 免费协作</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="competitors">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Competitor dossiers</p>
+          <h2>逐个产品与 IC2 对比</h2>
+          <p>“更强”只指该任务维度，不代表总体产品优劣。价格为官网在调研日展示的美元标价，税费、地区与应用商店价格可能不同。</p>
+        </div>
+
+        <div class="product-list">
+          <article class="product">
+            <div class="product-id">
+              <h3>Allume</h3>
+              <p>原名 Muse · 最接近</p>
+              <a href="https://allume.com/" target="_blank" rel="noreferrer">allume.com</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>嵌套画板、文字、手写、卡片、图片、视频、PDF、网页链接、文件、Inbox、连接线、搜索跳转、PDF 标注、PDF / PNG 导出、本地优先同步。Pro 提供共享工作区、实时光标、评论与模板，新版加入 MCP / AI 支持。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Allume 强</b>：Apple Pencil、PDF、搜索、Inbox、跨设备同步、协作、评论。<br><b>IC2 强</b>：Windows、自由缩放与旋转、媒体裁剪、批量对齐压紧、PureRef 式精细操作、便携单文件。</p></div>
+              </div>
+              <p class="price">FREE：2 个工作区，每区 100 卡片，1 位协作者 · UNLIMITED：$9.99/月 或 $99.99/年</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>PureRef</h3>
+              <p>参考图板 · 次接近</p>
+              <a href="https://www.pureref.com/" target="_blank" rel="noreferrer">pureref.com</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>Windows、macOS、Linux 独立应用；从浏览器或文件直接拖入图片；窗口置顶与极简界面；笔记、去色、排列、对齐；项目文件可内嵌图片或保留外链。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>PureRef 强</b>：成熟度、跨平台、极轻量、置顶工作流、图片专用工具与艺术家认知度。<br><b>IC2 强</b>：视频、链接卡片、网页嵌入、富文本卡片、嵌套画布、可进入的空间结构。</p></div>
+              </div>
+              <p class="price">个人版支持自定义金额与试用 · 商业授权提供一次性或按席订阅，实时价格见下载页</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Milanote</h3>
+              <p>创意项目工作台</p>
+              <a href="https://milanote.com/" target="_blank" rel="noreferrer">milanote.com</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>笔记、图片、视频、草图、链接、PDF、字体等内容；浏览器 Web Clipper；简洁富文本；视觉项目组织；共享、评论、通知与免登录查看；高质量 PDF 导出。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Milanote 强</b>：一键网页采集、项目模板、评论反馈、分享、跨设备与创意行业场景包装。<br><b>IC2 强</b>：离线与数据掌控、自由空间变换、裁剪、嵌套层级、视频本地播放、无卡片数量限制。</p></div>
+              </div>
+              <p class="price">FREE：100 个笔记/图片/链接，10 次文件上传 · PRO：$9.99/月按年付，或 $12.50 月付</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Kosmik</h3>
+              <p>AI 视觉研究空间</p>
+              <a href="https://www.kosmik.app/" target="_blank" rel="noreferrer">kosmik.app</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>无限画布内完成浏览、研究、收藏、PDF 阅读与标注、绘画、共享和演示；主打 AI 生成情绪板与无切换研究流程。Pro 提供无限工作区、Universe、笔记、书签、文件导入与 AI 请求。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Kosmik 强</b>：内置浏览研究、PDF、AI、分享与团队能力。<br><b>IC2 强</b>：本地 Windows 桌面手感、明确的便携文件、嵌套 Stack 结构、精细媒体变换，以及不依赖订阅的离线核心。</p></div>
+              </div>
+              <p class="price">1 周免费试用 · PRO：$11.99/月按年付，或 $14.99 月付</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Miro</h3>
+              <p>团队视觉协作平台</p>
+              <a href="https://miro.com/whiteboard/" target="_blank" rel="noreferrer">miro.com</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>无限画布、实时与异步协作、便签、绘画、图表、文件、思维导图、计时、投票、模板、访客、AI 聚类与总结，以及大量第三方集成。更接近组织级工作平台。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Miro 强</b>：实时协作、主持工具、模板、企业安全、集成、AI 与多端覆盖。<br><b>IC2 强</b>：私人离线创作、低界面负担、媒体参考体验、项目可携带性与本地数据控制。</p></div>
+              </div>
+              <p class="price">FREE：3 块可编辑画板 · STARTER：$8/席/月按年付，或 $10 月付 · BUSINESS：$20/席/月按年付</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Eagle</h3>
+              <p>创意素材库</p>
+              <a href="https://www.eagle.cool/" target="_blank" rel="noreferrer">eagle.cool</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>图片与设计文件采集、浏览器扩展、文件夹与标签、智能文件夹、相似图与重复图查找、颜色筛选、备注、截图、丰富格式预览，以及面向 AI Agent 的 MCP / Skill。核心是“找得到”，不是自由画布。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Eagle 强</b>：大规模素材管理、检索、标签、去重、网页采集、格式覆盖与长期资料库。<br><b>IC2 强</b>：空间叙事、概念关系、自由摆放、手绘、嵌套探索与项目级视觉推演。</p></div>
+              </div>
+              <p class="price">30 天全功能试用 · 一次性买断、终身更新、2 台设备，官网价格按地区动态显示</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Freeform</h3>
+              <p>Apple 系统内置</p>
+              <a href="https://www.apple.com/newsroom/2022/12/apple-launches-freeform-a-powerful-new-app-designed-for-creative-brainstorming-and-collaboration/" target="_blank" rel="noreferrer">apple.com/freeform</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>无限画布、Apple Pencil、多种画笔、700 多种图形、图片、视频、音频、文档、PDF、网页与地图链接、便签、对齐辅助、Quick Look、锁定、iCloud 同步、FaceTime 与最多 100 人协作。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Freeform 强</b>：零购买门槛、Apple 生态、手写、图形库、音频与 PDF、移动采集、多人协作。<br><b>IC2 强</b>：Windows、深层嵌套、参考图裁剪、模态变换、链接预览与本地项目文件。</p></div>
+              </div>
+              <p class="price">支持版本的 iPhone、iPad 与 Mac 免费内置</p>
+            </div>
+          </article>
+
+          <article class="product">
+            <div class="product-id">
+              <h3>Whiteboard</h3>
+              <p>Microsoft 系统入口</p>
+              <a href="https://www.microsoft.com/microsoft-365/microsoft-whiteboard/digital-whiteboard-app" target="_blank" rel="noreferrer">microsoft.com/whiteboard</a>
+            </div>
+            <div class="product-body">
+              <div class="product-grid">
+                <div><h4>核心能力</h4><p>Web、Windows、iOS、Android 与 Teams；笔、荧光笔、橡皮、套索、便签、文字、图片与图形；实时共享；60 多个模板；Teams 会议、Loop 组件及 Microsoft 365 Copilot 场景。</p></div>
+                <div><h4>与 IC2 对比</h4><p class="comparison"><b>Whiteboard 强</b>：跨端、Teams 协作、企业账号分发、模板、会议和教学场景。<br><b>IC2 强</b>：创意素材表现力、视频与网页内容、参考图操作、嵌套空间、离线自主与无账号使用。</p></div>
+              </div>
+              <p class="price">基础使用可通过 Microsoft 账号进入 · 高级协作与 Copilot 价值依附 Microsoft 365 计划</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="matrix">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Capability matrix</p>
+          <h2>一张表看清 IC2 的长板与空位</h2>
+          <p>定性判断基于公开功能与当前仓库，不使用伪精确分数。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>产品</th><th>空间操作</th><th>嵌套结构</th><th>混合媒体</th><th>网页采集</th><th>搜索管理</th><th>PDF / 音频</th><th>实时协作</th><th>本地自主</th><th>平台覆盖</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>IC2</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-low">弱</td><td class="cell-low">无</td><td class="cell-strong">强</td><td class="cell-low">Windows</td></tr>
+              <tr><td>Allume</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">Apple</td></tr>
+              <tr><td>PureRef</td><td class="cell-strong">强</td><td class="cell-low">弱</td><td class="cell-mid">中</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-low">弱</td><td class="cell-low">无</td><td class="cell-strong">强</td><td class="cell-strong">Win / Mac / Linux</td></tr>
+              <tr><td>Milanote</td><td class="cell-mid">中</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-low">弱</td><td class="cell-strong">Web / 多端</td></tr>
+              <tr><td>Kosmik</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-mid">桌面 / Web</td></tr>
+              <tr><td>Miro</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-low">弱</td><td class="cell-strong">全平台</td></tr>
+              <tr><td>Eagle</td><td class="cell-low">弱</td><td class="cell-mid">中</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-strong">强</td><td class="cell-mid">Win / Mac</td></tr>
+              <tr><td>Freeform</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-strong">强</td><td class="cell-strong">强</td><td class="cell-mid">中</td><td class="cell-mid">Apple</td></tr>
+              <tr><td>Whiteboard</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-mid">中</td><td class="cell-low">弱</td><td class="cell-strong">强</td><td class="cell-low">弱</td><td class="cell-strong">Web / 多端</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="legend">强：产品核心能力 · 中：可用但不是主要优势 · 弱：缺失、受限或需要绕行 · 无：当前未提供</p>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Strategic direction</p>
+          <h2>建议路线：可信、采集、检索。</h2>
+          <p>这三个阶段会让 IC2 更像一个完整产品，同时继续放大已有差异，而不是进入团队白板的功能军备竞赛。</p>
+        </div>
+        <div class="roadmap">
+          <article>
+            <h3>先守住作品</h3>
+            <p>把“本地优先”从技术形态变成可感知的信任承诺。</p>
+            <ul><li>原子保存与自动备份</li><li>大文件预检和恢复模式</li><li>核心手势、嵌套与文件格式测试</li><li>嵌入来源安全分级</li></ul>
+          </article>
+          <article>
+            <h3>再缩短采集路径</h3>
+            <p>Allume 的 Inbox 与 Milanote、Eagle 的 Web Clipper 都在解决同一个摩擦。</p>
+            <ul><li>全局收件箱和快速投递</li><li>浏览器扩展或系统分享入口</li><li>PDF 与音频原生卡片</li><li>保留原始 URL、作者与采集时间</li></ul>
+          </article>
+          <article>
+            <h3>最后让素材可复用</h3>
+            <p>当画布增多后，检索价值会超过新增一种卡片类型。</p>
+            <ul><li>全局搜索、标签与筛选</li><li>颜色、文件类型和来源检索</li><li>重复素材与相似图发现</li><li>可选的本地 OCR / 语义检索</li></ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="shell">
+        <div class="section-head">
+          <p class="section-label">Sources</p>
+          <h2>官网与官方资料</h2>
+          <p>访问日期均为 2026 年 7 月 15 日。定价会变化，采购前应重新打开对应页面确认。</p>
+        </div>
+        <div class="sources">
+          <a class="source" href="https://allume.com/" target="_blank" rel="noreferrer"><b>01</b><span>Allume 官网与定价<small>https://allume.com/</small></span></a>
+          <a class="source" href="https://allume.com/updates/" target="_blank" rel="noreferrer"><b>02</b><span>Allume 更新记录<small>https://allume.com/updates/</small></span></a>
+          <a class="source" href="https://www.pureref.com/" target="_blank" rel="noreferrer"><b>03</b><span>PureRef 官网<small>https://www.pureref.com/</small></span></a>
+          <a class="source" href="https://pureref.com/download.php" target="_blank" rel="noreferrer"><b>04</b><span>PureRef 下载与授权<small>https://pureref.com/download.php</small></span></a>
+          <a class="source" href="https://milanote.com/" target="_blank" rel="noreferrer"><b>05</b><span>Milanote 官网<small>https://milanote.com/</small></span></a>
+          <a class="source" href="https://milanote.com/plans/" target="_blank" rel="noreferrer"><b>06</b><span>Milanote 定价<small>https://milanote.com/plans/</small></span></a>
+          <a class="source" href="https://www.kosmik.app/" target="_blank" rel="noreferrer"><b>07</b><span>Kosmik 官网<small>https://www.kosmik.app/</small></span></a>
+          <a class="source" href="https://www.kosmik.app/pricing" target="_blank" rel="noreferrer"><b>08</b><span>Kosmik 定价<small>https://www.kosmik.app/pricing</small></span></a>
+          <a class="source" href="https://miro.com/whiteboard/" target="_blank" rel="noreferrer"><b>09</b><span>Miro Whiteboard<small>https://miro.com/whiteboard/</small></span></a>
+          <a class="source" href="https://miro.com/pricing/" target="_blank" rel="noreferrer"><b>10</b><span>Miro 定价<small>https://miro.com/pricing/</small></span></a>
+          <a class="source" href="https://www.eagle.cool/" target="_blank" rel="noreferrer"><b>11</b><span>Eagle 官网<small>https://www.eagle.cool/</small></span></a>
+          <a class="source" href="https://www.eagle.cool/store" target="_blank" rel="noreferrer"><b>12</b><span>Eagle 授权页<small>https://www.eagle.cool/store</small></span></a>
+          <a class="source" href="https://www.apple.com/newsroom/2022/12/apple-launches-freeform-a-powerful-new-app-designed-for-creative-brainstorming-and-collaboration/" target="_blank" rel="noreferrer"><b>13</b><span>Apple Freeform 官方介绍<small>apple.com/newsroom/.../freeform/</small></span></a>
+          <a class="source" href="https://support.microsoft.com/en-us/whiteboard/getting-started-with-microsoft-whiteboard" target="_blank" rel="noreferrer"><b>14</b><span>Microsoft Whiteboard 入门<small>support.microsoft.com/whiteboard/</small></span></a>
+          <a class="source" href="https://www.microsoft.com/microsoft-365/microsoft-whiteboard/digital-whiteboard-app" target="_blank" rel="noreferrer"><b>15</b><span>Microsoft Whiteboard 官网<small>microsoft.com/microsoft-365/.../whiteboard/</small></span></a>
+          <a class="source" href="../README.md"><b>16</b><span>IC2 仓库说明<small>../README.md</small></span></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell"><span>IC2 code review + competitive landscape</span><span>Prepared 2026.07.15 · Asia/Shanghai</span></div>
+  </footer>
+</body>
+</html>

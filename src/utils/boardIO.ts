@@ -18,14 +18,15 @@ import {
   UNSAVED_PROMPT_COPY,
 } from '../hooks/unsavedPrompt'
 import { showAppAlert } from '../hooks/appDialog'
+import { SaveQueue, type SaveQueueOptions } from './saveQueue'
 
 /**
  * Save current board. Uses existing path when `saveAs` is false and a path is known.
  * Returns true if saved.
  */
-export async function saveCurrentBoard(options?: {
-  saveAs?: boolean
-}): Promise<boolean> {
+async function performSaveCurrentBoard(
+  options: SaveQueueOptions = {},
+): Promise<boolean> {
   const store = useCanvasStore.getState()
   const saveAs = options?.saveAs === true
 
@@ -80,8 +81,27 @@ export async function saveCurrentBoard(options?: {
   }
 }
 
+const saveQueue = new SaveQueue(performSaveCurrentBoard)
+
+/**
+ * Serialize saves and coalesce shortcut bursts into at most one follow-up.
+ * This protects writeTextAtomic's shared final/.bak paths from concurrent
+ * rename/remove sequences.
+ */
+export function saveCurrentBoard(options?: SaveQueueOptions): Promise<boolean> {
+  return saveQueue.enqueue(options)
+}
+
+/** Wait until both the active save and any coalesced follow-up have finished. */
+export function waitForPendingBoardSaves(): Promise<void> {
+  return saveQueue.waitForIdle()
+}
+
 /** Open .icanvas (or legacy .json) from disk. Returns true if opened. */
 export async function openBoardFromPath(path: string): Promise<boolean> {
+  // A completed save must never write boardFilePath/dirty back onto a board
+  // imported while that save was still packing or renaming files.
+  await waitForPendingBoardSaves()
   const store = useCanvasStore.getState()
   try {
     perfMark('open-start')
@@ -103,6 +123,8 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
 }
 
 export async function openBoardFromDisk(): Promise<boolean> {
+  // Re-evaluate dirty only after an already-running save has settled.
+  await waitForPendingBoardSaves()
   const store = useCanvasStore.getState()
   if (store.dirty) {
     // Same in-app Save / Discard / Cancel chrome as exit prompt

@@ -948,6 +948,16 @@ body,
   touch-action: none;
 }
 
+/*
+ * Far-screen media remains mounted (stable React keys / decoded state) but is
+ * excluded from paint. A shared IntersectionObserver toggles this only when a
+ * card crosses a generous viewport margin, never on every wheel tick.
+ * Selected cards stay visible for off-screen group transforms and navigation.
+ */
+.canvas-item.is-paint-culled:not(.selected) {
+  visibility: hidden;
+}
+
 /* Enter A: nested stack B's leaves flying into place (visual only) */
 .nested-leaf-enter-ghost {
   position: absolute;

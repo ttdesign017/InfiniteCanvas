@@ -81,12 +81,14 @@ export function applyMutation(
     packedAssets: prev.packedAssets,
   }
   session.dirty = true
+  const appliedSnapshot = session.snapshot
+  const appliedStacks = appliedSnapshot.stacks ?? []
   // Read-after-write: ensure stacks/items from mutation exist
   for (const id of result.createdIds) {
-    if (!session.snapshot.items.some((i) => i.id === id)) {
+    if (!appliedSnapshot.items.some((i) => i.id === id)) {
       // stack ids may be in createdStackIds only
       const stackIds = result.createdStackIds ?? []
-      if (!stackIds.includes(id) && !session.snapshot.stacks.some((s) => s.id === id)) {
+      if (!stackIds.includes(id) && !appliedStacks.some((s) => s.id === id)) {
         throw new BoardOpsError(
           'INTERNAL',
           `File-session verify failed: missing ${id}`,
@@ -96,7 +98,7 @@ export function applyMutation(
     }
   }
   for (const id of result.createdStackIds ?? []) {
-    if (!session.snapshot.stacks.some((s) => s.id === id)) {
+    if (!appliedStacks.some((s) => s.id === id)) {
       throw new BoardOpsError(
         'INTERNAL',
         `File-session verify failed: missing stack ${id}`,
