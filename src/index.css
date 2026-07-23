@@ -1445,20 +1445,77 @@ body,
     box-shadow 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* After Quick Stack — rounded + depth only (no 1px border; GPU scale/morph turns it black) */
+/*
+ * Stacked fan chrome — MUST match stackFanChrome.ts / stackFanComposite paint.
+ * White edge opacity is driven by --stack-fan-edge-opacity (exit gather ramps
+ * 0 → 0.55 before handoff so composite swap does not pop a hard stroke).
+ */
 .media-item.is-stacked {
   border-radius: 10px;
   border: none;
   outline: none;
+  /* Outer depth only; edge is a separate overlay so alpha can ramp independently */
   box-shadow:
     0 10px 28px rgba(0, 0, 0, 0.2),
     0 3px 8px rgba(0, 0, 0, 0.16);
+}
+
+.media-item.is-stacked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px #fff;
+  opacity: var(--stack-fan-edge-opacity, 0.55);
+  pointer-events: none;
+  z-index: 3;
 }
 
 .media-item.is-stacked .media-crop-viewport,
 .media-item.is-stacked .media-content,
 .media-item.is-stacked .video-player {
   border-radius: 10px;
+}
+
+/* Fan cards: same dual shadow + ramping light edge */
+.canvas-item.is-stacked .notion-card,
+.canvas-item.is-stacked .bookmark-card {
+  border-color: transparent;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.2),
+    0 3px 8px rgba(0, 0, 0, 0.16);
+  position: relative;
+}
+
+.canvas-item.is-stacked .notion-card::after,
+.canvas-item.is-stacked .bookmark-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px #fff;
+  opacity: var(--stack-fan-edge-opacity, 0.55);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.canvas-item.is-stacked .plain-text.has-bg {
+  border: none;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.2),
+    0 3px 8px rgba(0, 0, 0, 0.16);
+  position: relative;
+}
+
+.canvas-item.is-stacked .plain-text.has-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px #fff;
+  opacity: var(--stack-fan-edge-opacity, 0.55);
+  pointer-events: none;
+  z-index: 3;
 }
 
 .media-crop-viewport {

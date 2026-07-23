@@ -28,3 +28,19 @@ export function exitPeerStackPreviewOpacity(
     return 1
   return Math.max(0, Math.min(1, peerOpacity))
 }
+
+/**
+ * Live gather-card bridge for the *leaving* stack after handoff.
+ *
+ * Binary hold (never semi-transparent over the composite): stacking two dual
+ * box-shadows reads as a dark “shadow flash”. Bridge owns the fan until settle
+ * completes; composite only paints once bridge is gone.
+ */
+export function exitLeavingFanBridgeOpacity(settle: number): number {
+  return Math.max(0, Math.min(1, settle)) >= 0.98 ? 0 : 1
+}
+
+/** Inverse of bridge — at most one fan layer (and its shadows) is visible. */
+export function exitLeavingFanCompositeOpacity(settle: number): number {
+  return exitLeavingFanBridgeOpacity(settle) > 0.5 ? 0 : 1
+}

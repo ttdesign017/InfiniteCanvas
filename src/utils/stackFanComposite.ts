@@ -21,6 +21,11 @@ import { FULL_CROP, getCrop } from './crop'
 import { getVideoPoster, ensureVideoPoster } from './videoPosterCache'
 import { collapsedStackFanCards } from './stacks'
 import { trackBlobUrl, revokeBlobUrl } from './blobUrls'
+import {
+  STACK_FAN_EDGE_ALPHA,
+  STACK_FAN_RADIUS_PX,
+  STACK_FAN_SHADOW,
+} from './stackFanChrome'
 
 export type StackFanComposite = {
   stackId: string
@@ -38,7 +43,7 @@ const inflight = new Map<string, Promise<StackFanComposite | null>>()
 /** Retry timers when decode fails (all-or-nothing) */
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const MAX_EDGE = 2048
-const CARD_RADIUS = 10
+const CARD_RADIUS = STACK_FAN_RADIUS_PX
 const SHADOW_PAD = 40
 const LOAD_ATTEMPTS = 5
 
@@ -131,7 +136,8 @@ export function stackFanContentKey(
     stack.id,
     Math.round(stack.width),
     Math.round(stack.height),
-    'v5',
+    // v9: shadows/edge match stackFanChrome (live CSS) for seamless handoff
+    'v9',
     parts.join('|'),
   ].join(';')
 }
@@ -262,9 +268,7 @@ function drawCroppedMedia(
 }
 
 /**
- * CSS stacked card: transform-origin bottom left; radius 10;
- * box-shadow: 0 10px 28px rgba(0,0,0,.2), 0 3px 8px rgba(0,0,0,.16)
- *
+ * CSS stacked card chrome — see stackFanChrome.ts (live DOM uses the same numbers).
  * Media path REQUIRES a decoded image — never fill a white slab for media.
  */
 function isTransparentFill(fill?: string): boolean {
@@ -313,27 +317,35 @@ function paintStackedCard(
   ctx.translate(blx, bly)
   ctx.rotate((rotationDeg * Math.PI) / 180)
 
+  // Media always has an opaque face (image covers the caster). Only plain
+  // free-text may skip shadow+stroke. Do not treat missing fillStyle as
+  // transparent when requireMedia — that dropped dual shadow + hairline
+  // after handoff when live DOM swaps to the composite bitmap.
   const transparentFace =
-    !!opts.transparentFace || isTransparentFill(opts.fillStyle)
-  // Shadow casters (opaque under-image so box-shadow has a solid silhouette)
-  // Transparent text: soft text-shadow only — never fill an opaque white card.
+    !opts.requireMedia &&
+    (!!opts.transparentFace || isTransparentFill(opts.fillStyle))
+  // Shadow casters: light fill only (black under-media left dark AA fringe).
+  // Blur/offset match CSS dual box-shadow exactly (stackFanChrome).
   if (!transparentFace) {
-    const shadowFill = opts.requireMedia
-      ? '#000000'
-      : opts.fillStyle || '#ffffff'
+    const shadowFill = opts.fillStyle || '#ffffff'
+    const s1 = STACK_FAN_SHADOW.far
+    const s2 = STACK_FAN_SHADOW.near
+    // Scale shadow with card scale so downsampled composites keep relative depth
+    const shadowScale = Math.max(0.35, Math.min(1, radius / CARD_RADIUS || 1))
+
     ctx.save()
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.2)'
-    ctx.shadowBlur = Math.max(8, 18)
-    ctx.shadowOffsetY = Math.max(4, 10)
+    ctx.shadowColor = s1.color
+    ctx.shadowBlur = s1.blur * shadowScale
+    ctx.shadowOffsetY = s1.offsetY * shadowScale
     roundedRectPath(ctx, 0, -h, w, h, radius)
     ctx.fillStyle = shadowFill
     ctx.fill()
     ctx.restore()
 
     ctx.save()
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.16)'
-    ctx.shadowBlur = Math.max(3, 8)
-    ctx.shadowOffsetY = Math.max(2, 3)
+    ctx.shadowColor = s2.color
+    ctx.shadowBlur = s2.blur * shadowScale
+    ctx.shadowOffsetY = s2.offsetY * shadowScale
     roundedRectPath(ctx, 0, -h, w, h, radius)
     ctx.fillStyle = shadowFill
     ctx.fill()
@@ -345,7 +357,7 @@ function paintStackedCard(
   roundedRectPath(ctx, 0, -h, w, h, radius)
   ctx.clip()
   if (img) {
-    // Cover any residual shadow fill completely with media pixels
+    // Cover residual shadow fill completely with media pixels
     ctx.save()
     if (flipX || flipY) {
       ctx.translate(w / 2, -h / 2)
@@ -386,7 +398,7 @@ function paintStackedCard(
   }
   ctx.restore()
 
-  // Soft hairline only on opaque card faces (not plain text)
+  // Light gray-white hairline — same alpha as live --stack-fan-edge-opacity final
   if (!transparentFace) {
     ctx.save()
     roundedRectPath(
@@ -397,8 +409,8 @@ function paintStackedCard(
       Math.max(0, h - 1),
       Math.max(0, radius - 0.5),
     )
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)'
-    ctx.lineWidth = 1
+    ctx.strokeStyle = `rgba(255, 255, 255, ${STACK_FAN_EDGE_ALPHA})`
+    ctx.lineWidth = Math.max(1, 1.25 * (radius / CARD_RADIUS || 1))
     ctx.stroke()
     ctx.restore()
   }

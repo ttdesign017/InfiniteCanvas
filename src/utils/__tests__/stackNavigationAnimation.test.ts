@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  exitLeavingFanBridgeOpacity,
+  exitLeavingFanCompositeOpacity,
   exitPeerStackPreviewOpacity,
   peerStackGhostOwnsLayer,
 } from '../stackNavigationAnimation'
@@ -31,5 +33,29 @@ describe('stack navigation peer ownership', () => {
     ).toBe(true)
     expect(exitPeerStackPreviewOpacity(true, 'leaving', 'leaving', 0.4)).toBe(1)
     expect(exitPeerStackPreviewOpacity(true, 'leaving', 'sibling', 1.5)).toBe(1)
+  })
+})
+
+describe('exitLeavingFanBridgeOpacity', () => {
+  it('holds fully opaque through settle, then hard-cuts off (no dual-shadow crossfade)', () => {
+    expect(exitLeavingFanBridgeOpacity(0)).toBe(1)
+    expect(exitLeavingFanBridgeOpacity(0.5)).toBe(1)
+    expect(exitLeavingFanBridgeOpacity(0.97)).toBe(1)
+    expect(exitLeavingFanBridgeOpacity(0.98)).toBe(0)
+    expect(exitLeavingFanBridgeOpacity(1)).toBe(0)
+  })
+
+  it('keeps composite invisible while bridge owns the fan', () => {
+    expect(exitLeavingFanCompositeOpacity(0)).toBe(0)
+    expect(exitLeavingFanCompositeOpacity(0.5)).toBe(0)
+    expect(exitLeavingFanCompositeOpacity(1)).toBe(1)
+    // Never both visible (would double box-shadow)
+    for (let i = 0; i <= 20; i++) {
+      const s = i / 20
+      const both =
+        exitLeavingFanBridgeOpacity(s) > 0.5 &&
+        exitLeavingFanCompositeOpacity(s) > 0.5
+      expect(both).toBe(false)
+    }
   })
 })

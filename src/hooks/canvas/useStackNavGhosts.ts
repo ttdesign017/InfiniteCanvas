@@ -131,8 +131,15 @@ export function useStackNavGhosts(input: {
       return []
     const ox = animStackRec.x
     const oy = animStackRec.y
+    // Translate stack record origin too — CollapsedStackFans places the
+    // cached composite at stack.x/y + rel; ghost layer is continuous-local.
     return parentPeerStackSnapshots.map((peer) => ({
       ...peer,
+      stack: {
+        ...peer.stack,
+        x: peer.stack.x - ox,
+        y: peer.stack.y - oy,
+      },
       bounds: {
         ...peer.bounds,
         x: peer.bounds.x - ox,

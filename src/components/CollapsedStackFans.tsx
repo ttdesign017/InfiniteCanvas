@@ -162,8 +162,10 @@ function CollapsedStackFansInner({
   const displayOk =
     !forceLive && !!display && displayReady && orderedFans.length > 0
 
-  // Live only when morph forces it, or we have never decoded a bitmap
-  const showLive = forceLive || !displayOk
+  // Live only when morph forces it, or we have *no* holdover bitmap at all.
+  // Never tear down a previous composite for a key rebuild (handoff flash).
+  const showLive =
+    forceLive || (orderedFans.length > 0 && !display && !displayReady)
 
   const compositeZ = useMemo(() => {
     let z = zIndexBase

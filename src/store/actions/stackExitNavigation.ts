@@ -30,6 +30,7 @@ import {
   seedStackAnimProgress,
   setStackAnimProgress,
 } from '../../utils/stackAnimProgress'
+import { ensureStackFanComposite } from '../../utils/stackFanComposite'
 import type { GetState, SetState } from '../canvasStoreTypes'
 
 export function runStackExitNavigation(
@@ -430,6 +431,149 @@ export function runStackExitNavigation(
         leavingId,
       )
 
+      /**
+       * Build the post-handoff stack+items snapshot used for fan cards, and
+       * rasterize the composite *before* switching containers so CollapsedStackFans
+       * mounts onto a ready bitmap (no empty frame / live remount flash).
+       */
+      const buildExitFanCompositeInput = () => {
+        const live = get()
+        const freeFanRel = freeFanRelFromLocalFan(
+          fanMembers
+            .map((m) => {
+              const f = fanMap.get(m.id)
+              if (!f) return null
+              return {
+                id: m.id,
+                x: f.x,
+                y: f.y,
+                rotation: f.rotation,
+              }
+            })
+            .filter(
+              (
+                c,
+              ): c is {
+                id: string
+                x: number
+                y: number
+                rotation: number
+              } => c != null,
+            ),
+        )
+        for (const nu of nestedUnits) {
+          const endU = stackFanMap.get(nu.stackId)
+          if (!endU) continue
+          for (const r of nu.rel) {
+            if (freeFanRel.some((x) => x.id === r.id)) continue
+            freeFanRel.push({
+              id: r.id,
+              dx: endU.x + r.dx,
+              dy: endU.y + r.dy,
+              rotation: r.rotation,
+            })
+          }
+        }
+
+        const items = live.items.map((item) => {
+          if (memberIds.has(item.id)) {
+            const free = freeMap.get(item.id)
+            const f = fanMap.get(item.id)
+            if (!participatesInStackFan(item) || !f) {
+              return {
+                ...item,
+                stacked: false,
+                stackGroupId: undefined,
+                x: free?.x ?? item.x,
+                y: free?.y ?? item.y,
+                rotation: free?.rotation ?? item.rotation ?? 0,
+                stackPreview: undefined,
+              } as CanvasItem
+            }
+            return {
+              ...item,
+              stacked: false,
+              stackGroupId: undefined,
+              x: free?.x ?? item.x,
+              y: free?.y ?? item.y,
+              rotation: free?.rotation ?? 0,
+              stackPreview: {
+                x: parentStackX + f.x,
+                y: parentStackY + f.y,
+                rotation: f.rotation ?? 0,
+              },
+            } as CanvasItem
+          }
+          for (const [sid, endU] of stackFanMap) {
+            const nu = nestedUnitById.get(sid)
+            if (!nu) continue
+            const rel = nu.rel.find((r) => r.id === item.id)
+            if (!rel) continue
+            const direct = containerOf(item) === sid
+            return {
+              ...item,
+              stackPreview: direct
+                ? {
+                    x: endU.x + rel.dx,
+                    y: endU.y + rel.dy,
+                    rotation: rel.rotation,
+                  }
+                : {
+                    x: rel.dx,
+                    y: rel.dy,
+                    rotation: rel.rotation,
+                  },
+            } as CanvasItem
+          }
+          return item
+        })
+
+        const stacks = live.stacks.map((st) => {
+          if (st.id === leavingId) {
+            return {
+              ...st,
+              x: parentStackX,
+              y: parentStackY,
+              width: finalAW,
+              height: finalAH,
+              ...(freeFanRel.length > 0 ? { freeFanRel } : {}),
+            }
+          }
+          const freePose = nestedFreePose.get(st.id)
+          if (freePose) {
+            const persistRel = nestedFreeFanRelPersist.get(st.id)
+            return {
+              ...st,
+              x: freePose.x,
+              y: freePose.y,
+              width: freePose.width,
+              height: freePose.height,
+              ...(persistRel ? { freeFanRel: persistRel } : {}),
+            }
+          }
+          return st
+        })
+
+        const stack = stacks.find((s) => s.id === leavingId)!
+        return { stack, items, stacks }
+      }
+
+      let exitCompositePrewarm: Promise<unknown> | null = null
+      const prewarmExitFanComposite = () => {
+        if (exitCompositePrewarm) return exitCompositePrewarm
+        try {
+          const prep = buildExitFanCompositeInput()
+          exitCompositePrewarm = ensureStackFanComposite(
+            prep.stack,
+            prep.items,
+            prep.stacks,
+          ).catch(() => null)
+        } catch {
+          exitCompositePrewarm = Promise.resolve(null)
+        }
+        return exitCompositePrewarm
+      }
+
       /** Final gather handoff (same as anim end). Used by silent multi-level fold. */
       const applyExitHandoff = (opts?: {
         keepAnimating?: boolean
@@ -643,8 +787,10 @@ export function runStackExitNavigation(
         }
       }
 
-      // Silent multi-level tail (or full silent jump): handoff only, no RAF
+      // Silent multi-level tail (or full silent jump): handoff only, no RAF.
+      // Do not await prewarm — callers (and tests) expect sync container switch.
       if (!runExitAnim) {
+        void prewarmExitFanComposite()
         applyExitHandoff({
           keepAnimating: false,
           pending: null,
@@ -745,57 +891,61 @@ export function runStackExitNavigation(
         const pending = chainSilent ? containerId : null
         // Keep peer fade continuous across handoff (no opacity jump / flash)
         const peerNow = peerRevealAt(performance.now())
-        applyExitHandoff({
-          keepAnimating: true,
-          pending: null,
-          peerReveal: peerNow,
-        })
-        // Settle overlay + finish peer fade, then silent-fold remaining parents
-        const settleT0 = performance.now()
-        const settleDur = 160
-        const settleTick = (now: number) => {
-          const st = Math.min(1, (now - settleT0) / settleDur)
-          const e = st * st * (3 - 2 * st)
-          const anim = get().stackEnterAnim
-          const peer = peerRevealAt(now)
-          if (!anim || anim.mode !== 'exit') {
-            resetStackAnimProgress()
-            set({
-              animating: false,
-              stackEnterAnim: null,
-              pendingNavigation: null,
-            })
-            if (pending) {
-              queueMicrotask(() =>
-                get().navigateToContainer(pending, { animate: false }),
-              )
-            }
-            return
-          }
-          // Settle/peer only — avoid rewriting stackEnterAnim (and React) every frame
-          setStackAnimProgress({
-            t: 1,
-            settle: e,
-            peerReveal: peer,
-            nestedChromeOpacity: 0,
+        // Hold the last gather frame until the fan bitmap is ready, then switch
+        // containers so the exiting stack never paints an empty fan.
+        void prewarmExitFanComposite().finally(() => {
+          applyExitHandoff({
+            keepAnimating: true,
+            pending: null,
+            peerReveal: peerNow,
           })
-          if (st < 1 || peer < 0.999) {
-            requestAnimationFrame(settleTick)
-          } else {
-            resetStackAnimProgress()
-            set({
-              animating: false,
-              stackEnterAnim: null,
-              pendingNavigation: null,
+          // Settle overlay + finish peer fade, then silent-fold remaining parents
+          const settleT0 = performance.now()
+          const settleDur = 160
+          const settleTick = (now: number) => {
+            const st = Math.min(1, (now - settleT0) / settleDur)
+            const e = st * st * (3 - 2 * st)
+            const anim = get().stackEnterAnim
+            const peer = peerRevealAt(now)
+            if (!anim || anim.mode !== 'exit') {
+              resetStackAnimProgress()
+              set({
+                animating: false,
+                stackEnterAnim: null,
+                pendingNavigation: null,
+              })
+              if (pending) {
+                queueMicrotask(() =>
+                  get().navigateToContainer(pending, { animate: false }),
+                )
+              }
+              return
+            }
+            // Settle/peer only — avoid rewriting stackEnterAnim (and React) every frame
+            setStackAnimProgress({
+              t: 1,
+              settle: e,
+              peerReveal: peer,
+              nestedChromeOpacity: 0,
             })
-            if (pending) {
-              queueMicrotask(() =>
-                get().navigateToContainer(pending, { animate: false }),
-              )
+            if (st < 1 || peer < 0.999) {
+              requestAnimationFrame(settleTick)
+            } else {
+              resetStackAnimProgress()
+              set({
+                animating: false,
+                stackEnterAnim: null,
+                pendingNavigation: null,
+              })
+              if (pending) {
+                queueMicrotask(() =>
+                  get().navigateToContainer(pending, { animate: false }),
+                )
+              }
             }
           }
-        }
-        requestAnimationFrame(settleTick)
+          requestAnimationFrame(settleTick)
+        })
       }
 
       const tick = (now: number) => {
@@ -893,6 +1043,11 @@ export function runStackExitNavigation(
             y: exitVp0.y + (centerLocalVp.y - exitVp0.y) * e,
           },
         }))
+
+        // Start rasterizing the final fan while gather finishes (covers handoff)
+        if (raw >= 0.72) {
+          void prewarmExitFanComposite()
+        }
 
         if (raw < 1) {
           requestAnimationFrame(tick)

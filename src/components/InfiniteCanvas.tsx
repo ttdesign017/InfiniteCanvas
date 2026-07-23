@@ -1,8 +1,9 @@
 import type { CSSProperties, ReactNode } from 'react'
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { bindDragPoseHost } from '../utils/dragPosePreview'
 import type { StackEnterAnim } from '../store/types'
+import type { CanvasItem } from '../types/canvas'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
@@ -12,8 +13,14 @@ import { GroupSelectionBox } from './GroupSelectionBox'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
 import { containerOf, countLeafItemsInStack, migrateLegacyStacks } from '../utils/stacks'
 import { embedDisplayItem, resolveEmbedWorldPose } from '../utils/embedPose'
-import { exitPeerStackPreviewOpacity } from '../utils/stackNavigationAnimation'
+import {
+  exitLeavingFanBridgeOpacity,
+  exitLeavingFanCompositeOpacity,
+  exitPeerStackPreviewOpacity,
+} from '../utils/stackNavigationAnimation'
 import { useStackAnimProgress } from '../utils/stackAnimProgress'
+import { getStackFanComposite } from '../utils/stackFanComposite'
+import { stackFanEdgeOpacityForNav } from '../utils/stackFanChrome'
 import {
   getSnapGuides,
   getSnapGuidesVersion,
@@ -30,6 +37,75 @@ import {
   captureJointMoveSelection,
   useInfiniteCanvasController,
 } from '../hooks/useInfiniteCanvasController'
+
+/**
+ * Parent-peer ghost fan: prefer the already-cached composite bitmap so enter/exit
+ * handoff never remounts live cards for a sibling that has not changed.
+ * Falls back to static live cards only when no bitmap exists yet.
+ */
+function PeerGhostFanLayer({
+  stackId,
+  stackX,
+  stackY,
+  folderZ,
+  fanItems,
+}: {
+  stackId: string
+  stackX: number
+  stackY: number
+  folderZ: number
+  fanItems: CanvasItem[]
+}) {
+  const cached = getStackFanComposite(stackId)
+  if (cached && fanItems.length > 0) {
+    let z = folderZ + 1
+    for (const f of fanItems) {
+      if (f.zIndex > z) z = f.zIndex
+    }
+    return (
+      <img
+        className="stack-fan-composite"
+        src={cached.url}
+        alt=""
+        draggable={false}
+        decoding="sync"
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: cached.width,
+          height: cached.height,
+          transform: `translate(${stackX + cached.relX}px, ${
+            stackY + cached.relY
+          }px)`,
+          transformOrigin: 'top left',
+          zIndex: z,
+          pointerEvents: 'none',
+          userSelect: 'none',
+        }}
+      />
+    )
+  }
+  return (
+    <>
+      {fanItems.map((item) => (
+        <div
+          key={`peer-ghost-fan-${item.id}`}
+          className="stack-preview-wrap"
+          style={{ opacity: 1, pointerEvents: 'none' }}
+        >
+          <CanvasItemView
+            item={item}
+            selected={false}
+            staticPreview
+            onPointerDown={() => {}}
+            onResizePointerDown={() => {}}
+          />
+        </div>
+      ))}
+    </>
+  )
+}
 
 /** Owns pan/zoom transform only — children do not re-render when viewport moves. */
 function CanvasWorldTransform({ children }: { children: ReactNode }) {
@@ -156,11 +232,47 @@ export function InfiniteCanvas() {
     : isExitAnim
       ? exitPeerOpacity
       : 1
+  // Live stacked cards: white edge ramps during exit gather so it is already
+  // full before handoff (composite bitmap has the same final alpha baked in).
+  const stackFanEdgeOpacity = stackFanEdgeOpacityForNav(
+    isExitAnim ? 'exit' : isEnterAnim ? 'enter' : null,
+    animProgress.t,
+  )
+  // After exit handoff: keep the leaving stack's gather cards mounted under the
+  // *same React keys* as free items so they never unmount. continuousVp maps
+  // local fan poses → parent stackPreview so the fan does not jump/blank while
+  // CollapsedStackFans composite seats underneath, then this bridge fades out.
+  const exitBridgeFans = useMemo(() => {
+    if (!exitAfterHandoff || !exitingStackId) return [] as CanvasItem[]
+    return stackPreviewItems.filter((it) => it.stackGroupId === exitingStackId)
+  }, [exitAfterHandoff, exitingStackId, stackPreviewItems])
+  const exitBridgeIdSet = useMemo(
+    () => new Set(exitBridgeFans.map((it) => it.id)),
+    [exitBridgeFans],
+  )
+  const freePaintItems = useMemo(() => {
+    if (exitBridgeFans.length === 0) return sortedNonEmbeds
+    const freeIds = new Set(sortedNonEmbeds.map((i) => i.id))
+    const extra = exitBridgeFans.filter((i) => !freeIds.has(i.id))
+    if (extra.length === 0) return sortedNonEmbeds
+    return [...sortedNonEmbeds, ...extra].sort(
+      (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
+    )
+  }, [sortedNonEmbeds, exitBridgeFans])
+  const exitBridgeOp = exitAfterHandoff
+    ? exitLeavingFanBridgeOpacity(animProgress.settle)
+    : 0
   return (
     <div
       ref={surfaceRef}
       className={`canvas-surface ${dropActive ? 'drop-active' : ''} ${cHeld ? 'crop-mode' : ''} ${modalXformKind ? 'modal-xform' : ''} ${isGroupSelect ? 'is-group-select' : ''}`}
-      style={{ cursor }}
+      style={
+        {
+          cursor,
+          // Used by .media-item.is-stacked::after and note/bookmark fan chrome
+          '--stack-fan-edge-opacity': String(stackFanEdgeOpacity),
+        } as CSSProperties
+      }
       tabIndex={0}
       role="application"
       aria-label="IC2 creative inspiration canvas"
@@ -238,7 +350,8 @@ export function InfiniteCanvas() {
               )
             : null
           const folderChromeOp = folderScatter ? 1 : folderOp
-          // Fan cards belonging to this stack — nested under StackUnit so drag moves as one
+          // Fan cards belonging to this stack — nested under StackUnit so drag moves as one.
+          // Leaving stack: still build composite under the free-item bridge (same cards).
           const unitFans = stackPreviewItems.filter(
             (it) =>
               it.stackGroupId === f.gid &&
@@ -247,22 +360,32 @@ export function InfiniteCanvas() {
                 parentPeerGhostStackIds.has(it.stackGroupId)
               ),
           )
-          const unitFanOpacity = exitPeerStackPreviewOpacity(
-            exitAfterHandoff,
-            exitingStackId,
-            f.gid,
-            exitPeerOpacity,
+          // Scatter wrapper already owns peer opacity — don't multiply again on fans.
+          // Leaving stack: composite stays at 0 while live bridge owns the fan
+          // (semi-overlap double-paints dual box-shadows → dark shadow flash).
+          const unitFanOpacity = folderScatter
+            ? 1
+            : isExitFolder
+              ? exitLeavingFanCompositeOpacity(animProgress.settle)
+              : exitPeerStackPreviewOpacity(
+                  exitAfterHandoff,
+                  exitingStackId,
+                  f.gid,
+                  exitPeerOpacity,
+                )
+          // Live fan DOM only while THIS stack (or nested child) is morphing
+          // *before* exit handoff. After handoff fan poses are final — always
+          // prefer the cached composite so shadow/edge match the ghost layer.
+          // Exit-peer scatter must never forceLive (sibling flash).
+          const forceLiveFans = !!(
+            stackEnterAnim &&
+            !(stackEnterAnim.mode === 'exit' && exitAfterHandoff) &&
+            (stackEnterAnim.stackId === f.gid ||
+              stacks.some(
+                (s) =>
+                  s.id === f.gid && s.parentId === stackEnterAnim.stackId,
+              ))
           )
-          // Live fan DOM only during morph involving this stack; else bitmap composite
-          const forceLiveFans =
-            !!(
-              stackEnterAnim &&
-              (stackEnterAnim.stackId === f.gid ||
-                stacks.some(
-                  (s) =>
-                    s.id === f.gid && s.parentId === stackEnterAnim.stackId,
-                ))
-            ) || !!folderScatter
           const stackRec: import('../types/canvas').StackRecord =
             f.record ?? {
               id: f.gid,
@@ -450,24 +573,18 @@ export function InfiniteCanvas() {
                 {peer.count}
               </span>
             )}
-            {peer.fanItems.map((item) => (
-              <div
-                key={`peer-ghost-fan-${item.id}`}
-                className="stack-preview-wrap"
-                style={{
-                  opacity: 1,
-                  pointerEvents: 'none',
-                }}
-              >
-                <CanvasItemView
-                  item={item}
-                  selected={false}
-                  staticPreview
-                  onPointerDown={() => {}}
-                  onResizePointerDown={() => {}}
-                />
-              </div>
-            ))}
+            {/*
+              Paint the cached fan bitmap when present (same pixels as the settled
+              parent layer). Do NOT run CollapsedStackFans rebuild here — ghost
+              stack.x/y is continuous-local and would poison content keys.
+            */}
+            <PeerGhostFanLayer
+              stackId={peer.stack.id}
+              stackX={peer.stack.x}
+              stackY={peer.stack.y}
+              folderZ={peer.folderZ}
+              fanItems={peer.fanItems}
+            />
           </div>
           )
         })}
@@ -500,9 +617,14 @@ export function InfiniteCanvas() {
           </div>
           )
         })}
-        {/* Fan cards are nested under StackUnit with their folder (rigid drag unit). */}
-        {sortedNonEmbeds.map((item) => {
-          const peerOp = exitAfterHandoff ? exitPeerOpacity : 1
+        {/*
+          Free items + exit fan bridge (same key={id} as gather cards).
+          After handoff the leaving stack's cards stay here so React reuses the
+          live DOM; composite seats underneath via CollapsedStackFans.
+        */}
+        {freePaintItems.map((item) => {
+          const isExitBridge = exitBridgeIdSet.has(item.id)
+          const peerOp = exitAfterHandoff && !isExitBridge ? exitPeerOpacity : 1
           // Exit stack: scribbles vanish quickly (not part of gather fan)
           const scribbleExitFade =
             item.type === 'scribble' &&
@@ -511,8 +633,11 @@ export function InfiniteCanvas() {
               item.stackGroupId === stackEnterAnim.stackId)
               ? Math.max(0, 1 - Math.min(1, animProgress.t / 0.18))
               : 1
+          // Leaving-stack bridge must not peer-scatter — it is the focus pile
           const scattering =
-            exitAfterHandoff && peerScatterOriginWorld != null
+            exitAfterHandoff &&
+            !isExitBridge &&
+            peerScatterOriginWorld != null
           const scatter = scattering
             ? peerScatterStyle(
                 {
@@ -524,21 +649,26 @@ export function InfiniteCanvas() {
                 item.id,
               )
             : { opacity: peerOp }
+          const bridgeMul = isExitBridge ? exitBridgeOp : 1
           const combinedOp =
             (typeof scatter.opacity === 'number' ? scatter.opacity : 1) *
-            scribbleExitFade
-          // Live free items must stay clickable; never use is-peer-ghost here.
+            scribbleExitFade *
+            bridgeMul
+          // Live free items must stay clickable; bridge is visual-only
           const scatterClass = scattering
             ? peerScatterWrapClassName({ isGhost: false })
             : ''
           const allowPointer =
-            scribbleExitFade < 0.05
+            isExitBridge || scribbleExitFade < 0.05
               ? false
               : freeItemWrapAllowsPointer(exitAfterHandoff, peerOp)
+          if (isExitBridge && combinedOp < 0.02) return null
           return (
           <div
             key={item.id}
-            className={`peer-fade-wrap${scatterClass ? ` ${scatterClass}` : ''}`}
+            className={`peer-fade-wrap${scatterClass ? ` ${scatterClass}` : ''}${
+              isExitBridge ? ' is-exit-fan-bridge' : ''
+            }`}
             style={{
               ...scatter,
               opacity: combinedOp,
@@ -548,7 +678,9 @@ export function InfiniteCanvas() {
           >
             <CanvasItemView
               item={item}
-              selected={selectedSet.has(item.id)}
+              selected={!isExitBridge && selectedSet.has(item.id)}
+              // Keep live media path (no staticPreview flip) so gather cards
+              // reuse the same DOM through handoff without a decoder remount.
               onPointerDown={onItemPointerDown}
               onResizePointerDown={onResizePointerDown}
             />
