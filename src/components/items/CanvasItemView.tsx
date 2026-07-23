@@ -10,6 +10,11 @@ import {
   getItemSpawnVisual,
   subscribeItemSpawn,
 } from '../../utils/itemSpawnAnim'
+import {
+  getDragPoseVersion,
+  isDragPoseMemberItem,
+  subscribeDragPose,
+} from '../../utils/dragPosePreview'
 import { expandStackSelection } from '../../utils/layout'
 import { MediaItemView } from './MediaItemView'
 import { TextCardView } from './TextCardView'
@@ -59,6 +64,15 @@ function CanvasItemViewInner({
     },
     () => null,
   )
+  // Membership only flips at drag begin/end — NOT every pointer frame
+  const isDragMember = useSyncExternalStore(
+    subscribeDragPose,
+    () => {
+      void getDragPoseVersion()
+      return isDragPoseMemberItem(item.id)
+    },
+    () => false,
+  )
 
   const stacked = !!(item.stacked && item.stackGroupId)
   // Selection chrome unchanged: media/text/note/link get handles; scribble/embed no.
@@ -84,6 +98,7 @@ function CanvasItemViewInner({
       ? 'bottom left'
       : 'center center'
 
+  // Base pose from store; multi-drag offset comes from parent CSS vars (no React)
   const x = isTextPreview ? preview.baseX : item.x
   const y = isTextPreview ? preview.baseY : item.y
   const w = isTextPreview ? preview.baseW : item.width
@@ -94,6 +109,11 @@ function CanvasItemViewInner({
   const spawnScale = spawn?.scale ?? 1
   const spawnOpacity = spawn?.opacity
   const combinedScale = scale * spawnScale
+  const ty = y + spawnDy
+  // Parent .canvas-world sets --drag-dx/dy every frame without re-rendering us
+  const transform = isDragMember
+    ? `translate(calc(${x}px + var(--drag-dx, 0px)), calc(${ty}px + var(--drag-dy, 0px))) rotate(${rot}deg) scale(${combinedScale})`
+    : `translate(${x}px, ${ty}px) rotate(${rot}deg) scale(${combinedScale})`
 
   const displayItem =
     isTextPreview && item.type === 'text'
@@ -115,10 +135,10 @@ function CanvasItemViewInner({
 
   return (
     <div
-      className={`canvas-item type-${item.type} ${selected ? 'selected' : ''} ${editingId === item.id ? 'is-editing' : ''} ${stacked ? 'is-stacked' : ''} ${isTextPreview ? 'is-text-scaling' : ''}`}
+      className={`canvas-item type-${item.type} ${selected ? 'selected' : ''} ${editingId === item.id ? 'is-editing' : ''} ${stacked ? 'is-stacked' : ''} ${isTextPreview ? 'is-text-scaling' : ''}${isDragMember ? ' is-drag-member' : ''}`}
       data-id={item.id}
       style={{
-        transform: `translate(${x}px, ${y + spawnDy}px) rotate(${rot}deg) scale(${combinedScale})`,
+        transform,
         transformOrigin: origin,
         width: w,
         height: h,

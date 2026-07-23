@@ -1,19 +1,24 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
+import { bindDragPoseHost } from '../utils/dragPosePreview'
 import type { StackEnterAnim } from '../store/types'
 import { CanvasItemView } from './items/CanvasItemView'
 import { EmptyState } from './EmptyState'
 import { StackFolder } from './StackFolder'
+import { StackUnit } from './StackUnit'
+import { CollapsedStackFans } from './CollapsedStackFans'
+import { GroupSelectionBox } from './GroupSelectionBox'
 import { ROOT_CONTAINER_ID } from '../types/canvas'
 import { containerOf, countLeafItemsInStack, migrateLegacyStacks } from '../utils/stacks'
 import { embedDisplayItem, resolveEmbedWorldPose } from '../utils/embedPose'
-import { type GroupScaleHandle } from '../utils/selectionBounds'
 import { exitPeerStackPreviewOpacity } from '../utils/stackNavigationAnimation'
+import { useStackAnimProgress } from '../utils/stackAnimProgress'
 import {
-  useStackAnimProgress,
-  type StackAnimProgress,
-} from '../utils/stackAnimProgress'
-import type { SnapGuide } from '../utils/snap'
+  getSnapGuides,
+  getSnapGuidesVersion,
+  subscribeSnapGuides,
+} from '../utils/snapGuidesBus'
 import { stackCountPaintZ, stackFolderPaintZ } from '../utils/zOrder'
 import {
   freeItemWrapAllowsPointer,
@@ -30,14 +35,25 @@ import {
 function CanvasWorldTransform({ children }: { children: ReactNode }) {
   const viewport = useCanvasStore((s) => s.viewport)
   const zoom = Math.max(0.05, viewport.zoom)
+  const worldRef = useRef<HTMLDivElement>(null)
+
+  // Host for multi-drag CSS vars (--drag-dx / --drag-dy): one style write / frame
+  useEffect(() => {
+    bindDragPoseHost(worldRef.current)
+    return () => bindDragPoseHost(null)
+  }, [])
+
   return (
     <div
+      ref={worldRef}
       className="canvas-world"
       style={
         {
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${zoom})`,
           // Counter-scale selection chrome so corner handles stay constant on screen
           '--canvas-zoom': String(zoom),
+          '--drag-dx': '0px',
+          '--drag-dy': '0px',
         } as CSSProperties
       }
     >
@@ -46,8 +62,18 @@ function CanvasWorldTransform({ children }: { children: ReactNode }) {
   )
 }
 
-function SnapGuidesLayer({ guides }: { guides: SnapGuide[] }) {
+/** Isolated guide chrome — re-renders alone so multi-select snap stays free. */
+function SnapGuidesLayer() {
   const viewport = useCanvasStore((s) => s.viewport)
+  const guides = useSyncExternalStore(
+    subscribeSnapGuides,
+    () => {
+      void getSnapGuidesVersion()
+      return getSnapGuides()
+    },
+    getSnapGuides,
+  )
+  if (guides.length === 0) return null
   return (
     <>
       {guides.map((g, i) => {
@@ -69,7 +95,6 @@ export function InfiniteCanvas() {
     marquee,
     cropOverlay,
     dropActive,
-    snapGuides,
     modalXformKind,
     items,
     stacks,
@@ -102,25 +127,35 @@ export function InfiniteCanvas() {
     onDragLeave,
     onDrop,
     cursor,
+    isEnterAnim,
+    isExitAnim,
     animStackRec,
     animParentId,
     exitingStackId,
     exitGhostParent,
     enterGhostParent,
-    exitPeerOpacity,
     exitAfterHandoff,
     parentPeerGhostItems,
     parentPeerGhostStacks,
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
-    navPeerOpacity,
     peerScatterOriginLocal,
     peerScatterOriginWorld,
   } = useInfiniteCanvasController()
 
-  // Morph progress (t / settle / nested chrome) — not in Zustand hot path
+  // Morph progress (t / settle / peerReveal / nestedChrome) — external bus so
+  // the controller does not re-render every RAF; only this paint tree does.
   const animProgress = useStackAnimProgress()
-
+  const peerReveal = Math.max(
+    0,
+    Math.min(1, animProgress.peerReveal ?? (isEnterAnim ? 1 : 0)),
+  )
+  const exitPeerOpacity = isExitAnim ? peerReveal : 1
+  const navPeerOpacity = isEnterAnim
+    ? peerReveal
+    : isExitAnim
+      ? exitPeerOpacity
+      : 1
   return (
     <div
       ref={surfaceRef}
@@ -203,15 +238,52 @@ export function InfiniteCanvas() {
               )
             : null
           const folderChromeOp = folderScatter ? 1 : folderOp
+          // Fan cards belonging to this stack — nested under StackUnit so drag moves as one
+          const unitFans = stackPreviewItems.filter(
+            (it) =>
+              it.stackGroupId === f.gid &&
+              !(
+                it.stackGroupId != null &&
+                parentPeerGhostStackIds.has(it.stackGroupId)
+              ),
+          )
+          const unitFanOpacity = exitPeerStackPreviewOpacity(
+            exitAfterHandoff,
+            exitingStackId,
+            f.gid,
+            exitPeerOpacity,
+          )
+          // Live fan DOM only during morph involving this stack; else bitmap composite
+          const forceLiveFans =
+            !!(
+              stackEnterAnim &&
+              (stackEnterAnim.stackId === f.gid ||
+                stacks.some(
+                  (s) =>
+                    s.id === f.gid && s.parentId === stackEnterAnim.stackId,
+                ))
+            ) || !!folderScatter
+          const stackRec: import('../types/canvas').StackRecord =
+            f.record ?? {
+              id: f.gid,
+              parentId: currentContainerId,
+              name: f.name,
+              x: f.bounds.x,
+              y: f.bounds.y,
+              width: f.bounds.width,
+              height: f.bounds.height,
+              zIndex: folderZ,
+            }
           return (
-          <div
+          <StackUnit
             key={`folder-wrap-${f.gid}`}
+            stackId={f.gid}
+            scatterStyle={folderScatter}
             className={
               folderScatter
                 ? peerScatterWrapClassName({ isGhost: false })
                 : undefined
             }
-            style={folderScatter ?? undefined}
           >
           <StackFolder
             groupId={f.gid}
@@ -301,12 +373,11 @@ export function InfiniteCanvas() {
               if (f.proxy) onItemPointerDown(e, f.proxy)
             }}
           />
-          {/* Count above fan cards — same anchor as .stack-folder-label (right:12 bottom:10) */}
+          {/* Count rides with StackUnit (same CSS drag as folder + fan) */}
           {countN > 0 && folderOp > 0.05 && (
             <span
               className="stack-folder-label stack-count-float"
               style={{
-                // Bottom-right of badge at folder corner inset (matches morph chrome)
                 transform: `translate(${f.bounds.x + f.bounds.width - 12}px, ${
                   f.bounds.y + f.bounds.height - 10
                 }px) translate(-100%, -100%)`,
@@ -318,7 +389,18 @@ export function InfiniteCanvas() {
               {countN}
             </span>
           )}
-          </div>
+          {/* Fan: one composite bitmap when settled (pan/zoom ≈ 1 image per stack) */}
+          <CollapsedStackFans
+            stack={stackRec}
+            items={items}
+            stacks={stacks}
+            fanItems={unitFans}
+            opacity={unitFanOpacity}
+            selected={selectedStackSet.has(f.gid)}
+            forceLive={forceLiveFans}
+            zIndexBase={folderZ + 1}
+          />
+          </StackUnit>
           )
         })}
         {/*
@@ -418,134 +500,7 @@ export function InfiniteCanvas() {
           </div>
           )
         })}
-        {stackPreviewItems.map((item) => {
-          // Ghost layer owns peer-stack fan cards during enter/exit — hide real ones
-          const isPeerGhostPreview =
-            item.stackGroupId != null &&
-            parentPeerGhostStackIds.has(item.stackGroupId)
-          if (isPeerGhostPreview) return null
-          // At exit handoff the real parent layer takes ownership at exactly the
-          // ghost's current opacity + scatter. Exiting stack fan stays solid at rest.
-          const previewOpacity = exitPeerStackPreviewOpacity(
-            exitAfterHandoff,
-            exitingStackId,
-            item.stackGroupId,
-            exitPeerOpacity,
-          )
-          const isSiblingPeer =
-            exitAfterHandoff &&
-            item.stackGroupId != null &&
-            item.stackGroupId !== exitingStackId
-          // Rigid unit: same scatter as folder (unit center), not per-card center —
-          // matches ghost wrap so handoff does not pop fan vs chrome.
-          const siblingRec =
-            isSiblingPeer && item.stackGroupId
-              ? stacks.find((s) => s.id === item.stackGroupId)
-              : null
-          const scatter =
-            isSiblingPeer &&
-            peerScatterOriginWorld != null &&
-            siblingRec != null
-              ? peerScatterStyle(
-                  {
-                    x: siblingRec.x + siblingRec.width / 2,
-                    y: siblingRec.y + siblingRec.height / 2,
-                  },
-                  peerScatterOriginWorld,
-                  previewOpacity,
-                  siblingRec.id,
-                )
-              : { opacity: previewOpacity }
-          return (
-            <div
-              key={item.id}
-              className={`stack-preview-wrap${
-                isSiblingPeer
-                  ? ` ${peerScatterWrapClassName({ isGhost: false })}`
-                  : ''
-              }`}
-              style={scatter}
-            >
-              <CanvasItemView
-                item={item}
-                selected={
-                  !!(
-                    item.stackGroupId &&
-                    selectedStackSet.has(item.stackGroupId)
-                  )
-                }
-                onPointerDown={(e, it) => {
-                  // Stacked previews use pointer-events:none — hits go to folder.
-                  // Keep handler for legacy paths / safety.
-                  if (e.button !== 0) return
-                  const gid = it.stackGroupId
-                  if (!gid) return
-                  const store = useCanvasStore.getState()
-                  if (isInteractionLocked()) {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    return
-                  }
-                  dismissStackNameEdit()
-                  blurChrome()
-                  flushDragWrite()
-                  if (store.spaceHeld || store.tool === 'pan') return
-                  if (store.tool === 'scribble' || store.tool === 'erase') return
-                  e.stopPropagation()
-
-                  if (e.detail >= 2) {
-                    const vp = store.viewport
-                    const folder = store.stacks.find((s) => s.id === gid)
-                    if (folder) {
-                      store.enterStack(gid, {
-                        x: folder.x * vp.zoom + vp.x,
-                        y: folder.y * vp.zoom + vp.y,
-                        w: folder.width * vp.zoom,
-                        h: folder.height * vp.zoom,
-                      })
-                    }
-                    return
-                  }
-
-                  const additive = e.shiftKey || e.ctrlKey || e.metaKey
-                  if (additive) store.selectStacks([gid], true)
-                  else if (!store.selectedStackIds.includes(gid)) {
-                    store.selectStacks([gid])
-                  }
-                  const joint = captureJointMoveSelection(
-                    useCanvasStore.getState(),
-                  )
-                  if (!joint.stackIds.includes(gid)) {
-                    joint.stackIds = [...joint.stackIds, gid]
-                    const st = store.stacks.find((s) => s.id === gid)
-                    if (st) joint.stackOrigins[gid] = { x: st.x, y: st.y }
-                  }
-                  dragRef.current = {
-                    kind: 'pending-move',
-                    itemId: gid,
-                    isStacked: true,
-                    stackGroupId: gid,
-                    canEditText: false,
-                    startClientX: e.clientX,
-                    startClientY: e.clientY,
-                    lastX: e.clientX,
-                    lastY: e.clientY,
-                    ids: joint.ids,
-                    origins: joint.origins,
-                    stackIds: joint.stackIds,
-                    stackOrigins: joint.stackOrigins,
-                    duplicated: false,
-                    altHeld: e.altKey,
-                  }
-                  surfaceRef.current?.setPointerCapture(e.pointerId)
-                }}
-                onResizePointerDown={() => {
-                  /* previews are not resizable */
-                }}
-              />
-            </div>
-          )
-        })}
+        {/* Fan cards are nested under StackUnit with their folder (rigid drag unit). */}
         {sortedNonEmbeds.map((item) => {
           const peerOp = exitAfterHandoff ? exitPeerOpacity : 1
           // Exit stack: scribbles vanish quickly (not part of gather fan)
@@ -602,69 +557,14 @@ export function InfiniteCanvas() {
         })}
         {/* Multi-select group bounding box (2+ free items and/or stacks) */}
         {isGroupSelect && groupBounds && !stackEnterAnim && (
-          <div
-            className="group-selection-box"
-            style={{
-              transform: `translate(${groupBounds.x}px, ${groupBounds.y}px)`,
-              width: groupBounds.width,
-              height: groupBounds.height,
-              zIndex: 100000,
-              // Hold C for crop: let events pass through to canvas surface
-              pointerEvents: cHeld ? 'none' : 'auto',
-            }}
-            onPointerDown={(e) => {
-              // Drag the group by grabbing the box fill (not corners/edges)
-              if (e.button !== 0) return
-              const store = useCanvasStore.getState()
-              // Never steal crop / pan gestures
-              if (store.cHeld || store.spaceHeld || store.tool === 'pan') return
-              if (
-                (e.target as HTMLElement).closest?.(
-                  '.group-scale-handle, .group-scale-edge',
-                )
-              )
-                return
-              e.stopPropagation()
-              if (isInteractionLocked()) return
-              dismissStackNameEdit()
-              blurChrome()
-              flushDragWrite()
-              const joint = captureJointMoveSelection(store)
-              if (joint.ids.length === 0 && joint.stackIds.length === 0) return
-              dragRef.current = {
-                kind: 'pending-move',
-                itemId: joint.ids[0] || joint.stackIds[0] || 'group',
-                isStacked: false,
-                canEditText: false,
-                startClientX: e.clientX,
-                startClientY: e.clientY,
-                lastX: e.clientX,
-                lastY: e.clientY,
-                ids: joint.ids,
-                origins: joint.origins,
-                stackIds: joint.stackIds,
-                stackOrigins: joint.stackOrigins,
-                duplicated: false,
-                altHeld: e.altKey,
-              }
-              surfaceRef.current?.setPointerCapture(e.pointerId)
-            }}
-          >
-            {(['n', 'e', 's', 'w'] as GroupScaleHandle[]).map((h) => (
-              <div
-                key={h}
-                className={`group-scale-edge edge-${h}`}
-                onPointerDown={(e) => onGroupScalePointerDown(e, h)}
-              />
-            ))}
-            {(['nw', 'ne', 'sw', 'se'] as GroupScaleHandle[]).map((h) => (
-              <div
-                key={h}
-                className={`group-scale-handle handle-${h}`}
-                onPointerDown={(e) => onGroupScalePointerDown(e, h)}
-              />
-            ))}
-          </div>
+          <GroupSelectionBox
+            groupBounds={groupBounds}
+            cHeld={cHeld}
+            dragRef={dragRef}
+            surfaceRef={surfaceRef}
+            flushDragWrite={flushDragWrite}
+            onGroupScalePointerDown={onGroupScalePointerDown}
+          />
         )}
         {/*
           Embed keepalive: every embed stays mounted for the board lifetime.
@@ -743,12 +643,7 @@ export function InfiniteCanvas() {
         currentContainerId === ROOT_CONTAINER_ID && <EmptyState />}
 
       {/* Stack folder morph: screen-space outer rect, world-scale chrome (matches canvas zoom) */}
-      {stackEnterAnim && (
-        <StackMorphOverlay
-          stackEnterAnim={stackEnterAnim}
-          progress={animProgress}
-        />
-      )}
+      {stackEnterAnim && <StackMorphOverlay stackEnterAnim={stackEnterAnim} />}
 
       {marquee && (
         <div
@@ -774,7 +669,7 @@ export function InfiniteCanvas() {
         />
       )}
 
-      <SnapGuidesLayer guides={snapGuides} />
+      <SnapGuidesLayer />
 
       {dropActive && (
         <div className="drop-overlay">Drop media, URL, or text</div>
@@ -783,15 +678,14 @@ export function InfiniteCanvas() {
   )
 }
 
-/** Screen-space folder morph; reads zoom only (viewport slice) + progress bus. */
+/** Screen-space folder morph; reads zoom + progress bus (not parent re-render). */
 function StackMorphOverlay({
   stackEnterAnim,
-  progress,
 }: {
   stackEnterAnim: StackEnterAnim
-  progress: StackAnimProgress
 }) {
   const zoom = useCanvasStore((s) => Math.max(0.05, s.viewport.zoom))
+  const progress = useStackAnimProgress()
   const t = progress.t
   const settle = progress.settle
   const a = stackEnterAnim.start

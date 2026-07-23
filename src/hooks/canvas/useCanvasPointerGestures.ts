@@ -14,7 +14,47 @@ import { marqueeHitsRotatedItem } from '../../utils/geometry'
 import { DRAG_THRESHOLD_PX, type DragMode } from './dragTypes'
 import { captureJointMoveSelection } from './jointSelection'
 import { CROP_ROTATED_HINT, resolveCropTargets } from './cropTargets'
-import { blurChrome, dismissStackNameEdit, isInteractionLocked } from './canvasUiHelpers'
+import {
+  blurChrome,
+  dismissStackNameEdit,
+  isInteractionLocked,
+  setPanChrome,
+} from './canvasUiHelpers'
+import {
+  beginDragPose,
+  clearDragPosePreview,
+  updateDragPoseDelta,
+} from '../../utils/dragPosePreview'
+
+function buildMoveSizeCache(
+  ids: string[],
+  stackIds: string[],
+  items: CanvasItem[],
+  stacks: { id: string; width: number; height: number }[],
+) {
+  const sizeById: Record<
+    string,
+    { width: number; height: number; rotation: number; type: string }
+  > = {}
+  const stackSizeById: Record<string, { width: number; height: number }> = {}
+  const itemMap = new Map(items.map((i) => [i.id, i]))
+  for (const id of ids) {
+    const it = itemMap.get(id)
+    if (it) {
+      sizeById[id] = {
+        width: it.width,
+        height: it.height,
+        rotation: it.rotation || 0,
+        type: it.type,
+      }
+    }
+  }
+  for (const sid of stackIds) {
+    const st = stacks.find((s) => s.id === sid)
+    if (st) stackSizeById[sid] = { width: st.width, height: st.height }
+  }
+  return { sizeById, stackSizeById }
+}
 
 export type CanvasPointerGestureApi = {
   onGroupScalePointerDown: (
@@ -432,6 +472,7 @@ export function useCanvasPointerGestures(deps: {
       if (e.button === 1) {
         e.preventDefault()
         useCanvasStore.getState().setIsPanning(true)
+        setPanChrome(surfaceRef.current, true)
         dragRef.current = { kind: 'pan', lastX: e.clientX, lastY: e.clientY }
         surfaceRef.current?.setPointerCapture(e.pointerId)
         return
@@ -452,6 +493,7 @@ export function useCanvasPointerGestures(deps: {
       // Pan always allowed (including during stack anim)
       if (holdingSpace || store.tool === 'pan') {
         store.setIsPanning(true)
+        setPanChrome(surfaceRef.current, true)
         dragRef.current = { kind: 'pan', lastX: e.clientX, lastY: e.clientY }
         surfaceRef.current?.setPointerCapture(e.pointerId)
         return
@@ -606,6 +648,12 @@ export function useCanvasPointerGestures(deps: {
         if (store.editingId) {
           useCanvasStore.setState({ editingId: null })
         }
+        const sizeCache = buildMoveSizeCache(
+          moveIds,
+          stackIds ?? [],
+          store.items,
+          store.stacks,
+        )
         dragRef.current = {
           kind: 'move',
           ids: moveIds,
@@ -619,6 +667,10 @@ export function useCanvasPointerGestures(deps: {
           origins,
           accDx: 0,
           accDy: 0,
+          appliedDx: 0,
+          appliedDy: 0,
+          sizeById: sizeCache.sizeById,
+          stackSizeById: sizeCache.stackSizeById,
         }
         lastItemClickRef.current = null
         // fall through into move handling with zero delta this frame
@@ -643,8 +695,21 @@ export function useCanvasPointerGestures(deps: {
             const st = live.stacks.find((s) => s.id === sid)
             if (st) drag.stackOrigins![sid] = { x: st.x, y: st.y }
           }
+          const sizeCache = buildMoveSizeCache(
+            drag.ids,
+            drag.stackIds ?? [],
+            live.items,
+            live.stacks,
+          )
+          drag.sizeById = sizeCache.sizeById
+          drag.stackSizeById = sizeCache.stackSizeById
           drag.accDx = 0
           drag.accDy = 0
+          drag.appliedDx = 0
+          drag.appliedDy = 0
+          // New body set after alt-duplicate — re-bind CSS-var membership
+          drag.poseSession = false
+          clearDragPosePreview()
         }
         const zoom = Math.max(0.01, store.viewport.zoom || 1)
         const dx = (e.clientX - drag.lastX) / zoom
@@ -667,23 +732,24 @@ export function useCanvasPointerGestures(deps: {
 
         const stackIds = drag.stackIds ?? []
         const stackOrigins = drag.stackOrigins ?? {}
+        const sizeById = drag.sizeById
+        const stackSizeById = drag.stackSizeById
 
         scheduleDragWrite(() => {
           const st = useCanvasStore.getState()
+          // Pose-only free targets from origin+cache (no per-id store lookup)
           const freeTargets = ids.map((id) => {
             const o = origins[id]
-            const it = st.items.find((i) => i.id === id)
+            const sz = sizeById[id]
             return {
               id,
-              x: (o?.x ?? it?.x ?? 0) + accDx,
-              y: (o?.y ?? it?.y ?? 0) + accDy,
-              width: it?.width ?? 0,
-              height: it?.height ?? 0,
-              type: it?.type ?? 'text',
-              rotation: it?.rotation ?? 0,
-              zIndex: it?.zIndex ?? 0,
-              stacked: it?.stacked,
-              stackGroupId: it?.stackGroupId,
+              x: (o?.x ?? 0) + accDx,
+              y: (o?.y ?? 0) + accDy,
+              width: sz?.width ?? 0,
+              height: sz?.height ?? 0,
+              type: (sz?.type as CanvasItem['type']) ?? 'image',
+              rotation: sz?.rotation ?? 0,
+              zIndex: 0,
             } as CanvasItem
           })
 
@@ -694,13 +760,12 @@ export function useCanvasPointerGestures(deps: {
             const threshold = 10 / Math.max(0.01, st.viewport.zoom || 1)
             const movingStacks = stackIds.map((id) => {
               const o = stackOrigins[id]
-              const sk = st.stacks.find((s) => s.id === id)
+              const sz = stackSizeById[id]
               return {
-                x: (o?.x ?? sk?.x ?? 0) + accDx,
-                y: (o?.y ?? sk?.y ?? 0) + accDy,
-                width: sk?.width ?? 100,
-                height: sk?.height ?? 100,
-                name: sk?.name,
+                x: (o?.x ?? 0) + accDx,
+                y: (o?.y ?? 0) + accDy,
+                width: sz?.width ?? 100,
+                height: sz?.height ?? 100,
               }
             })
             const snap = computeSnapDelta(freeTargets, st.items, threshold, {
@@ -714,37 +779,28 @@ export function useCanvasPointerGestures(deps: {
             guides = snap.guides
           }
 
-          if (ids.length) {
-            st.updateItems(
-              ids.map((id) => {
-                const o = origins[id]
-                return {
-                  id,
-                  patch: {
-                    x: (o?.x ?? 0) + finalDx,
-                    y: (o?.y ?? 0) + finalDy,
-                  },
-                }
-              }),
-            )
+          // Visual only: CSS vars on .canvas-world (zero React commits / frame)
+          const liveDrag = dragRef.current
+          if (liveDrag?.kind === 'move') {
+            liveDrag.appliedDx = finalDx
+            liveDrag.appliedDy = finalDy
+            if (!liveDrag.poseSession) {
+              beginDragPose(ids, stackIds)
+              liveDrag.poseSession = true
+            }
           }
-          if (stackIds.length) {
-            st.updateStacks(
-              stackIds.map((id) => {
-                const o = stackOrigins[id]
-                return {
-                  id,
-                  patch: {
-                    x: (o?.x ?? 0) + finalDx,
-                    y: (o?.y ?? 0) + finalDy,
-                  },
-                }
-              }),
-            )
-          }
+          updateDragPoseDelta(finalDx, finalDy)
+
+          const bodyCount = ids.length + stackIds.length
+          // Always show guides (1 or 35 items). Bus only re-renders SnapGuidesLayer.
           setSnapGuides((prev) => (guidesEqual(prev, guides) ? prev : guides))
 
           // Merge highlight: free materials over a stack folder
+          // Skip expensive hit-test for large multi-select (still available for 1–8)
+          if (bodyCount > 8) {
+            setStackDropTarget(null)
+            return
+          }
           const live = useCanvasStore.getState()
           const draggingStacked =
             stackIds.length > 0 ||
@@ -1140,10 +1196,46 @@ export function useCanvasPointerGestures(deps: {
 
     if (drag?.kind === 'pan') {
       store.setIsPanning(false)
+      setPanChrome(surfaceRef.current, false)
     }
 
     if (drag?.kind === 'move') {
       setSnapGuides([])
+      // Commit pose preview → store once (history already pushed at drag start)
+      if (drag.moved) {
+        const finalDx = drag.appliedDx
+        const finalDy = drag.appliedDy
+        if (drag.ids.length) {
+          store.updateItems(
+            drag.ids.map((id) => {
+              const o = drag.origins[id]
+              return {
+                id,
+                patch: {
+                  x: (o?.x ?? 0) + finalDx,
+                  y: (o?.y ?? 0) + finalDy,
+                },
+              }
+            }),
+          )
+        }
+        const stackIds = drag.stackIds ?? []
+        if (stackIds.length) {
+          store.updateStacks(
+            stackIds.map((id) => {
+              const o = drag.stackOrigins?.[id]
+              return {
+                id,
+                patch: {
+                  x: (o?.x ?? 0) + finalDx,
+                  y: (o?.y ?? 0) + finalDy,
+                },
+              }
+            }),
+          )
+        }
+      }
+      clearDragPosePreview()
       const dropGid = stackDropTargetRef.current
       setStackDropTarget(null)
       if (dropGid && drag.moved) {

@@ -3,7 +3,7 @@ import { Toolbar } from './components/Toolbar'
 import { InfiniteCanvas } from './components/InfiniteCanvas'
 import { EraserCursor } from './components/EraserCursor'
 import { WindowChrome } from './components/WindowChrome'
-import { CloseSaveDialog } from './components/CloseSaveDialog'
+import { AppDialog } from './components/AppDialog'
 import { SaveToast } from './components/SaveToast'
 import { CanvasPath } from './components/CanvasPath'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -53,7 +53,7 @@ export default function App() {
         <CanvasPath />
         <EraserCursor />
       </main>
-      <CloseSaveDialog />
+      <AppDialog />
       <SaveToast />
     </div>
   )

@@ -11,11 +11,7 @@ import {
 
 // Re-export dialog API so existing imports from useCloseGuard keep working
 export {
-  answerClosePrompt,
   askUnsavedPrompt,
-  getClosePromptCopy,
-  getClosePromptOpen,
-  subscribeClosePrompt,
   UNSAVED_PROMPT_COPY,
   type UnsavedPromptChoice,
   type UnsavedPromptCopy,

@@ -1,19 +1,36 @@
 import { useEffect } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 
-/** Brief "Saved" feedback after Ctrl+S / Save As succeeds */
+/** Save progress bar + brief "Saved" / hint feedback after Ctrl+S / Save As */
 export function SaveToast() {
+  const isSaving = useCanvasStore((s) => s.isSaving)
   const saveNotice = useCanvasStore((s) => s.saveNotice)
   const saveNoticeSeq = useCanvasStore((s) => s.saveNoticeSeq)
   const clearSaveNotice = useCanvasStore((s) => s.clearSaveNotice)
 
   useEffect(() => {
-    if (!saveNotice) return
+    if (!saveNotice || isSaving) return
     // Longer for instructional hints (e.g. crop + rotation)
     const ms = saveNotice.length > 12 ? 2800 : 1600
     const t = window.setTimeout(() => clearSaveNotice(), ms)
     return () => window.clearTimeout(t)
-  }, [saveNotice, saveNoticeSeq, clearSaveNotice])
+  }, [saveNotice, saveNoticeSeq, isSaving, clearSaveNotice])
+
+  if (isSaving) {
+    return (
+      <div
+        className="save-toast is-saving"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <span className="save-toast-label">Saving…</span>
+        <span className="save-progress" aria-hidden>
+          <span className="save-progress-bar" />
+        </span>
+      </div>
+    )
+  }
 
   if (!saveNotice) return null
 

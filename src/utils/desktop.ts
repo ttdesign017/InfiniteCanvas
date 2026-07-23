@@ -6,7 +6,8 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { LogicalPosition } from '@tauri-apps/api/dpi'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { ask, open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog'
+import { open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog'
+import { showAppConfirm } from '../hooks/appDialog'
 import {
   copyFile,
   exists,
@@ -230,15 +231,12 @@ export async function readBinaryFile(path: string): Promise<Uint8Array> {
   return readFile(path)
 }
 
-/** Native yes/no dialog */
+/** In-app yes/no dialog (same chrome as save prompts — never native alert/confirm). */
 export async function askYesNo(
   message: string,
   title = 'Infinite Canvas',
 ): Promise<boolean> {
-  if (!isDesktop()) {
-    return window.confirm(message)
-  }
-  return ask(message, { title, kind: 'warning' })
+  return showAppConfirm(message, title)
 }
 
 export async function openExternal(url: string): Promise<void> {

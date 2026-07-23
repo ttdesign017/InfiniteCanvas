@@ -44,11 +44,19 @@ Enable console timings with `localStorage.setItem('ic2_perf', '1')` then save/op
 
 **P2 (7 / 8 / 11)**
 
-7. Viewport culling: free items / folders / fan previews filtered by expanded world frustum (`viewportCull` + `useWorldCullRect`); selected bodies always kept; disabled during stack anim.
+7. ~~Viewport culling unmount~~ **Revised (P0 perf fix):** paint-cull unmount was **reverted**. Filtering free items out of the React tree on every pan/zoom remounted media (blank flash / long missing items) and re-subscribed the controller to `viewport` (undoing `CanvasWorldTransform` isolation). Current container free items stay mounted; `useWorldCullRect` remains for optional future throttled policies only.
 8. Incremental pack cache: session `packAssetCache` keyed by runtime `src` (+ fileName); second save reuses base64.
-11. Video lazy load: `IntersectionObserver` attaches `<video src>` when near viewport; detaches when far (unless selected/playing).
+11. Video lazy load: `IntersectionObserver` + poster-sticky stills — live `<video>` only when playing/selected or still capturing a poster; idle cards prefer cached still (no decoder thrash on pan).
+
+**P0 multi-item follow-up (50+ elements)**
+
+12. Stack nav: `useStackNavGhosts` no longer subscribes to per-frame `stackAnimProgress` (opacity applied in paint layer only).
+13. Fan preview item object identity reused when pose/src unchanged (`useCanvasSurfaceModel`).
+14. Dropped global `.canvas-item { will-change: transform }` (too many compositor layers on media boards).
+15. Smaller `.canvas-grid` world extent (less paint under scale).
 
 ## Notes
 
 - First open after cold start includes WebView media decode — report both “interactive” and “all thumbs decoded” if they diverge.
 - 4K full-res embeds are out of B-tier scope; note if sample uses them.
+- Regression check: pan/zoom a 50-media board for 10s — no blank flashes, no multi-second missing cards.

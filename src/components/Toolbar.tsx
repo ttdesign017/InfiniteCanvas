@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import type { Tool } from '../types/canvas'
 import type { AlignMode } from '../utils/align'
@@ -67,7 +67,7 @@ function Icon({ name }: { name: string }) {
   }
 }
 
-const alignButtons: Array<{ mode: AlignMode; title: string; icon: ReactNode }> = [
+const alignHorizontal: Array<{ mode: AlignMode; title: string; icon: ReactNode }> = [
   {
     mode: 'left',
     title: 'Align left',
@@ -95,6 +95,9 @@ const alignButtons: Array<{ mode: AlignMode; title: string; icon: ReactNode }> =
       </svg>
     ),
   },
+]
+
+const alignVertical: Array<{ mode: AlignMode; title: string; icon: ReactNode }> = [
   {
     mode: 'top',
     title: 'Align top',
@@ -124,10 +127,13 @@ const alignButtons: Array<{ mode: AlignMode; title: string; icon: ReactNode }> =
   },
 ]
 
+type AlignMenu = 'h' | 'v' | null
+
 export function Toolbar() {
   const tool = useCanvasStore((s) => s.tool)
   const setTool = useCanvasStore((s) => s.setTool)
   const selectedIds = useCanvasStore((s) => s.selectedIds)
+  const selectedStackIds = useCanvasStore((s) => s.selectedStackIds)
   const zoom = useCanvasStore((s) => s.viewport.zoom)
   const cHeld = useCanvasStore((s) => s.cHeld)
   const quickStack = useCanvasStore((s) => s.quickStack)
@@ -137,8 +143,37 @@ export function Toolbar() {
   const toggleSnap = useCanvasStore((s) => s.toggleSnap)
   const immersiveMode = useCanvasStore((s) => s.immersiveMode)
   const toggleImmersiveMode = useCanvasStore((s) => s.toggleImmersiveMode)
+  const [alignMenu, setAlignMenu] = useState<AlignMenu>(null)
+  const alignGroupRef = useRef<HTMLDivElement>(null)
 
-  const hasMulti = selectedIds.length >= 2
+  const hasMulti = selectedIds.length + selectedStackIds.length >= 2
+
+  useEffect(() => {
+    if (!hasMulti) setAlignMenu(null)
+  }, [hasMulti])
+
+  useEffect(() => {
+    if (!alignMenu) return
+    const onDoc = (e: PointerEvent) => {
+      if (!alignGroupRef.current?.contains(e.target as Node)) {
+        setAlignMenu(null)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAlignMenu(null)
+    }
+    document.addEventListener('pointerdown', onDoc, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onDoc, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [alignMenu])
+
+  const runAlign = (mode: AlignMode) => {
+    useCanvasStore.getState().alignSelected(mode)
+    setAlignMenu(null)
+  }
 
   return (
     <>
@@ -227,29 +262,90 @@ export function Toolbar() {
           </button>
         </div>
 
-        {/* Align — multi-select only (pack uses Ctrl+Arrow — different action) */}
+        {/* Align — two parents (H / V); expand for secondary modes */}
         {hasMulti && (
           <div
+            ref={alignGroupRef}
             className="tool-group vertical align-group"
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            {alignButtons.map((b) => (
+            <div className="align-menu-row">
               <button
-                key={b.mode}
                 type="button"
-                className="tool-btn"
-                aria-label={b.title}
+                className={`tool-btn ${alignMenu === 'h' ? 'active' : ''}`}
+                aria-label="Horizontal align"
+                aria-expanded={alignMenu === 'h'}
+                title="Horizontal align"
                 onClick={(e) => {
                   e.stopPropagation()
-                  e.preventDefault()
-                  useCanvasStore.getState().alignSelected(b.mode)
+                  setAlignMenu((m) => (m === 'h' ? null : 'h'))
                 }}
-                title={`${b.title} (buttons align · Ctrl+Arrows pack)`}
               >
-                {b.icon}
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 4v16M8 8h12M8 12h9M8 16h12" strokeLinecap="round" />
+                </svg>
               </button>
-            ))}
+              {alignMenu === 'h' && (
+                <div className="align-submenu" role="menu" aria-label="Horizontal align options">
+                  {alignHorizontal.map((b) => (
+                    <button
+                      key={b.mode}
+                      type="button"
+                      className="tool-btn"
+                      role="menuitem"
+                      aria-label={b.title}
+                      title={b.title}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        runAlign(b.mode)
+                      }}
+                    >
+                      {b.icon}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="align-menu-row">
+              <button
+                type="button"
+                className={`tool-btn ${alignMenu === 'v' ? 'active' : ''}`}
+                aria-label="Vertical align"
+                aria-expanded={alignMenu === 'v'}
+                title="Vertical align"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setAlignMenu((m) => (m === 'v' ? null : 'v'))
+                }}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 4h16M8 8v12M12 8v9M16 8v12" strokeLinecap="round" />
+                </svg>
+              </button>
+              {alignMenu === 'v' && (
+                <div className="align-submenu" role="menu" aria-label="Vertical align options">
+                  {alignVertical.map((b) => (
+                    <button
+                      key={b.mode}
+                      type="button"
+                      className="tool-btn"
+                      role="menuitem"
+                      aria-label={b.title}
+                      title={b.title}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        runAlign(b.mode)
+                      }}
+                    >
+                      {b.icon}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </aside>

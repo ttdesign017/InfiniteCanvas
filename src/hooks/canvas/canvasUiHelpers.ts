@@ -1,5 +1,23 @@
 import { useCanvasStore } from '../../store/useCanvasStore'
 
+/** Pan grab chrome without React re-render of the item tree. */
+export function setPanChrome(surface: HTMLElement | null | undefined, on: boolean) {
+  if (!surface) {
+    surface = document.querySelector('.canvas-surface') as HTMLElement | null
+  }
+  if (!surface) return
+  surface.classList.toggle('is-panning', on)
+  if (on) {
+    surface.style.cursor = 'grabbing'
+    const world = surface.querySelector('.canvas-world') as HTMLElement | null
+    if (world) world.style.willChange = 'transform'
+  } else {
+    surface.style.removeProperty('cursor')
+    const world = surface.querySelector('.canvas-world') as HTMLElement | null
+    if (world) world.style.willChange = 'auto'
+  }
+}
+
 /** Blur toolbar / chrome inputs without killing in-canvas text editors. */
 export function blurChrome(): void {
   const ae = document.activeElement as HTMLElement | null

@@ -18,6 +18,11 @@ import {
   getVideoPosterCacheVersion,
   subscribeVideoPosterCache,
 } from '../../utils/videoPosterCache'
+import {
+  getRememberedPlaybackTime,
+  rememberPlaybackTime,
+  resolveResumeTime,
+} from '../../utils/videoPlaybackClock'
 
 interface Props {
   item: MediaItem
@@ -47,7 +52,7 @@ function useVideoPoster(itemId: string, src: string): string | null {
   )
 }
 
-/** Always an <img> or gray shell — never an empty <video> (browsers paint that black). */
+/** Always an <img> or solid shell — never a blank hole (no picture / transparent). */
 function VideoStill({
   item,
   mediaStyle,
@@ -61,6 +66,11 @@ function VideoStill({
   ensureIfMissing?: boolean
 }) {
   const poster = useVideoPoster(item.id, item.src)
+  const [imgFailed, setImgFailed] = useState(false)
+
+  useEffect(() => {
+    setImgFailed(false)
+  }, [poster, item.id, item.src])
 
   useEffect(() => {
     if (!ensureIfMissing || poster || !item.src) return
@@ -73,45 +83,59 @@ function VideoStill({
     }
   }, [ensureIfMissing, poster, item.id, item.src])
 
-  if (poster) {
-    return (
-      <img
-        src={poster}
-        alt=""
-        draggable={false}
-        className={`media-content video-el video-still ${className}`.trim()}
-        style={mediaStyle}
-      />
-    )
-  }
+  // Solid fill always behind content so failed/transparent posters never look empty
   return (
-    <div
-      className={`media-content video-el video-lazy-poster ${className}`.trim()}
-      style={mediaStyle}
-      aria-hidden
-    />
+    <>
+      <div className="video-media-fallback" aria-hidden />
+      {poster && !imgFailed ? (
+        <img
+          src={poster}
+          alt=""
+          draggable={false}
+          decoding="async"
+          className={`media-content video-el video-still ${className}`.trim()}
+          style={mediaStyle}
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <div
+          className={`media-content video-el video-lazy-poster ${className}`.trim()}
+          style={mediaStyle}
+          aria-hidden
+        />
+      )}
+    </>
   )
 }
 
+/**
+ * Video card: idle always paints a still (`<img>` poster), never a paused
+ * live decoder. Selection must NOT force `<video>` — zoom-out with many
+ * selected cards was attaching N decoders and WebView2 drops them (blank).
+ * Live `<video>` only while playing / scrubbing.
+ */
 function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(false)
+  const [scrubbing, setScrubbing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
   const [hovering, setHovering] = useState(false)
-  /**
-   * Lazy media: only attach `src` after the player has entered (or neared)
-   * the browser viewport. Sticky once true so scrubbing after pan-away still works
-   * while selected/playing; otherwise we detach when far off-screen to free decoders.
-   */
-  const [mediaAttached, setMediaAttached] = useState(false)
-  const [inView, setInView] = useState(false)
-  /** True once we have a non-black still for this src */
+  /** One-shot: kick offline poster capture when near the screen once. */
+  const [nearScreen, setNearScreen] = useState(false)
+  const nearScreenRef = useRef(false)
   const hasGoodPosterRef = useRef(Boolean(getVideoPoster(item.id, item.src)))
+  /** Survives live <video> unmount so Space resumes instead of restarting at 0 */
+  const lastTimeRef = useRef(getRememberedPlaybackTime(item.id))
+  const durationRef = useRef(0)
 
   const mediaStyle = cropMediaStyle(item)
   const poster = useVideoPoster(item.id, item.src)
+
+  useEffect(() => {
+    lastTimeRef.current = getRememberedPlaybackTime(item.id)
+  }, [item.id, item.src])
 
   useEffect(() => {
     hasGoodPosterRef.current = Boolean(getVideoPoster(item.id, item.src))
@@ -140,84 +164,151 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     [item.id, item.src],
   )
 
+  // Observe only to start poster ensure once — do not toggle live media on zoom.
+  // Zoom changes intersection geometry; flipping state every wheel tick was thrashing.
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
     if (typeof IntersectionObserver === 'undefined') {
-      setMediaAttached(true)
-      setInView(true)
+      if (!nearScreenRef.current) {
+        nearScreenRef.current = true
+        setNearScreen(true)
+      }
       return
     }
     const io = new IntersectionObserver(
       (entries) => {
         const hit = entries.some((e) => e.isIntersecting)
-        if (!hit) {
-          const v = videoRef.current
-          if (v && v.readyState >= 2) {
-            void freezeFrame(v, true)
-          }
-        }
-        setInView(hit)
-        if (hit) setMediaAttached(true)
+        if (!hit || nearScreenRef.current) return
+        nearScreenRef.current = true
+        setNearScreen(true)
+        // Sticky observe goal reached — stop listening (zoom will not re-fire)
+        io.disconnect()
       },
-      { root: null, rootMargin: '120px', threshold: 0 },
+      { root: null, rootMargin: '400px', threshold: 0 },
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [item.id, item.src, freezeFrame])
+  }, [item.id, item.src])
 
-  // Detach decoder when far off-screen (unless playing or selected)
-  const keepAttached = mediaAttached && (inView || playing || selected)
-  const activeSrc = keepAttached ? item.src : undefined
+  // Offline poster when near screen / selected and still missing
+  useEffect(() => {
+    if ((!nearScreen && !selected) || poster || !item.src) return
+    let cancelled = false
+    void ensureVideoPoster(item.id, item.src).then(() => {
+      if (cancelled) return
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [nearScreen, selected, poster, item.id, item.src])
+
+  // Live decoder only while the user is actually watching / scrubbing.
+  // Never because selected — that made zoom-out blank every selected video.
+  const showLive = playing || scrubbing
+
+  const noteTime = useCallback(
+    (t: number) => {
+      if (!Number.isFinite(t) || t < 0) return
+      lastTimeRef.current = t
+      rememberPlaybackTime(item.id, t)
+      setProgress(t)
+    },
+    [item.id],
+  )
+
+  const applyResumeSeek = useCallback((v: HTMLVideoElement) => {
+    const resumeAt = resolveResumeTime(
+      lastTimeRef.current,
+      durationRef.current ||
+        (Number.isFinite(v.duration) ? v.duration : undefined),
+    )
+    if (resumeAt <= 0.02) return
+    if (Math.abs(v.currentTime - resumeAt) < 0.04) return
+    try {
+      v.currentTime = resumeAt
+    } catch {
+      /* seek may fail until metadata */
+    }
+  }, [])
 
   const togglePlay = useCallback(() => {
-    setMediaAttached(true)
-    const v = videoRef.current
-    if (!v) {
+    if (!showLive) {
+      // Mount video on next paint, restore last time, then play
+      setPlaying(true)
       requestAnimationFrame(() => {
         const el = videoRef.current
         if (!el) return
-        if (el.paused) void el.play()
+        if (!el.src && item.src) {
+          el.src = item.src
+          el.load()
+        }
+        const startPlay = () => {
+          applyResumeSeek(el)
+          void el.play().catch(() => {
+            setPlaying(false)
+          })
+        }
+        if (el.readyState >= 1) startPlay()
+        else {
+          el.addEventListener('loadedmetadata', startPlay, { once: true })
+        }
       })
       return
     }
-    if (!v.src && item.src) {
-      v.src = item.src
-      v.load()
+    const v = videoRef.current
+    if (!v) {
+      setPlaying(false)
+      return
     }
     if (v.paused) {
+      applyResumeSeek(v)
       void v.play()
       setPlaying(true)
     } else {
-      // Pause first so the decoder holds the current frame, then freeze it
       try {
         v.pause()
       } catch {
         /* ignore */
       }
+      noteTime(v.currentTime)
       setPlaying(false)
       void freezeFrame(v, true)
     }
-  }, [item.src, freezeFrame])
+  }, [showLive, item.src, freezeFrame, applyResumeSeek, noteTime])
 
   useEffect(() => {
     return registerVideoToggle(item.id, togglePlay)
   }, [item.id, togglePlay])
 
   useEffect(() => {
+    if (!showLive) return
     const v = videoRef.current
-    if (!v || !activeSrc) return
+    if (!v) return
 
-    const onTime = () => setProgress(v.currentTime)
-    const onMeta = () => setDuration(v.duration || 0)
-    const onEnd = () => setPlaying(false)
+    if (!v.src && item.src) {
+      v.src = item.src
+      v.load()
+    }
+
+    const onTime = () => noteTime(v.currentTime)
+    const onMeta = () => {
+      const d = v.duration || 0
+      durationRef.current = d
+      setDuration(d)
+      applyResumeSeek(v)
+    }
+    const onEnd = () => {
+      noteTime(v.currentTime)
+      setPlaying(false)
+    }
     const onPlay = () => setPlaying(true)
     const onPause = () => {
+      noteTime(v.currentTime)
       setPlaying(false)
       void freezeFrame(v, true)
     }
     const onUsefulFrame = () => {
-      // First good frame only unless we already have one — avoid t=0 black lock-in
       void freezeFrame(v, !hasGoodPosterRef.current)
     }
 
@@ -229,9 +320,13 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
 
-    // Nudge off pure black t=0 once metadata is known (paused preview)
+    // Only nudge off pure black t=0 when we have no resume position and no poster
     const onMetaSeek = () => {
       if (!v.paused) return
+      if (lastTimeRef.current > 0.02) {
+        applyResumeSeek(v)
+        return
+      }
       if (hasGoodPosterRef.current) return
       const dur = Number.isFinite(v.duration) ? v.duration : 0
       if (dur > 0.05 && v.currentTime < 0.001) {
@@ -246,9 +341,16 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     }
     v.addEventListener('loadedmetadata', onMetaSeek)
 
+    if (v.readyState >= 1) applyResumeSeek(v)
     if (v.readyState >= 2) onUsefulFrame()
+    // Resume after mount if we entered via Play (showLive flipped true then rAF)
+    if (playing && v.paused) {
+      applyResumeSeek(v)
+      void v.play().catch(() => setPlaying(false))
+    }
 
     return () => {
+      if (Number.isFinite(v.currentTime)) noteTime(v.currentTime)
       v.removeEventListener('timeupdate', onTime)
       v.removeEventListener('loadedmetadata', onMeta)
       v.removeEventListener('loadedmetadata', onMetaSeek)
@@ -258,20 +360,27 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
     }
-  }, [activeSrc, freezeFrame])
+  }, [showLive, playing, item.src, freezeFrame, noteTime, applyResumeSeek])
 
-  // Before paint removes the live element, freeze the current frame
+  // Leaving live mode: remember time + freeze frame before <video> unmounts
   useLayoutEffect(() => {
-    if (keepAttached) return
+    if (showLive) return
     const v = videoRef.current
-    if (v && v.readyState >= 2) {
-      void freezeFrame(v, true)
-      if (!v.paused) v.pause()
+    if (v) {
+      if (Number.isFinite(v.currentTime)) noteTime(v.currentTime)
+      if (v.readyState >= 2) {
+        void freezeFrame(v, true)
+        if (!v.paused) {
+          try {
+            v.pause()
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     }
-    setPlaying(false)
-  }, [keepAttached, freezeFrame])
+  }, [showLive, freezeFrame, noteTime])
 
-  const seeking = useRef(false)
   const trackRef = useRef<HTMLDivElement>(null)
 
   const seekToClientX = useCallback(
@@ -282,30 +391,31 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
       const rect = track.getBoundingClientRect()
       const t = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)))
       v.currentTime = t * duration
-      setProgress(v.currentTime)
+      noteTime(v.currentTime)
     },
-    [duration],
+    [duration, noteTime],
   )
 
   const onSeekPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation()
     e.preventDefault()
-    seeking.current = true
+    setScrubbing(true)
     e.currentTarget.setPointerCapture(e.pointerId)
-    seekToClientX(e.clientX)
+    // Ensure live video is mounted for seek (showLive becomes true via scrubbing)
+    requestAnimationFrame(() => seekToClientX(e.clientX))
   }
 
   const onSeekPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!seeking.current) return
+    if (!scrubbing) return
     e.stopPropagation()
     e.preventDefault()
     seekToClientX(e.clientX)
   }
 
   const onSeekPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!seeking.current) return
+    if (!scrubbing) return
     e.stopPropagation()
-    seeking.current = false
+    setScrubbing(false)
     const v = videoRef.current
     if (v && v.readyState >= 2) void freezeFrame(v, true)
     try {
@@ -315,41 +425,60 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
     }
   }
 
-  const showChrome = hovering || !playing || seeking.current
+  const showChrome = hovering || !playing || scrubbing
   const pct = duration > 0 ? (progress / duration) * 100 : 0
+  // Progress UI when selected/hovering even if idle (still poster) — scrub mounts live
+  const showProgress = selected || hovering || showLive
+  // Flip only the media plane — chrome (play / scrub) stays upright
+  const flipX = !!item.flipX
+  const flipY = !!item.flipY
+  const mediaFlipStyle: CSSProperties | undefined =
+    flipX || flipY
+      ? {
+          transform: `scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})`,
+          transformOrigin: 'center center',
+        }
+      : undefined
 
   return (
     <div
       ref={wrapRef}
       className={`video-player ${selected ? 'is-selected' : ''} ${
-        keepAttached ? '' : 'is-lazy'
+        showLive ? '' : 'is-lazy'
       }`}
       onPointerEnter={() => setHovering(true)}
       onPointerLeave={() => {
-        if (!seeking.current) setHovering(false)
+        if (!scrubbing) setHovering(false)
       }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
       {/*
-        Never paint <video> without src — browsers show solid black.
-        Detached / lazy state always uses <img> still (or gray shell).
+        Idle: always still + solid fallback. Live video only while playing/scrubbing.
+        Media layer is flipped independently of chrome.
       */}
-      {keepAttached ? (
-        <video
-          ref={videoRef}
-          data-playback-id={item.id}
-          src={activeSrc}
-          poster={poster || undefined}
-          loop
-          playsInline
-          preload="auto"
-          draggable={false}
-          className="media-content video-el"
-          style={mediaStyle}
-        />
-      ) : (
-        <VideoStill item={item} mediaStyle={mediaStyle} ensureIfMissing />
-      )}
+      <div className="video-media-plane" style={mediaFlipStyle}>
+        {(!showLive || poster) && (
+          <VideoStill
+            item={item}
+            mediaStyle={mediaStyle}
+            ensureIfMissing
+          />
+        )}
+        {showLive && (
+          <video
+            ref={videoRef}
+            data-playback-id={item.id}
+            src={item.src}
+            poster={poster || undefined}
+            loop
+            playsInline
+            preload="auto"
+            draggable={false}
+            className="media-content video-el"
+            style={mediaStyle}
+          />
+        )}
+      </div>
 
       {showChrome && !playing && (
         <button
@@ -386,9 +515,9 @@ function VideoPlayer({ item, selected }: { item: MediaItem; selected: boolean })
         </button>
       )}
 
-      {keepAttached && (
+      {showProgress && (
         <div
-          className={`video-progress-wrap ${hovering || seeking.current ? 'visible' : ''}`}
+          className={`video-progress-wrap ${hovering || scrubbing || selected ? 'visible' : ''}`}
           onPointerDown={onSeekPointerDown}
           onPointerMove={onSeekPointerMove}
           onPointerUp={onSeekPointerUp}
@@ -469,6 +598,16 @@ export function MediaItemView({ item, selected, staticPreview = false }: Props) 
     setShowCropBadge(false)
   }
 
+  const flipX = !!item.flipX
+  const flipY = !!item.flipY
+  const mediaFlipStyle: CSSProperties | undefined =
+    flipX || flipY
+      ? {
+          transform: `scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})`,
+          transformOrigin: 'center center',
+        }
+      : undefined
+
   return (
     <div
       className={`media-item ${selected ? 'is-selected' : ''} type-${item.type} ${item.stacked ? 'is-stacked' : ''} ${staticPreview ? 'is-static-preview' : ''}`}
@@ -479,11 +618,13 @@ export function MediaItemView({ item, selected, staticPreview = false }: Props) 
         {item.type === 'video' ? (
           staticPreview ? (
             <div className="video-player is-lazy is-static-preview">
-              <VideoStill
-                item={item}
-                mediaStyle={mediaStyle}
-                ensureIfMissing
-              />
+              <div className="video-media-plane" style={mediaFlipStyle}>
+                <VideoStill
+                  item={item}
+                  mediaStyle={mediaStyle}
+                  ensureIfMissing
+                />
+              </div>
               <span className="video-play-btn" aria-hidden>
                 <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
                   <path d="M8 5.5v13l11-6.5-11-6.5z" />
@@ -498,8 +639,13 @@ export function MediaItemView({ item, selected, staticPreview = false }: Props) 
             src={item.src}
             alt={item.fileName || item.type}
             draggable={false}
+            decoding="async"
+            loading="eager"
             className="media-content"
-            style={mediaStyle}
+            style={{
+              ...mediaStyle,
+              ...(mediaFlipStyle ?? {}),
+            }}
           />
         )}
       </div>

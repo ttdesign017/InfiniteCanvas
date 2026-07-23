@@ -52,6 +52,10 @@ export function StackFolder({
   const [draft, setDraft] = useState(stackName)
   const inputRef = useRef<HTMLInputElement>(null)
   const openedAt = useRef(0)
+  // Drag offset is applied by parent StackUnit (folder + fan + count move as one)
+  const poseTransform = dropTarget
+    ? `translate(${bounds.x}px, ${bounds.y}px) scale(1.04)`
+    : `translate(${bounds.x}px, ${bounds.y}px)`
 
   useEffect(() => {
     if (editing) setDraft(stackName)
@@ -96,9 +100,7 @@ export function StackFolder({
       style={{
         // Grow from folder center when accepting a drop so chrome expands evenly
         transformOrigin: dropTarget ? 'center center' : 'top left',
-        transform: dropTarget
-          ? `translate(${bounds.x}px, ${bounds.y}px) scale(1.04)`
-          : `translate(${bounds.x}px, ${bounds.y}px)`,
+        transform: poseTransform,
         width: bounds.width,
         height: bounds.height,
         zIndex,

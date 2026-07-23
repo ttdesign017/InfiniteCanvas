@@ -131,10 +131,16 @@ export function openBoardDocumentFromText(text: string): ReturnType<
 export async function packBoardSnapshotToText(
   snapshot: BoardSnapshot,
 ): Promise<{ text: string; doc: ICanvasDocument }> {
-  const doc = await packICanvasDocument(snapshot)
+  const { pruneBoardSnapshotForSave, collectLiveMediaSrcs } =
+    await import('./pruneBoardSnapshot')
+  const { prunePackAssetCache } = await import('./packAssetCache')
+  const cleaned = pruneBoardSnapshotForSave(snapshot)
+  // Drop session pack-cache entries for deleted media (do not re-embed ghosts)
+  prunePackAssetCache(collectLiveMediaSrcs(cleaned.items))
+  const doc = await packICanvasDocument(cleaned)
   assertICanvasIntegrity(doc, {
-    itemCount: snapshot.items.length,
-    stackCount: snapshot.stacks?.length ?? 0,
+    itemCount: cleaned.items.length,
+    stackCount: cleaned.stacks?.length ?? 0,
   })
   return { text: serializeICanvas(doc), doc }
 }

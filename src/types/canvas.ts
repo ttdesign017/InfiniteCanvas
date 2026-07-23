@@ -121,6 +121,10 @@ export interface MediaItem extends BaseItem {
   naturalHeight: number
   /** Cumulative crop of the source, normalized 0–1 */
   crop?: CropRect
+  /** Mirror horizontally (CSS scaleX −1 on the crop viewport) */
+  flipX?: boolean
+  /** Mirror vertically (CSS scaleY −1 on the crop viewport) */
+  flipY?: boolean
   /**
    * @deprecated Legacy polygon clip from old rotated crop bake. Cleared on uncrop.
    * New crops are always axis-aligned (rotation must be 0).

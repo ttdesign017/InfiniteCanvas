@@ -856,7 +856,7 @@ body,
 
 .tool-btn:focus-visible,
 .win-btn:focus-visible,
-.close-save-btn:focus-visible,
+.app-dialog-btn:focus-visible,
 .immersive-toggle:focus-visible {
   outline: 2px solid var(--accent) !important;
   outline-offset: 2px;
@@ -893,20 +893,37 @@ body,
   position: absolute;
   left: 0;
   top: 0;
+  /*
+   * 1×1 host: items live at world coords via their own transforms.
+   * MUST stay overflow:visible — clipping here + parent scale causes
+   * "half image / mid cut" compositor artifacts when zoomed out.
+   */
   width: 1px;
   height: 1px;
+  overflow: visible;
   transform-origin: 0 0;
-  will-change: transform;
+  /*
+   * Do NOT leave will-change: transform on permanently — WebView2 tiles the
+   * promoted layer and clips descendants incorrectly under deep zoom-out.
+   * Promote only while panning (see .is-panning).
+   */
   /* Above folder morph overlay so cards paint on top of chrome */
   z-index: 2;
+  contain: none;
+  isolation: auto;
+}
+
+.canvas-surface.is-panning .canvas-world {
+  will-change: transform;
 }
 
 .canvas-grid {
   position: absolute;
-  left: -50000px;
-  top: -50000px;
-  width: 100000px;
-  height: 100000px;
+  /* Bounded tile field — full 1e5px layer was a large GPU/paint cost under scale */
+  left: -16000px;
+  top: -16000px;
+  width: 32000px;
+  height: 32000px;
   background-image:
     radial-gradient(circle, rgba(0, 0, 0, 0.08) 1px, transparent 1px);
   background-size: 28px 28px;
@@ -922,7 +939,12 @@ body,
   top: 0;
   /* top-left origin keeps resize anchors stable; stacked overrides to bottom-left */
   transform-origin: top left;
-  will-change: transform;
+  /*
+   * Do NOT set will-change: transform on every item — with 50+ media cards
+   * WebView2 creates too many compositor layers (jank / flash / memory spikes).
+   * overflow:visible avoids compositor "half cut" tiles under deep zoom-out.
+   */
+  overflow: visible;
   touch-action: none;
 }
 
@@ -950,7 +972,29 @@ body,
   user-select: none;
 }
 
-/* Free selected items raise above peers; stacks keep fixed internal z-order */
+/* Plain free-text in a fan: glyphs only — never an opaque white card over the pile */
+.canvas-item.is-stacked.type-text .plain-text:not(.has-bg) {
+  background: transparent !important;
+  box-shadow: none;
+  border: none;
+}
+
+/* Single bitmap for settled collapsed fans (see CollapsedStackFans) */
+.stack-fan-composite {
+  display: block;
+  background: transparent;
+  border: none;
+  outline: none;
+  /* Avoid browser empty-image box flash before decode */
+  image-rendering: auto;
+  -webkit-user-drag: none;
+}
+
+/*
+ * Single selection: raise one item for resize chrome.
+ * Multi-select must NOT promote every card to 99999 — that forces one compositor
+ * layer per full-res image; zoom-out with 20–50 selected items blanks them in WebView2.
+ */
 .canvas-item.selected:not(.is-stacked) {
   z-index: 99999 !important;
 }
@@ -966,6 +1010,8 @@ body,
 .canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) {
   outline: none !important;
   box-shadow: none !important;
+  /* Keep document z-order from inline style; only the group box sits on top */
+  z-index: unset !important;
 }
 .canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-handle,
 .canvas-surface.is-group-select .canvas-item.selected:not(.is-stacked) .resize-edge,
@@ -1419,6 +1465,7 @@ body,
   position: absolute;
   inset: 0;
   overflow: hidden;
+  transform-origin: center center;
 }
 /* Non-rect crop (rotated marquee ∩ image) */
 .media-item.has-poly-clip .media-crop-viewport {
@@ -1501,6 +1548,24 @@ body,
   position: absolute;
   inset: 0;
   overflow: hidden;
+  /* Never show a transparent hole before poster / decoder is ready */
+  background: #1a1c20;
+}
+
+/* Flipped picture plane only — play/progress chrome stays upright */
+.video-media-plane {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: center center;
+}
+
+.video-media-fallback {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(145deg, rgba(40, 42, 48, 0.98), rgba(22, 24, 28, 1));
+  pointer-events: none;
 }
 
 .video-player .video-el {
@@ -1514,9 +1579,14 @@ body,
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
+.media-item.type-video {
+  background: #1a1c20;
+}
+
+/* Idle cards use still + play chrome; button must receive clicks (was none). */
 .video-player.is-lazy .video-play-btn {
   opacity: 0.92;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* Stack nav ghost: static still only — no hit targets */
@@ -2315,8 +2385,8 @@ body,
   caret-color: var(--accent);
 }
 
-/* Exit save dialog */
-.close-save-overlay {
+/* In-app modals (save prompt, open/save errors, confirm) */
+.app-dialog-overlay {
   position: fixed;
   inset: 0;
   z-index: 200000;
@@ -2326,7 +2396,7 @@ body,
   backdrop-filter: blur(4px);
 }
 
-.close-save-dialog {
+.app-dialog {
   width: min(400px, calc(100vw - 32px));
   padding: 22px 22px 18px;
   border-radius: 14px;
@@ -2336,28 +2406,30 @@ body,
   font-family: var(--font-ui);
 }
 
-.close-save-title {
+.app-dialog-title {
   margin: 0 0 8px;
   font-size: 17px;
   font-weight: 650;
   color: var(--text);
 }
 
-.close-save-body {
+.app-dialog-body {
   margin: 0 0 18px;
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.close-save-actions {
+.app-dialog-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   flex-wrap: wrap;
 }
 
-.close-save-btn {
+.app-dialog-btn {
   appearance: none;
   border: 1px solid var(--border);
   background: #f5f5f5;
@@ -2369,17 +2441,17 @@ body,
   cursor: pointer;
 }
 
-.close-save-btn:hover {
+.app-dialog-btn:hover {
   filter: brightness(0.97);
 }
 
-.close-save-btn.primary {
+.app-dialog-btn.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 
-.close-save-btn.danger {
+.app-dialog-btn.danger {
   background: #fff5f5;
   border-color: rgba(220, 38, 38, 0.25);
   color: #b91c1c;
@@ -2516,6 +2588,46 @@ body,
   animation: save-toast-in 0.22s ease-out;
 }
 
+.save-toast.is-saving {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 160px;
+  padding: 12px 16px 14px;
+  border-radius: 14px;
+}
+
+.save-toast-label {
+  text-align: center;
+  font-weight: 600;
+}
+
+.save-progress {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.save-progress-bar {
+  display: block;
+  height: 100%;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0d99ff, #6ec8ff);
+  animation: save-progress-slide 1.05s ease-in-out infinite;
+}
+
+@keyframes save-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 .save-toast-check {
   display: grid;
   place-items: center;
@@ -2545,6 +2657,35 @@ body,
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+}
+
+/* Align H/V parent + flyout submenu on the right dock */
+.align-group {
+  position: relative;
+}
+
+.align-menu-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.align-submenu {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  z-index: 30;
 }
 
 /* Blender-style G/R/S modal transform HUD */
@@ -2708,6 +2849,7 @@ body,
 .peer-fade-wrap,
 .stack-preview-wrap,
 .peer-scatter-wrap,
+.stack-unit-wrap,
 .embed-alive {
   position: absolute;
   left: 0;
@@ -2715,6 +2857,13 @@ body,
   width: 0;
   height: 0;
   overflow: visible;
+}
+
+/* Stack unit: folder + fan + count move as one under --drag-dx/dy */
+.stack-unit-wrap.is-stack-drag {
+  /* transform set inline from CSS vars */
+  will-change: transform;
+  pointer-events: auto;
 }
 
 /* Peer scatter: radial push + scale + blur during stack enter/exit.

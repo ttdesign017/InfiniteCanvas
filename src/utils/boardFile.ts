@@ -31,10 +31,11 @@ export const ICANVAS_EXT = 'icanvas'
 /** Current on-disk format version */
 export const ICANVAS_FORMAT_VERSION = 3
 /**
- * Hard cap on raw JSON text size (~192 MiB). Prevents accidental / malicious
- * multi-GB files from OOMing the WebView during JSON.parse.
+ * Hard cap on raw JSON text size (~512 MiB).
+ * Boards with many embedded media often land in the 200–400 MB range;
+ * multi-GB files are still rejected to avoid OOMing the WebView during JSON.parse.
  */
-export const ICANVAS_MAX_TEXT_BYTES = 192 * 1024 * 1024
+export const ICANVAS_MAX_TEXT_BYTES = 512 * 1024 * 1024
 
 export interface ICanvasAsset {
   mime: string

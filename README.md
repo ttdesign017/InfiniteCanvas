@@ -106,7 +106,8 @@ Core helpers: `src/utils/stacks.ts`, `src/utils/zOrder.ts`, enter/exit in `src/s
 
 ### Board I/O & clipboard
 
-- **Ctrl+S** / **Ctrl+Shift+S** — save / save as (toast on success)
+- **Ctrl+S** / **Ctrl+Shift+S** — save / save as (progress bar, then Saved toast)
+- **Ctrl+&lt;** / **Ctrl+&gt;** (or **Ctrl+,** / **Ctrl+.**) — flip selected image/video horizontally / vertically
 - **Ctrl+Shift+O** — open `.icanvas` or legacy JSON
 - **Ctrl+O** — open media files
 - **Open with** — file association for `.icanvas`; launch path via `get_launch_file_path`
@@ -221,8 +222,12 @@ InfiniteCanvas2/
 |----------|--------|
 | **Ctrl+O** | Open media files |
 | **Ctrl+Shift+O** | Open project (`.icanvas` / JSON) |
-| **Ctrl+S** | Save board |
+| **Ctrl+S** | Save board (progress → Saved) |
 | **Ctrl+Shift+S** | Save as |
+| **Ctrl+&lt; / Ctrl+,** | Flip media horizontal |
+| **Ctrl+&gt; / Ctrl+.** | Flip media vertical |
+| **Shift+C** | Snapshot selected video frame (works while paused) |
+| **Space** | Play/pause selected video (resumes from pause position) |
 | **Ctrl+V** | Paste OS clipboard or in-app clipboard |
 | **Ctrl+C / Ctrl+X** | Copy / cut selection (items + nested stack trees); also mirrors image/text to the OS clipboard |
 | **Shift+C** | Snapshot current frame of selected video(s) as a full-res image (video stays selected) |

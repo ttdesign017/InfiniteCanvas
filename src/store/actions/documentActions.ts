@@ -37,6 +37,7 @@ export type DocumentActionKey =
   | 'convertTextKind'
   | 'alignSelected'
   | 'packSelected'
+  | 'flipSelectedMedia'
   | 'addEmbed'
   | 'addLinkCard'
   | 'startScribble'
@@ -377,6 +378,34 @@ export function createDocumentActions(
     for (const sp of stackPatches) {
       get().moveStacks([sp.id], sp.dx, sp.dy)
     }
+  },
+
+
+  flipSelectedMedia: (axis) => {
+    const s = get()
+    const idSet = new Set(s.selectedIds)
+    if (idSet.size === 0) return
+    const targets = s.items.filter(
+      (i) =>
+        idSet.has(i.id) &&
+        !i.locked &&
+        (i.type === 'image' || i.type === 'gif' || i.type === 'video'),
+    )
+    if (targets.length === 0) return
+    get().pushHistory()
+    set({
+      dirty: true,
+      items: s.items.map((item) => {
+        if (!idSet.has(item.id)) return item
+        if (item.type !== 'image' && item.type !== 'gif' && item.type !== 'video')
+          return item
+        if (item.locked) return item
+        if (axis === 'x') {
+          return { ...item, flipX: !item.flipX }
+        }
+        return { ...item, flipY: !item.flipY }
+      }),
+    })
   },
 
 

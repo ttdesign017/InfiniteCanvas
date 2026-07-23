@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useCanvasStore } from '../store/useCanvasStore'
 import { pruneEmbedIframes } from '../utils/embedIframeCache'
 import type { SnapGuide } from '../utils/snap'
+import { getSnapGuides, setSnapGuidesBus } from '../utils/snapGuidesBus'
 import { type DragMode } from './canvas'
 import { useCanvasSurfaceModel } from './canvas/useCanvasSurfaceModel'
 import { useDragWriteScheduler } from './canvas/useDragWriteScheduler'
 import { useModalTransformHotkeys } from './canvas/useModalTransformHotkeys'
 import { useStackNavGhosts } from './canvas/useStackNavGhosts'
 import { useCanvasPointerGestures } from './canvas/useCanvasPointerGestures'
-import { useWorldCullRect } from './canvas/useWorldCullRect'
 import {
   resetStackAnimProgress,
   setStackAnimProgress,
@@ -50,7 +50,6 @@ export function useInfiniteCanvasController() {
     h: number
   } | null>(null)
   const [dropActive, setDropActive] = useState(false)
-  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([])
   const [stackDropTargetId, setStackDropTargetId] = useState<string | null>(
     null,
   )
@@ -58,8 +57,21 @@ export function useInfiniteCanvasController() {
 
   const setStackDropTarget = useCallback((gid: string | null) => {
     stackDropTargetRef.current = gid
-    setStackDropTargetId(gid)
+    // Avoid re-rendering the whole canvas when value is unchanged (drag thrash)
+    setStackDropTargetId((prev) => (prev === gid ? prev : gid))
   }, [])
+
+  // Snap guides on bus — only SnapGuidesLayer re-renders (not whole canvas)
+  const setSnapGuides = useCallback(
+    (guides: SnapGuide[] | ((prev: SnapGuide[]) => SnapGuide[])) => {
+      if (typeof guides === 'function') {
+        setSnapGuidesBus(guides(getSnapGuides()))
+      } else {
+        setSnapGuidesBus(guides)
+      }
+    },
+    [],
+  )
 
   const { scheduleDragWrite, flushDragWrite } = useDragWriteScheduler()
   const { modalXformKind } = useModalTransformHotkeys({ setSnapGuides })
@@ -74,10 +86,10 @@ export function useInfiniteCanvasController() {
   const tool = useCanvasStore((s) => s.tool)
   const spaceHeld = useCanvasStore((s) => s.spaceHeld)
   const cHeld = useCanvasStore((s) => s.cHeld)
-  const isPanning = useCanvasStore((s) => s.isPanning)
+  // isPanning is NOT subscribed here — pan start used to re-render the whole
+  // canvas tree (lag). Cursor/grabbing is applied via DOM in pointer gestures.
   const stackEnterAnim = useCanvasStore((s) => s.stackEnterAnim)
   const setStackEnterAnim = useCanvasStore((s) => s.setStackEnterAnim)
-  const animating = useCanvasStore((s) => s.animating)
 
   useEffect(() => {
     const live = new Set(
@@ -86,12 +98,11 @@ export function useInfiniteCanvasController() {
     pruneEmbedIframes(live)
   }, [items])
 
-  // Cull during normal editing; keep full tree during stack enter/exit morph.
-  const cullRect = useWorldCullRect({
-    disabled: !!(stackEnterAnim || animating),
-    marginPx: 280,
-  })
-
+  // Paint-cull disabled: unmounting offscreen media on every pan/zoom remounts
+  // <img>/<video>, causes blank flashes / long "missing" items, and re-subscribes
+  // the controller to viewport (undoing CanvasWorldTransform isolation).
+  // Keep all free items in the current container mounted; video decoder detach
+  // stays in MediaItemView via IntersectionObserver.
   const {
     visibleItems,
     visibleStacks,
@@ -114,7 +125,7 @@ export function useInfiniteCanvasController() {
     tool,
     spaceHeld,
     cHeld,
-    cullRect,
+    cullRect: null,
   })
 
   const navGhosts = useStackNavGhosts({
@@ -249,9 +260,7 @@ export function useInfiniteCanvasController() {
       : modalXformKind === 'rotate' || modalXformKind === 'scale'
         ? 'crosshair'
         : effectiveTool === 'pan' || spaceHeld
-          ? isPanning
-            ? 'grabbing'
-            : 'grab'
+          ? 'grab'
           : effectiveTool === 'crop'
             ? 'crosshair'
             : effectiveTool === 'scribble'
@@ -265,18 +274,18 @@ export function useInfiniteCanvasController() {
                   : 'default'
 
   const {
+    isEnterAnim,
+    isExitAnim,
     animStackRec,
     animParentId,
     exitingStackId,
     exitGhostParent,
     enterGhostParent,
-    exitPeerOpacity,
     exitAfterHandoff,
     parentPeerGhostItems,
     parentPeerGhostStacks,
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
-    navPeerOpacity,
     peerScatterOriginLocal,
     peerScatterOriginWorld,
   } = navGhosts
@@ -287,7 +296,6 @@ export function useInfiniteCanvasController() {
     marquee,
     cropOverlay,
     dropActive,
-    snapGuides,
     modalXformKind,
     items,
     stacks,
@@ -321,18 +329,18 @@ export function useInfiniteCanvasController() {
     onDragLeave,
     onDrop,
     cursor,
+    isEnterAnim,
+    isExitAnim,
     animStackRec,
     animParentId,
     exitingStackId,
     exitGhostParent,
     enterGhostParent,
-    exitPeerOpacity,
     exitAfterHandoff,
     parentPeerGhostItems,
     parentPeerGhostStacks,
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
-    navPeerOpacity,
     peerScatterOriginLocal,
     peerScatterOriginWorld,
   }

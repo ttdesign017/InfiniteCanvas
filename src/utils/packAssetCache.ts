@@ -59,6 +59,22 @@ export function clearPackAssetCache(): void {
   cache.clear()
 }
 
+/**
+ * Keep only entries whose src is still live on the board.
+ * Keys are `${src}\n${fileName}` — match by src prefix.
+ */
+export function prunePackAssetCache(liveSrcs: ReadonlySet<string>): number {
+  let removed = 0
+  for (const key of [...cache.keys()]) {
+    const src = key.split('\n')[0] ?? ''
+    if (!liveSrcs.has(src)) {
+      cache.delete(key)
+      removed++
+    }
+  }
+  return removed
+}
+
 export function packAssetCacheSize(): number {
   return cache.size
 }

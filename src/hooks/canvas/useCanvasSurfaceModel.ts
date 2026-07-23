@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { CanvasItem, EmbedItem, StackRecord } from '../../types/canvas'
 import type { BoundsRect } from '../../utils/geometry'
 import { computeSelectionBounds } from '../../utils/selectionBounds'
@@ -25,6 +25,39 @@ export type StackFolderView = {
   record: StackRecord | null
   proxy: CanvasItem | undefined
   isRecord: boolean
+}
+
+/** True when a cached fan-preview object can keep the same identity. */
+function previewSourceUnchanged(prev: CanvasItem, source: CanvasItem): boolean {
+  if (prev.type !== source.type) return false
+  if (prev.width !== source.width || prev.height !== source.height) return false
+  // Absolute z reflow on select/drag is common — identity can stay if only z moved
+  // (caller still rebuilds when z changes so composite stacking updates).
+  if ('src' in prev && 'src' in source) {
+    return (
+      (prev as { src?: string }).src === (source as { src?: string }).src
+    )
+  }
+  if (prev.type === 'text' && source.type === 'text') {
+    return (
+      prev.content === source.content &&
+      prev.color === source.color &&
+      prev.backgroundColor === source.backgroundColor &&
+      prev.fontSize === source.fontSize &&
+      prev.fontFamily === source.fontFamily &&
+      prev.fontWeight === source.fontWeight
+    )
+  }
+  if (prev.type === 'textcard' && source.type === 'textcard') {
+    return (
+      prev.content === source.content &&
+      prev.color === source.color &&
+      prev.backgroundColor === source.backgroundColor &&
+      prev.fontSize === source.fontSize
+    )
+  }
+  // Other non-media: free-canvas pose alone must not force new identity
+  return true
 }
 
 /**
@@ -199,25 +232,50 @@ export function useCanvasSurfaceModel(input: {
     cullRect,
   ])
 
+  /** Reuse preview item object identity when pose/source is unchanged (memo win). */
+  const stackPreviewCacheRef = useRef(new Map<string, CanvasItem>())
+
   const stackPreviewItems = useMemo(() => {
     const out: CanvasItem[] = []
+    const nextCache = new Map<string, CanvasItem>()
     // Only build fan cards for folders that survive folder culling — but folder
     // list already depends on cull; rebuild from visibleStacks then cull cards.
     for (const st of visibleStacks) {
       for (const c of collapsedStackFanCards(st, items, stacks)) {
         const m = items.find((i) => i.id === c.id)
         if (!m || m.type === 'embed' || m.type === 'scribble') continue
-        out.push({
-          ...m,
-          x: c.x,
-          y: c.y,
-          rotation: c.rotation,
-          stacked: true,
-          stackGroupId: st.id,
-        })
+        const prev = stackPreviewCacheRef.current.get(m.id)
+        const samePose =
+          prev &&
+          prev.x === c.x &&
+          prev.y === c.y &&
+          (prev.rotation || 0) === (c.rotation || 0) &&
+          prev.width === m.width &&
+          prev.height === m.height &&
+          // Keep identity across absolute z reflow (select/drag) — rank order
+          // is stable; CollapsedStackFans still re-renders via zIndex check.
+          prev.zIndex === m.zIndex &&
+          prev.stackGroupId === st.id &&
+          previewSourceUnchanged(prev, m)
+        const card: CanvasItem = samePose
+          ? prev
+          : {
+              ...m,
+              x: c.x,
+              y: c.y,
+              rotation: c.rotation,
+              stacked: true,
+              stackGroupId: st.id,
+            }
+        nextCache.set(m.id, card)
+        out.push(card)
       }
     }
-    const sorted = out.sort((a, b) => a.zIndex - b.zIndex)
+    stackPreviewCacheRef.current = nextCache
+    // Stable z+id order — must match stackFanComposite paint / CollapsedStackFans
+    const sorted = out.sort(
+      (a, b) => a.zIndex - b.zIndex || a.id.localeCompare(b.id),
+    )
     // Fan cards of selected stacks always paint
     const keep = new Set<string>()
     for (const it of sorted) {

@@ -63,6 +63,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   immersiveMode: true,
 
+  isSaving: false,
+
   saveNotice: null,
 
   saveNoticeSeq: 0,

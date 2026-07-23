@@ -4,8 +4,13 @@ import { worldRectFromViewport } from '../../utils/viewportCull'
 import type { BoundsRect } from '../../utils/geometry'
 
 /**
- * Expanded world-space frustum for paint culling.
- * Subscribes to viewport — intentional re-render on pan/zoom to remount offscreen media.
+ * Expanded world-space frustum for optional paint / decode culling.
+ *
+ * IMPORTANT: Do **not** drive React mount lists from this on every pan/zoom.
+ * Subscribing here re-renders the canvas item tree each wheel tick and, if used
+ * to unmount media, causes blank flashes and long "missing" elements.
+ * Prefer keep-mounted items + IntersectionObserver for video decoders.
+ * This hook remains for future throttled decode/visibility policies.
  */
 export function useWorldCullRect(options?: {
   /** Disable culling (return null → show all). */

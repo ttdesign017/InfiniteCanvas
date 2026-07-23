@@ -50,6 +50,17 @@ export type DragMode =
       origins: Record<string, { x: number; y: number }>
       accDx: number
       accDy: number
+      /** Last snapped world delta pushed to dragPosePreview */
+      appliedDx: number
+      appliedDy: number
+      /** Geometry at drag start — avoid per-frame store scans for snap */
+      sizeById: Record<
+        string,
+        { width: number; height: number; rotation: number; type: string }
+      >
+      stackSizeById: Record<string, { width: number; height: number }>
+      /** CSS-var drag session started (beginDragPose already called) */
+      poseSession?: boolean
     }
   | {
       kind: 'marquee'

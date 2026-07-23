@@ -11,6 +11,7 @@ export type ViewportActionKey =
   | 'setTool'
   | 'setEditingId'
   | 'setEditingStackGroupId'
+  | 'setSaving'
   | 'flashSaveNotice'
   | 'clearSaveNotice'
   | 'setImmersiveMode'
@@ -61,13 +62,16 @@ export function createViewportActions(
   setEditingStackGroupId: (groupId) =>
     set({ editingStackGroupId: groupId, editingId: null }),
 
+  setSaving: (saving) => set({ isSaving: saving }),
+
   flashSaveNotice: (message = 'Saved') =>
     set((s) => ({
+      isSaving: false,
       saveNotice: message,
       saveNoticeSeq: s.saveNoticeSeq + 1,
     })),
 
-  clearSaveNotice: () => set({ saveNotice: null }),
+  clearSaveNotice: () => set({ saveNotice: null, isSaving: false }),
 
   setImmersiveMode: (on) => set({ immersiveMode: on }),
 

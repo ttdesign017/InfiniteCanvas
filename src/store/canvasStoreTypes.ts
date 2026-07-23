@@ -49,6 +49,8 @@ export interface CanvasState {
   snapEnabled: boolean
   /** Hide left/right docks (Ctrl+F); top style bar stays when relevant */
   immersiveMode: boolean
+  /** True while pack+write is in progress (progress toast) */
+  isSaving: boolean
   /** Ephemeral UI notice after save (auto-cleared by SaveToast) */
   saveNotice: string | null
   /** Bumps so the same message still retriggers the toast */
@@ -65,6 +67,7 @@ export interface CanvasState {
   setEditingStackGroupId: (groupId: string | null) => void
   /** Rename a stack folder tab */
   commitStackName: (groupId: string, name: string) => void
+  setSaving: (saving: boolean) => void
   flashSaveNotice: (message?: string) => void
   clearSaveNotice: () => void
   setImmersiveMode: (on: boolean) => void
@@ -209,6 +212,8 @@ export interface CanvasState {
   alignSelected: (mode: import('../utils/align').AlignMode) => void
   /** Pack selected bodies toward a side */
   packSelected: (dir: import('../utils/align').PackDir) => void
+  /** Toggle flipX / flipY on selected image | gif | video */
+  flipSelectedMedia: (axis: 'x' | 'y') => void
 
   pushHistory: () => void
   undo: () => void

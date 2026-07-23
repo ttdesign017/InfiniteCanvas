@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import type { CanvasItem, StackRecord } from '../../types/canvas'
 import type { StackEnterAnim } from '../../store/types'
-import { useStackAnimProgress } from '../../utils/stackAnimProgress'
 import {
   collapsedStackFanCards,
   collapsedStackFolderBounds,
@@ -13,6 +12,10 @@ import { rectCenter } from '../../utils/peerScatter'
 
 /**
  * Enter/exit parent-peer ghost layers (items + sibling stacks) for stack nav morph.
+ *
+ * Per-frame peerReveal / settle / t are NOT subscribed here — that would re-run
+ * the whole canvas controller every RAF. Opacity is applied in the paint layer
+ * via `useStackAnimProgress()`.
  */
 export function useStackNavGhosts(input: {
   items: CanvasItem[]
@@ -21,8 +24,6 @@ export function useStackNavGhosts(input: {
   stackEnterAnim: StackEnterAnim | null
 }) {
   const { items, stacks, currentContainerId, stackEnterAnim } = input
-  // Per-frame peerReveal lives outside the main store (see stackAnimProgress)
-  const animProgress = useStackAnimProgress()
 
   const isEnterAnim = stackEnterAnim?.mode === 'enter'
   const isExitAnim = stackEnterAnim?.mode === 'exit'
@@ -48,15 +49,6 @@ export function useStackNavGhosts(input: {
     animParentId != null &&
     animStackRec != null
 
-  const peerOpacity =
-    isExitAnim || isEnterAnim
-      ? Math.max(
-          0,
-          Math.min(1, animProgress.peerReveal ?? (isEnterAnim ? 1 : 0)),
-        )
-      : 1
-  const exitPeerOpacity = isExitAnim ? peerOpacity : 1
-  const enterPeerOpacity = isEnterAnim ? peerOpacity : 1
   const exitAfterHandoff =
     isExitAnim &&
     exitingStackId != null &&
@@ -165,11 +157,6 @@ export function useStackNavGhosts(input: {
     [parentPeerGhostStacks],
   )
   const exitParentPeerStackIds = parentPeerGhostStackIds
-  const navPeerOpacity = isEnterAnim
-    ? enterPeerOpacity
-    : isExitAnim
-      ? exitPeerOpacity
-      : 1
 
   /**
    * Focus scatter origin = visual folder center (collapsed hull ∪ stored shell),
@@ -206,14 +193,11 @@ export function useStackNavGhosts(input: {
     exitParentId,
     exitGhostParent,
     enterGhostParent,
-    exitPeerOpacity,
-    enterPeerOpacity,
     exitAfterHandoff,
     parentPeerGhostItems,
     parentPeerGhostStacks,
     parentPeerGhostStackIds,
     exitParentPeerStackIds,
-    navPeerOpacity,
     peerScatterOriginLocal,
     peerScatterOriginWorld,
   }

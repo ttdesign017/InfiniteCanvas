@@ -16,6 +16,7 @@ import { copySelectionToSystemClipboard } from '../utils/systemClipboard'
 import { snapshotSelectedVideos } from '../utils/videoFrameCapture'
 import * as desktop from '../utils/desktop'
 import { requestAppClose } from './useCloseGuard'
+import { setPanChrome } from './canvas/canvasUiHelpers'
 
 /** Only real text editing — NOT color/range/checkbox inputs */
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -292,6 +293,22 @@ export function useKeyboard() {
           return
         }
       }
+      // Flip media: Ctrl+< horizontal · Ctrl+> vertical
+      // US layout: < is Shift+,  > is Shift+.  Also accept bare Ctrl+, / Ctrl+.
+      if (mod && !e.altKey && !typing) {
+        if (e.key === '<' || e.code === 'Comma') {
+          e.preventDefault()
+          e.stopPropagation()
+          store.flipSelectedMedia('x')
+          return
+        }
+        if (e.key === '>' || e.code === 'Period') {
+          e.preventDefault()
+          e.stopPropagation()
+          store.flipSelectedMedia('y')
+          return
+        }
+      }
       if (mod && (e.key === '=' || e.key === '+' || e.code === 'Equal')) {
         e.preventDefault()
         store.zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.15)
@@ -382,6 +399,7 @@ export function useKeyboard() {
       if (e.code === 'Space' || e.key === ' ') {
         useCanvasStore.getState().setSpaceHeld(false)
         useCanvasStore.getState().setIsPanning(false)
+        setPanChrome(null, false)
       }
       if (e.code === 'KeyC' || e.key === 'c' || e.key === 'C') {
         useCanvasStore.getState().setCHeld(false)
@@ -393,6 +411,7 @@ export function useKeyboard() {
       state.setSpaceHeld(false)
       state.setCHeld(false)
       state.setIsPanning(false)
+      setPanChrome(null, false)
       state.clearClipboard()
     }
 

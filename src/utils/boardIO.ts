@@ -17,6 +17,7 @@ import {
   askUnsavedPrompt,
   UNSAVED_PROMPT_COPY,
 } from '../hooks/unsavedPrompt'
+import { showAppAlert } from '../hooks/appDialog'
 
 /**
  * Save current board. Uses existing path when `saveAs` is false and a path is known.
@@ -42,6 +43,7 @@ export async function saveCurrentBoard(options?: {
     // Keep the exact state references present at snapshot time. Zustand updates
     // replace these objects, so a reference change means the live board moved
     // on while media was being packed or the file was being written.
+    store.setSaving(true)
     perfMark('save-start')
     const saveStart = useCanvasStore.getState()
     const snapshot = store.exportBoard()
@@ -67,11 +69,13 @@ export async function saveCurrentBoard(options?: {
         : {}),
       ...(unchangedSinceSnapshot ? { dirty: false } : { dirty: true }),
     })
+    // flashSaveNotice clears isSaving and shows "Saved"
     store.flashSaveNotice('Saved')
     return true
   } catch (err) {
     console.error('Save board failed', err)
-    alert(`Save failed: ${formatBoardError(err)}`)
+    store.setSaving(false)
+    await showAppAlert(formatBoardError(err), 'Save failed')
     return false
   }
 }
@@ -93,7 +97,7 @@ export async function openBoardFromPath(path: string): Promise<boolean> {
     return true
   } catch (err) {
     console.error('Open board failed', err)
-    alert(`Open failed: ${formatBoardError(err)}`)
+    await showAppAlert(formatBoardError(err), 'Open failed')
     return false
   }
 }
