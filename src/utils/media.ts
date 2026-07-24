@@ -160,15 +160,6 @@ function loadVideoSize(src: string): Promise<{ width: number; height: number }> 
   })
 }
 
-const MAX_DISPLAY = 480
-
-function fitSize(w: number, h: number): { width: number; height: number } {
-  const max = Math.max(w, h)
-  if (max <= MAX_DISPLAY) return { width: w, height: h }
-  const scale = MAX_DISPLAY / max
-  return { width: Math.round(w * scale), height: Math.round(h * scale) }
-}
-
 export async function createMediaItemFromSrc(
   src: string,
   fileName: string,
@@ -194,7 +185,9 @@ export async function createMediaItemFromSrc(
   const size =
     kind === 'video' ? await loadVideoSize(src).catch(() => ({ width: 640, height: 360 })) : await loadImageSize(src).catch(() => ({ width: 400, height: 300 }))
 
-  const display = fitSize(size.width, size.height)
+  // Canvas size = original pixel dimensions (do not unify / downscale on import)
+  const width = Math.max(1, Math.round(size.width))
+  const height = Math.max(1, Math.round(size.height))
 
   return {
     id: uid(kind),
@@ -205,8 +198,8 @@ export async function createMediaItemFromSrc(
     naturalHeight: size.height,
     x,
     y,
-    width: display.width,
-    height: display.height,
+    width,
+    height,
     rotation: 0,
     zIndex,
   }

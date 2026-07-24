@@ -4,26 +4,19 @@ import {
   computeQuickStack,
   computeRowLayout,
   computeSmoothLayout,
-  computeTightLayout,
   fanCardRotation,
-  stackGroupBounds,
   STACK_FOLDER_PAD,
 } from '../../utils/layout'
 import { allocateStackZBlock, reflowContainerSurfaceZ } from '../../utils/zOrder'
 import {
   asFreeOnContainer,
-  collectItemsInStackTree,
   containerOf,
-  createStackRecord,
   itemsInContainer,
 } from '../../utils/stacks'
 import { centerOriginPoseToBottomLeftOrigin } from '../../utils/geometry'
-import {
-  ensureStackFanComposite,
-  stackFanNeedsLiveText,
-} from '../../utils/stackFanComposite'
 import { easeOutCubic } from '../actionHelpers'
 import type { CanvasState, GetState, SetState } from '../canvasStoreTypes'
+import { finalizeNestIntoStack } from './stackNestFinalize'
 export type StackLayoutActionKey =
   | 'updateStacks'
   | 'moveStacks'
@@ -242,127 +235,12 @@ export function createStackLayoutActions(
           }))
           options.onComplete?.()
         } else if (options?.nestInto && options.stackGroupId) {
-          // Fan anim done on parent 鈫?reparent into enterable stack.
-          // Parent keeps fan poses in stackPreview; inner canvas uses free layout.
-          // CRITICAL: do NOT leave stacked/stackGroupId on members 鈥?that would
-          // re-draw a folder around the entire inner canvas.
-          const live = get()
-          const groupId = options.stackGroupId
-          const parentId = options.nestInto.parentId
-          const members = live.items
-            .filter((i) => targetIds.has(i.id))
-            .sort((a, b) => a.zIndex - b.zIndex)
-          const folderBounds = stackGroupBounds(members)
-          const folder = folderBounds ?? {
-            x: members[0]?.x ?? 0,
-            y: members[0]?.y ?? 0,
-            width: 200,
-            height: 200,
-          }
-          const zMin = Math.min(...members.map((m) => m.zIndex))
-          const stack = createStackRecord(
-            parentId,
-            folder,
-            zMin - 1,
-            '',
-            groupId,
-          )
-          // Inner canvas: tight shelf (user edits preserved after first enter)
-          const laidOut = computeTightLayout(members, {
-            originX: 0,
-            originY: 0,
-            gap: 12,
+          finalizeNestIntoStack(get, set, {
+            groupId: options.stackGroupId,
+            parentId: options.nestInto.parentId,
+            targetIds,
+            startMap,
           })
-          const layoutMap = new Map(laidOut.map((t) => [t.id, t]))
-
-          set((s) => ({
-            animating: false,
-            dirty: true,
-            stacks: s.stacks.some((st) => st.id === groupId)
-              ? s.stacks.map((st) =>
-                  st.id === groupId
-                    ? {
-                        ...st,
-                        x: folder.x,
-                        y: folder.y,
-                        width: folder.width,
-                        height: folder.height,
-                        zIndex: zMin - 1,
-                      }
-                    : st,
-                )
-              : [...s.stacks, stack],
-            items: s.items.map((item) => {
-              if (!targetIds.has(item.id)) return item
-              const t = layoutMap.get(item.id)
-              return asFreeOnContainer(
-                item,
-                groupId,
-                {
-                  x: t?.x ?? 0,
-                  y: t?.y ?? 0,
-                  rotation: t?.rotation ?? 0,
-                },
-                {
-                  // Fan pose left on the parent canvas
-                  x: item.x,
-                  y: item.y,
-                  rotation: item.rotation ?? 0,
-                },
-              )
-            }),
-            selectedIds: [],
-            selectedStackIds: [groupId],
-            editingStackGroupId: groupId,
-            editingId: null,
-          }))
-          // Contiguous z for the new stack unit among siblings on parent
-          const afterNest = get()
-          const healed = reflowContainerSurfaceZ(
-            afterNest.items,
-            afterNest.stacks,
-            parentId,
-            { frontStackIds: [groupId] },
-          )
-          set({
-            nextZ: Math.max(afterNest.nextZ, healed.nextZ),
-            items: afterNest.items.map((item) =>
-              healed.itemZMap.has(item.id)
-                ? { ...item, zIndex: healed.itemZMap.get(item.id)! }
-                : item,
-            ),
-            stacks: afterNest.stacks.map((st) =>
-              healed.stackZMap.has(st.id)
-                ? { ...st, zIndex: healed.stackZMap.get(st.id)! }
-                : st,
-            ),
-          })
-          // Start the media-only collapsed fan bitmap before React paints the
-          // newly-created folder. Inflight de-duplication makes the component
-          // effect a cheap cache hit; large stacks avoid a long live-DOM window.
-          if (typeof document !== 'undefined') {
-            const composed = get()
-            const composedStack = composed.stacks.find(
-              (candidate) => candidate.id === groupId,
-            )
-            const fanItems = composedStack
-              ? collectItemsInStackTree(
-                  composed.items,
-                  composed.stacks,
-                  composedStack.id,
-                )
-              : []
-            if (
-              composedStack &&
-              !stackFanNeedsLiveText(fanItems)
-            ) {
-              void ensureStackFanComposite(
-                composedStack,
-                composed.items,
-                composed.stacks,
-              ).catch(() => null)
-            }
-          }
           options.onComplete?.()
         } else {
           set({ animating: false })
@@ -731,7 +609,7 @@ export function createStackLayoutActions(
       animating: false,
     })
 
-    // Smooth fan 鈫?tight shelf (classic Alt+G motion)
+    // Smooth fan → tight shelf (classic Alt+G motion)
     const free = get().items.filter((i) => uniqueIds.includes(i.id))
     if (free.length >= 2) {
       const originX = Math.min(...free.map((i) => i.x))
