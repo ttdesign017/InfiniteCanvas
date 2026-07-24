@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { TextItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import { useHistoryOnce } from '../../hooks/useHistoryOnce'
+import { useAutoFocusEdit } from '../../hooks/useAutoFocusEdit'
 
 const PLACEHOLDERS = new Set(['Text', 'Double-click to edit'])
 
@@ -21,18 +22,15 @@ export function TextItemView({ item, selected }: Props) {
   // One undo snapshot for the whole edit session (placeholder clear + typing)
   const pushHistoryOnce = useHistoryOnce(editing ? item.id : null)
 
+  // Clear legacy placeholder text when entering edit
   useEffect(() => {
     if (!editing) return
-    const el = areaRef.current
-    if (!el) return
-    if (!item.content.trim() || PLACEHOLDERS.has(item.content.trim())) {
-      if (item.content) {
-        pushHistoryOnce()
-        updateItem(item.id, { content: '' })
-      }
-    }
-    el.focus()
+    if (!item.content.trim() || !PLACEHOLDERS.has(item.content.trim())) return
+    pushHistoryOnce()
+    updateItem(item.id, { content: '' })
   }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { onBlur } = useAutoFocusEdit(editing, areaRef, () => setEditingId(null))
 
   const hasBg =
     item.backgroundColor &&
@@ -57,13 +55,14 @@ export function TextItemView({ item, selected }: Props) {
         <textarea
           ref={areaRef}
           className="plain-text-input"
+          autoFocus
           value={PLACEHOLDERS.has(item.content.trim()) ? '' : item.content}
           style={{ color: item.color || '#1e1e1e' }}
           onChange={(e) => {
             pushHistoryOnce()
             updateItem(item.id, { content: e.target.value })
           }}
-          onBlur={() => setEditingId(null)}
+          onBlur={onBlur}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               setEditingId(null)

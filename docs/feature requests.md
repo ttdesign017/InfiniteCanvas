@@ -31,10 +31,11 @@ Last aligned with codebase: **2026-07-23** (see also `CODE_REVIEW.md`, `README.m
 - [x] 音频支持（独立音频 item / 播放器）
 - [x] 元素旋转支持（UI + 持久化；类型字段已有 `rotation`，交互未完整）
 - [ ] Ctrl+G 将已选 **stack 文件夹** 作为原子 unit 一并嵌套进新 stack
-- [ ] 图片视频反转操作
+- [x] 图片视频反转操作
 - [ ] 窗口置顶、透明度
 - [ ] 套索选择
 - [ ] 检索增强
+- [ ] Frame打组
 
 ## Engineering fixes (from code review)
 

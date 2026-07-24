@@ -1,24 +1,37 @@
+import { useMemo } from 'react'
 import type { ScribbleItem } from '../../types/canvas'
+import { useCanvasStore } from '../../store/useCanvasStore'
+import { buildScribbleStrokePath } from '../../utils/scribbleStroke'
 
 interface Props {
   item: ScribbleItem
   selected: boolean
 }
 
-/** Extra world-space hit slop around each stroke (half of total pad). */
+/** Extra world-space hit slop around each stroke outline. */
 export const SCRIBBLE_HIT_SLOP = 6
 
-function pathToD(points: Array<{ x: number; y: number }>): string {
-  if (points.length === 0) return ''
-  const [first, ...rest] = points
-  let d = `M ${first.x} ${first.y}`
-  for (const p of rest) {
-    d += ` L ${p.x} ${p.y}`
-  }
-  return d
-}
-
 export function ScribbleView({ item, selected }: Props) {
+  // Live layer: last path still being drawn → freehand `last: false` for softer live tip
+  const isLiveLayer = useCanvasStore((s) => s.activeScribbleId === item.id)
+
+  const pathData = useMemo(() => {
+    const lastIndex = item.paths.length - 1
+    return item.paths.map((path, index) => {
+      const complete = !(isLiveLayer && index === lastIndex)
+      const d = buildScribbleStrokePath(path.points, {
+        size: Math.max(1, path.width),
+        last: complete,
+      })
+      const hitD = buildScribbleStrokePath(path.points, {
+        size: Math.max(1, path.width),
+        sizeBoost: SCRIBBLE_HIT_SLOP * 2,
+        last: complete,
+      })
+      return { id: path.id, color: path.color, d, hitD }
+    })
+  }, [item.paths, isLiveLayer])
+
   return (
     <div
       className={`scribble-item ${selected ? 'is-selected' : ''}`}
@@ -31,30 +44,21 @@ export function ScribbleView({ item, selected }: Props) {
         className="scribble-svg"
         style={{ overflow: 'visible' }}
       >
-        {item.paths.map((path) => {
-          const d = pathToD(path.points)
+        {pathData.map(({ id, color, d, hitD }) => {
           if (!d) return null
-          // Hit target: stroke width + edge slop so nearby clicks still count
-          const hitWidth = Math.max(path.width, 1) + SCRIBBLE_HIT_SLOP * 2
           return (
-            <g key={path.id}>
+            <g key={id}>
               <path
                 className="scribble-hit"
-                d={d}
-                stroke="transparent"
-                strokeWidth={hitWidth}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+                d={hitD || d}
+                fill="transparent"
+                stroke="none"
               />
               <path
                 className="scribble-stroke"
                 d={d}
-                stroke={path.color}
-                strokeWidth={path.width}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+                fill={color}
+                stroke="none"
               />
             </g>
           )

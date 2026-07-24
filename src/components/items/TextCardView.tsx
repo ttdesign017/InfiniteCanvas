@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { TextCardItem } from '../../types/canvas'
 import { useCanvasStore } from '../../store/useCanvasStore'
 import { useHistoryOnce } from '../../hooks/useHistoryOnce'
+import { useAutoFocusEdit } from '../../hooks/useAutoFocusEdit'
 
 const PLACEHOLDERS = new Set(['Write a note…', 'Write a note...', 'New note', 'Double-click to edit'])
 
@@ -23,16 +24,12 @@ export function TextCardView({ item, selected }: Props) {
 
   useEffect(() => {
     if (!editing) return
-    const el = areaRef.current
-    if (!el) return
-    if (!item.content.trim() || PLACEHOLDERS.has(item.content.trim())) {
-      if (item.content) {
-        pushHistoryOnce()
-        updateItem(item.id, { content: '' })
-      }
-    }
-    el.focus()
+    if (!item.content.trim() || !PLACEHOLDERS.has(item.content.trim())) return
+    pushHistoryOnce()
+    updateItem(item.id, { content: '' })
   }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { onBlur } = useAutoFocusEdit(editing, areaRef, () => setEditingId(null))
 
   const showPlaceholder = !editing && (isEmpty || isLegacyPlaceholder)
   const labelColor = item.labelColor || '#8c8c8c'
@@ -71,6 +68,7 @@ export function TextCardView({ item, selected }: Props) {
         <textarea
           ref={areaRef}
           className="notion-card-input"
+          autoFocus
           value={PLACEHOLDERS.has(item.content.trim()) ? '' : item.content}
           style={{ color: item.color }}
           placeholder=""
@@ -78,7 +76,7 @@ export function TextCardView({ item, selected }: Props) {
             pushHistoryOnce()
             updateItem(item.id, { content: e.target.value })
           }}
-          onBlur={() => setEditingId(null)}
+          onBlur={onBlur}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               setEditingId(null)

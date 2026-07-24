@@ -2578,9 +2578,9 @@ body,
   pointer-events: none;
 }
 
-/* Only the stroke (plus hit slop path) is pickable — empty bbox passes through */
+/* Freehand fill outline: hit target is filled path (+ sizeBoost), paint path is visual only */
 .scribble-svg .scribble-hit {
-  pointer-events: stroke;
+  pointer-events: fill;
 }
 .scribble-svg .scribble-stroke {
   pointer-events: none;
